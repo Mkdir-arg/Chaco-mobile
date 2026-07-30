@@ -132,42 +132,45 @@ export default function RelevamientosScreen({ onOpenRelevamiento }) {
         loadRelevamientos();
     }, [loadRelevamientos]);
 
-    const relevamientosHoy = useMemo(() => {
+    const relevamientosDesdeHoy = useMemo(() => {
         const today = dateKey(new Date());
-        return relevamientos.filter(
-            (item) => dateKey(item.fecha_asignada || item.created_at) === today
-        );
+        return relevamientos
+            .filter((item) => dateKey(item.fecha_asignada || item.created_at) >= today)
+            .sort((a, b) => (
+                dateKey(a.fecha_asignada || a.created_at)
+                    .localeCompare(dateKey(b.fecha_asignada || b.created_at))
+            ));
     }, [relevamientos]);
 
     const filteredRelevamientos = useMemo(() => {
-        if (statusFilter === 'TODOS') return relevamientosHoy;
+        if (statusFilter === 'TODOS') return relevamientosDesdeHoy;
         if (statusFilter === 'ASIGNADOS') {
-            return relevamientosHoy.filter((item) => normalizeEstado(item.estado) === 'ASIGNADO');
+            return relevamientosDesdeHoy.filter((item) => normalizeEstado(item.estado) === 'ASIGNADO');
         }
         if (statusFilter === 'EN_CURSO') {
-            return relevamientosHoy.filter((item) => IN_PROGRESS_STATES.includes(normalizeEstado(item.estado)));
+            return relevamientosDesdeHoy.filter((item) => IN_PROGRESS_STATES.includes(normalizeEstado(item.estado)));
         }
         if (statusFilter === 'FINALIZADOS') {
-            return relevamientosHoy.filter((item) => DONE_STATES.includes(normalizeEstado(item.estado)));
+            return relevamientosDesdeHoy.filter((item) => DONE_STATES.includes(normalizeEstado(item.estado)));
         }
         if (statusFilter === 'SIN_SYNC') {
-            return relevamientosHoy.filter((item) => normalizeEstado(item.sync_estado) !== 'SINCRONIZADO');
+            return relevamientosDesdeHoy.filter((item) => normalizeEstado(item.sync_estado) !== 'SINCRONIZADO');
         }
-        return relevamientosHoy;
-    }, [relevamientosHoy, statusFilter]);
+        return relevamientosDesdeHoy;
+    }, [relevamientosDesdeHoy, statusFilter]);
 
     const stats = useMemo(() => {
-        const total = relevamientosHoy.length;
-        const inProgress = relevamientosHoy.filter((item) => IN_PROGRESS_STATES.includes(normalizeEstado(item.estado))).length;
-        const done = relevamientosHoy.filter((item) => DONE_STATES.includes(normalizeEstado(item.estado))).length;
-        const pendingSync = relevamientosHoy.filter((item) => normalizeEstado(item.sync_estado) !== 'SINCRONIZADO').length;
+        const total = relevamientosDesdeHoy.length;
+        const inProgress = relevamientosDesdeHoy.filter((item) => IN_PROGRESS_STATES.includes(normalizeEstado(item.estado))).length;
+        const done = relevamientosDesdeHoy.filter((item) => DONE_STATES.includes(normalizeEstado(item.estado))).length;
+        const pendingSync = relevamientosDesdeHoy.filter((item) => normalizeEstado(item.sync_estado) !== 'SINCRONIZADO').length;
         return [
             { key: 'total', label: 'Total', value: total, icon: 'folder-open-outline', tone: 'brand' },
             { key: 'progress', label: 'En curso', value: inProgress, icon: 'time-outline', tone: 'warning' },
             { key: 'done', label: 'Finalizados', value: done, icon: 'checkmark-done-outline', tone: 'success' },
             { key: 'sync', label: 'Sin sync', value: pendingSync, icon: 'cloud-upload-outline', tone: 'danger' },
         ];
-    }, [relevamientosHoy]);
+    }, [relevamientosDesdeHoy]);
 
     return (
         <View style={styles.container}>
@@ -215,7 +218,7 @@ export default function RelevamientosScreen({ onOpenRelevamiento }) {
                             <View>
                                 <Text style={[styles.filterLabel, { fontFamily: typography.bold }]}>Estado</Text>
                                 <Text style={[styles.filterHint, { fontFamily: typography.regular }]}>
-                                    {`${filteredRelevamientos.length} de ${relevamientosHoy.length} relevamientos de hoy`}
+                                    {`${filteredRelevamientos.length} de ${relevamientosDesdeHoy.length} relevamientos desde hoy`}
                                 </Text>
                             </View>
                             <Pressable
@@ -311,7 +314,7 @@ export default function RelevamientosScreen({ onOpenRelevamiento }) {
 
                         <View style={styles.tableFooter}>
                             <Text style={[styles.footerText, { fontFamily: typography.medium }]}>
-                                {`Mostrando ${filteredRelevamientos.length} de ${relevamientosHoy.length} de hoy`}
+                                {`Mostrando ${filteredRelevamientos.length} de ${relevamientosDesdeHoy.length} desde hoy`}
                             </Text>
                             <View style={styles.pagePill}>
                                 <Text style={[styles.pagePillText, { fontFamily: typography.bold }]}>1</Text>

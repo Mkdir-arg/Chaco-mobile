@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as SQLite from 'expo-sqlite';
-import { becasRequest, becasUploadFile } from './becasApi';
+import { becasRequest, becasUploadFile, getStoredBecasUser } from './becasApi';
 
 const LOCAL_RELEVAMIENTOS_KEY = 'field_relevamientos_records';
 const SYNC_QUEUE_KEY = 'field_relevamientos_sync_queue';
@@ -61,6 +61,14 @@ const uniqueBy = (items = [], keySelector) => {
 };
 const toSqliteBool = (value) => (value ? 1 : 0);
 const normalizeUuid = (value) => String(value || '').trim().toLowerCase();
+const getCurrentOwnerId = async () => {
+  const user = await getStoredBecasUser();
+  return user?.id == null ? '' : String(user.id);
+};
+const belongsToOwner = (record, ownerId) => (
+  Boolean(ownerId)
+  && String(record?.payload?._owner_user_id || '') === ownerId
+);
 
 const mapDjangoRelevamiento = (row = {}) => ({
   id: row.id,
@@ -672,12 +680,17 @@ const readCachedRemoteRecord = async (id, backend = 'django_becas') => {
     String(id),
     createRemoteCacheId(backend, id)
   );
-  return row ? mapLocalRow(row) : null;
+  if (!row) return null;
+  const record = mapLocalRow(row);
+  const ownerId = await getCurrentOwnerId();
+  return belongsToOwner(record, ownerId) ? record : null;
 };
 
 const upsertCachedRemoteRecord = async (record = {}) => {
   if (!record?.id) return null;
   await ensureSqliteReady();
+  const ownerId = await getCurrentOwnerId();
+  if (!ownerId) return null;
   const db = await getSqliteDb();
   const backend = record.backend || 'django_becas';
   const localId = createRemoteCacheId(backend, record.id);
@@ -685,6 +698,7 @@ const upsertCachedRemoteRecord = async (record = {}) => {
     ...record,
     cache_source: 'remote',
     backend,
+    _owner_user_id: ownerId,
     cached_at: nowIso(),
   };
   const createdAt = record.created_at || record.fecha_asignada || nowIso();
@@ -730,8 +744,11 @@ const updateCachedRemoteFormularios = async (relevamientoId, formularios = []) =
 
 const getLocalBecasFormularios = async (relevamientoId) => {
   const localRecords = await readLocalRecords();
+  const ownerId = await getCurrentOwnerId();
   return localRecords
     .filter((record) => (
+      belongsToOwner(record, ownerId)
+      &&
       !isRemoteCacheRecord(record)
       && record.payload?.backend === 'django_becas'
       && String(record.payload?.relevamiento_id || record.payload?.relevamientoId || '') === String(relevamientoId)
@@ -774,10 +791,14 @@ const mergeBecasFormularios = (remoteRecords = [], localRecords = []) => {
 
 const mapCachedRecordsForList = async () => {
   const localRecords = await readLocalRecords();
+  const ownerId = await getCurrentOwnerId();
   return localRecords
     .filter((record) => (
-      isRemoteCacheRecord(record)
-      || record.payload?.backend !== 'django_becas'
+      belongsToOwner(record, ownerId)
+      && (
+        isRemoteCacheRecord(record)
+        || record.payload?.backend !== 'django_becas'
+      )
     ))
     .map(mapLocalRecordForList);
 };
@@ -807,6 +828,30 @@ const warmRemoteDetailCache = async (records = []) => {
   }
 };
 
+const pruneRemoteCacheForCurrentOwner = async (remoteRecords = []) => {
+  const ownerId = await getCurrentOwnerId();
+  if (!ownerId) return;
+  const currentRemoteIds = new Set(remoteRecords.map((record) => String(record?.id || '')).filter(Boolean));
+  const localRecords = await readLocalRecords();
+  const staleCacheIds = localRecords
+    .filter((record) => (
+      isRemoteCacheRecord(record)
+      && belongsToOwner(record, ownerId)
+      && !currentRemoteIds.has(String(record.remote_id || record.payload?.id || ''))
+    ))
+    .map((record) => record.local_id);
+  if (!staleCacheIds.length) return;
+  const db = await getSqliteDb();
+  await runSqliteTx(db, async (tx) => {
+    for (const localId of staleCacheIds) {
+      await tx.runAsync(
+        `DELETE FROM ${SQLITE_LOCAL_TABLE} WHERE local_id = ?`,
+        localId
+      );
+    }
+  });
+};
+
 const readQueue = async () => {
   await ensureSqliteReady();
   const db = await getSqliteDb();
@@ -816,7 +861,8 @@ const readQueue = async () => {
      WHERE status = 'PENDING'
      ORDER BY created_at ASC`
   );
-  return rows.map(mapOutboxRow);
+  const ownerId = await getCurrentOwnerId();
+  return rows.map(mapOutboxRow).filter((record) => belongsToOwner(record, ownerId));
 };
 
 // Sube al backend las fotos de DNI ya capturadas por la cámara (hoy quedaban
@@ -965,7 +1011,13 @@ const enqueueRelevamientoAction = async (relevamientoId, type) => {
   const db = await getSqliteDb();
   const localId = `action_${type}_${relevamientoId}`;
   const stamp = nowIso();
-  const payload = { backend: 'django_becas', relevamiento_id: relevamientoId, capturado_en: stamp };
+  const ownerId = await getCurrentOwnerId();
+  const payload = {
+    backend: 'django_becas',
+    relevamiento_id: relevamientoId,
+    capturado_en: stamp,
+    _owner_user_id: ownerId,
+  };
   await db.runAsync(
     `INSERT INTO ${SQLITE_OUTBOX_TABLE}
     (local_id, op_id, type, payload_json, created_at, started_at, ack_at, server_id, retry_count, next_retry_at, last_error, last_error_code, status, updated_at)
@@ -1259,10 +1311,13 @@ const relevamientoService = {
 
   async saveBecasFormulario(payload) {
     await ensureSqliteReady();
+    const ownerId = await getCurrentOwnerId();
+    if (!ownerId) throw new Error('No hay un usuario autenticado para guardar datos offline.');
     const capturadoEn = payload?.capturado_en || payload?.created_at || nowIso();
     const payloadWithFiles = await persistFormularioAttachments(payload);
     const localRecord = await upsertLocalRecordAndEnqueue({
       ...payloadWithFiles,
+      _owner_user_id: ownerId,
       capturado_en: capturadoEn,
       backend: 'django_becas',
       sync_estado: 'PENDIENTE',
@@ -1411,12 +1466,16 @@ const relevamientoService = {
   async getPendingCount() {
     await ensureSqliteReady();
     const db = await getSqliteDb();
-    const row = await db.getFirstAsync(
-      `SELECT COUNT(*) as count
+    const rows = await db.getAllAsync(
+      `SELECT payload_json
        FROM ${SQLITE_OUTBOX_TABLE}
        WHERE status IN ('PENDING', 'IN_FLIGHT', 'FAILED_PERMANENT')`
     );
-    return Number(row?.count || 0);
+    const ownerId = await getCurrentOwnerId();
+    return rows
+      .map((row) => ({ payload: safeParse(row.payload_json, {}) }))
+      .filter((record) => belongsToOwner(record, ownerId))
+      .length;
   },
 
   async retryFailedOperations() {
@@ -1450,6 +1509,7 @@ const relevamientoService = {
   },
 
   async getRelevamientos({ refreshFromRemote = true } = {}) {
+    const ownerId = await getCurrentOwnerId();
     if (refreshFromRemote) {
       const connectivity = await getConnectivitySnapshot();
       if (!connectivity.hasInternet) {
@@ -1466,9 +1526,14 @@ const relevamientoService = {
         await this.syncPendingOperations();
         const remote = await fetchRemoteRecords();
         await warmRemoteDetailCache(remote);
+        await pruneRemoteCacheForCurrentOwner(remote);
         const localRecords = await readLocalRecords();
         const pendingLocal = localRecords
-          .filter((item) => !item.synced && !isRemoteCacheRecord(item))
+          .filter((item) => (
+            belongsToOwner(item, String(ownerId))
+            && !item.synced
+            && !isRemoteCacheRecord(item)
+          ))
           .map(mapLocalRecordForList);
         return { success: true, records: uniqueBy([...pendingLocal, ...remote], (item) => String(item.id)) };
       } catch (error) {
