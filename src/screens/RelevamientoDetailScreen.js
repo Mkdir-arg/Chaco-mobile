@@ -890,17 +890,28 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
         campos_definicion: detail?.campos_definicion || [],
         finalizar: false,
       });
+      const closeSavedForm = async () => {
+        await refreshFormularios();
+        resetPersonForm();
+        setFormMode(false);
+      };
       if (result?.syncResult?.offline || result?.syncResult?.failed > 0) {
-        Alert.alert('Guardado local', 'El formulario quedo en cola y se sincronizara cuando vuelva internet.');
+        Alert.alert(
+          'Guardado local',
+          'La persona quedó guardada. Podés seguir relevando; la sincronización se reintentará sin bloquear las demás cargas.',
+          [{ text: 'Continuar', onPress: closeSavedForm }]
+        );
+      } else if (result?.syncResult?.background) {
+        Alert.alert(
+          'Subiendo en segundo plano',
+          'La persona quedó guardada en el teléfono y se está enviando. Podés seguir relevando.',
+          [{ text: 'Continuar', onPress: closeSavedForm }]
+        );
       } else {
         Alert.alert('Persona agregada', 'El formulario quedo cargado dentro del relevamiento.', [
           {
             text: 'OK',
-            onPress: async () => {
-              await refreshFormularios();
-              resetPersonForm();
-              setFormMode(false);
-            },
+            onPress: closeSavedForm,
           },
         ]);
       }
@@ -1014,6 +1025,63 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     }
   };
 
+  const renderDateInput = ({
+    pickerKey,
+    label,
+    value,
+    onSelect,
+    required = false,
+    maximumDate,
+  }) => {
+    const isoValue = toIsoDate(value);
+    const pickerValue = isoValue && /^\d{4}-\d{2}-\d{2}$/.test(isoValue)
+      ? new Date(`${isoValue}T12:00:00`)
+      : new Date();
+
+    if (Platform.OS === 'web') {
+      return (
+        <TextInput
+          value={value}
+          onChangeText={onSelect}
+          placeholder="DD/MM/AAAA"
+          style={[styles.textInput, { color: theme.colors.text, borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}
+        />
+      );
+    }
+
+    return (
+      <>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`${label}${required ? ', obligatorio' : ''}`}
+          onPress={() => setDatePickerFieldId(pickerKey)}
+          style={[styles.textInput, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface, justifyContent: 'center' }]}
+        >
+          <Text style={{ color: value ? theme.colors.text : theme.colors.textSoft, fontFamily: typography.medium }}>
+            {normalizeDateText(value) || 'Seleccionar fecha'}
+          </Text>
+        </Pressable>
+        {datePickerFieldId === pickerKey ? (
+          <DateTimePicker
+            value={pickerValue}
+            mode="date"
+            display="default"
+            maximumDate={maximumDate}
+            onChange={(event, selectedDate) => {
+              setDatePickerFieldId(null);
+              if (event.type !== 'dismissed' && selectedDate) {
+                const year = selectedDate.getFullYear();
+                const month = String(selectedDate.getMonth() + 1).padStart(2, '0');
+                const day = String(selectedDate.getDate()).padStart(2, '0');
+                onSelect(`${day}/${month}/${year}`);
+              }
+            }}
+          />
+        ) : null}
+      </>
+    );
+  };
+
   const renderDynamicField = (field) => {
     const value = dynamicValues[field.id] || '';
     const options = parseOptions(field.opciones);
@@ -1082,40 +1150,17 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
       );
     }
 
-    if (tipo === 'DATE') {
-      const parsed = toIsoDate(value);
-      const pickerValue = parsed && /^\d{4}-\d{2}-\d{2}$/.test(parsed)
-        ? new Date(`${parsed}T12:00:00`)
-        : new Date();
-      if (Platform.OS === 'web') {
-        return (
-          <View key={field.id} style={styles.formGroup}>
-            <Text style={[styles.inputLabel, { color: theme.colors.text, fontFamily: typography.semibold }]}>{field.etiqueta}{field.requerido ? ' *' : ''}</Text>
-            <TextInput value={value} onChangeText={setValue} placeholder="DD/MM/AAAA" style={[styles.textInput, { color: theme.colors.text, borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]} />
-          </View>
-        );
-      }
+    if (['DATE', 'FECHA'].includes(tipo)) {
       return (
         <View key={field.id} style={styles.formGroup}>
           <Text style={[styles.inputLabel, { color: theme.colors.text, fontFamily: typography.semibold }]}>{field.etiqueta}{field.requerido ? ' *' : ''}</Text>
-          <Pressable onPress={() => setDatePickerFieldId(field.id)} style={[styles.textInput, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface, justifyContent: 'center' }]}>
-            <Text style={{ color: value ? theme.colors.text : theme.colors.textSoft, fontFamily: typography.medium }}>{value || 'Seleccionar fecha'}</Text>
-          </Pressable>
-          {datePickerFieldId === field.id ? (
-            <DateTimePicker
-              value={pickerValue}
-              mode="date"
-              onChange={(event, selectedDate) => {
-                setDatePickerFieldId(null);
-                if (event.type !== 'dismissed' && selectedDate) {
-                  const year = selectedDate.getFullYear();
-                  const month = String(selectedDate.getMonth() + 1).padStart(2, '0');
-                  const day = String(selectedDate.getDate()).padStart(2, '0');
-                  setValue(`${year}-${month}-${day}`);
-                }
-              }}
-            />
-          ) : null}
+          {renderDateInput({
+            pickerKey: `dynamic-${field.id}`,
+            label: field.etiqueta,
+            value,
+            onSelect: setValue,
+            required: field.requerido,
+          })}
         </View>
       );
     }
@@ -1255,13 +1300,14 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
               </View>
               <View style={styles.formGroup}>
                 <Text style={[styles.inputLabel, { color: theme.colors.text, fontFamily: typography.semibold }]}>Fecha de nacimiento *</Text>
-                <TextInput
-                  value={apoderadoForm.fecha_nacimiento}
-                  onChangeText={(value) => setApoderadoForm((prev) => ({ ...prev, fecha_nacimiento: value }))}
-                  style={[styles.textInput, { color: theme.colors.text, borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}
-                  placeholder="DD/MM/AAAA"
-                  placeholderTextColor={theme.colors.textSoft}
-                />
+                {renderDateInput({
+                  pickerKey: 'apoderado-fecha-nacimiento',
+                  label: 'Fecha de nacimiento del apoderado',
+                  value: apoderadoForm.fecha_nacimiento,
+                  onSelect: (value) => setApoderadoForm((prev) => ({ ...prev, fecha_nacimiento: value })),
+                  required: true,
+                  maximumDate: new Date(),
+                })}
               </View>
             </>
           ) : null}
@@ -1563,7 +1609,17 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
             <>
               {renderDniInput('Apellido *', 'apellido', 'Ej: Perez')}
               {renderDniInput('Nombres *', 'nombres', 'Ej: Juan Carlos')}
-              {renderDniInput('Fecha de nacimiento *', 'fecha_nacimiento', 'DD/MM/AAAA')}
+              <View style={styles.formGroup}>
+                <Text style={[styles.inputLabel, { color: theme.colors.text, fontFamily: typography.semibold }]}>Fecha de nacimiento *</Text>
+                {renderDateInput({
+                  pickerKey: 'persona-fecha-nacimiento',
+                  label: 'Fecha de nacimiento',
+                  value: dniForm.fecha_nacimiento,
+                  onSelect: (value) => updateDniField('fecha_nacimiento', value),
+                  required: true,
+                  maximumDate: new Date(),
+                })}
+              </View>
             </>
           ) : (
             <>
@@ -1636,7 +1692,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     return (
       <KeyboardAvoidingView
         style={[styles.container, { backgroundColor: theme.colors.background }]}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={0}
       >
         <View style={styles.bannerWrap}>
@@ -1787,7 +1843,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     const assignedDate = String(detail?.fecha_asignada || '').slice(0, 10);
     const today = new Date();
     const todayLocal = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-    const isAssignedToday = !assignedDate || assignedDate === todayLocal;
+    const isAssignedToday = !!assignedDate && assignedDate === todayLocal;
     const canAddPerson = isAssignedToday && !['FINALIZANDO', 'FINALIZADO', 'EN_REVISION', 'TERMINADO'].includes(relevamientoEstado);
 
     return (
@@ -1829,7 +1885,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
                 <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Convocatoria</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{readValue('convocatoria_nombre', 'descripcion')}</Text></View>
                 <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Segmento</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{readValue('segmento')}</Text></View>
                 <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Zona</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{readValue('zona', 'localidad', 'direccion_objetivo')}</Text></View>
-                <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Fecha</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{formatDate(detail?.fecha_asignada || detail?.created_at)}</Text></View>
+                <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Fecha límite</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{formatDate(detail?.fecha_asignada || detail?.created_at)}</Text></View>
                 <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Estado</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{relevamientoStatusLabel(detail?.estado)}</Text></View>
               </View>
 
@@ -1884,7 +1940,11 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
                 ) : (
                   formularios.map((formulario, index) => {
                     const datos = formulario.datos_identificacion || {};
-                    const nombre = `${datos.apellido || ''} ${datos.nombre || ''}`.trim() || `Formulario #${formulario.id}`;
+                    const nombre = `${
+                      formulario.ciudadano_apellido || datos.apellido || ''
+                    } ${
+                      formulario.ciudadano_nombre || datos.nombre || ''
+                    }`.trim() || `Formulario #${formulario.id}`;
                     const dni = formulario.ciudadano_dni || datos.dni || '-';
                     const estado = String(formulario.estado || 'ENVIADO').replaceAll('_', ' ');
                     return (

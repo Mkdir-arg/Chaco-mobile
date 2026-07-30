@@ -14,6 +14,7 @@ const SQLITE_MIGRATION_FLAG_KEY = 'field_relevamientos_sqlite_migrated_v1';
 const ATTACHMENTS_DIR = `${FileSystem.documentDirectory}attachments`;
 const MAX_RETRY_COUNT = 8;
 const OUTBOX_IN_FLIGHT_TIMEOUT_MS = 10 * 60 * 1000;
+const BACKGROUND_SYNC_WAIT_MS = 1500;
 const ERROR_MISSING_LOCAL_FILE = 'ERROR_MISSING_LOCAL_FILE';
 const ERROR_ATTACHMENTS_UPLOAD = 'ERROR_ATTACHMENTS_UPLOAD';
 const ERROR_REMOTE_SCHEMA = 'ERROR_REMOTE_SCHEMA';
@@ -72,6 +73,7 @@ const mapDjangoRelevamiento = (row = {}) => ({
   provincia: 'Chaco',
   prioridad: 'MEDIA',
   estado: row.estado,
+  fecha_asignada: row.fecha_asignada || null,
   id_institucion: null,
   created_at: row.fecha_asignada || row.fecha_finalizado || nowIso(),
   relevado_at: row.fecha_finalizado || null,
@@ -726,9 +728,58 @@ const updateCachedRemoteFormularios = async (relevamientoId, formularios = []) =
   });
 };
 
+const getLocalBecasFormularios = async (relevamientoId) => {
+  const localRecords = await readLocalRecords();
+  return localRecords
+    .filter((record) => (
+      !isRemoteCacheRecord(record)
+      && record.payload?.backend === 'django_becas'
+      && String(record.payload?.relevamiento_id || record.payload?.relevamientoId || '') === String(relevamientoId)
+    ))
+    .map((record) => {
+      const payload = record.payload || {};
+      const estadoLocal = String(record.sync_estado || '').toUpperCase();
+      const estado = record.synced
+        ? 'ENVIADO'
+        : (estadoLocal === 'ERROR' ? 'ERROR DE SINCRONIZACIÓN'
+          : (estadoLocal === 'PARCIAL' ? 'SINCRONIZACIÓN PARCIAL' : 'PENDIENTE DE SINCRONIZACIÓN'));
+      return {
+        id: record.remote_id || record.local_id,
+        local_id: record.local_id,
+        client_uuid: record.client_uuid || payload.client_uuid || payload.client_uid,
+        ciudadano_dni: payload?.datos_identificacion?.dni || '',
+        ciudadano_nombre: payload?.datos_identificacion?.nombre || '',
+        ciudadano_apellido: payload?.datos_identificacion?.apellido || '',
+        datos_identificacion: payload.datos_identificacion || null,
+        estado,
+        sync_error: record.sync_error || null,
+        local: true,
+      };
+    });
+};
+
+const mergeBecasFormularios = (remoteRecords = [], localRecords = []) => {
+  const remoteKeys = new Set();
+  remoteRecords.forEach((record) => {
+    if (record?.client_uuid) remoteKeys.add(`uuid:${record.client_uuid}`);
+    if (record?.id) remoteKeys.add(`id:${record.id}`);
+  });
+  const unsyncedLocal = localRecords.filter((record) => {
+    if (record?.client_uuid && remoteKeys.has(`uuid:${record.client_uuid}`)) return false;
+    if (record?.id && remoteKeys.has(`id:${record.id}`)) return false;
+    return true;
+  });
+  return [...unsyncedLocal, ...remoteRecords];
+};
+
 const mapCachedRecordsForList = async () => {
   const localRecords = await readLocalRecords();
-  return localRecords.map(mapLocalRecordForList);
+  return localRecords
+    .filter((record) => (
+      isRemoteCacheRecord(record)
+      || record.payload?.backend !== 'django_becas'
+    ))
+    .map(mapLocalRecordForList);
 };
 
 const warmRemoteDetailCache = async (records = []) => {
@@ -825,6 +876,8 @@ const syncRemoteBecasFormulario = async (operation) => {
         gps_lat: payload.gps_lat || null,
         gps_lng: payload.gps_lng || null,
         validado_renaper: !!payload.validado_renaper,
+        client_uuid: payload.client_uuid || payload.client_uid || null,
+        capturado_en: payload.capturado_en || payload.created_at || operation.created_at,
         datos_identificacion: payload.datos_identificacion,
         data: payload.data || { globales: {}, requisitos: {} },
       },
@@ -885,6 +938,7 @@ const syncRelevamientoAction = async (operation) => {
   const action = operation?.type === 'finalizar_relevamiento' ? 'finalizar' : 'reabrir';
   const row = await becasRequest(`/api/becas/relevamientos/${relevamientoId}/${action}/`, {
     method: 'POST',
+    body: { capturado_en: operation?.payload?.capturado_en || operation?.created_at || nowIso() },
   });
   const estado = action === 'finalizar' ? 'FINALIZADO' : 'EN_CURSO';
   await updateCachedRelevamientoState(relevamientoId, estado, row);
@@ -911,7 +965,7 @@ const enqueueRelevamientoAction = async (relevamientoId, type) => {
   const db = await getSqliteDb();
   const localId = `action_${type}_${relevamientoId}`;
   const stamp = nowIso();
-  const payload = { backend: 'django_becas', relevamiento_id: relevamientoId };
+  const payload = { backend: 'django_becas', relevamiento_id: relevamientoId, capturado_en: stamp };
   await db.runAsync(
     `INSERT INTO ${SQLITE_OUTBOX_TABLE}
     (local_id, op_id, type, payload_json, created_at, started_at, ack_at, server_id, retry_count, next_retry_at, last_error, last_error_code, status, updated_at)
@@ -1205,19 +1259,27 @@ const relevamientoService = {
 
   async saveBecasFormulario(payload) {
     await ensureSqliteReady();
+    const capturadoEn = payload?.capturado_en || payload?.created_at || nowIso();
     const payloadWithFiles = await persistFormularioAttachments(payload);
     const localRecord = await upsertLocalRecordAndEnqueue({
       ...payloadWithFiles,
+      capturado_en: capturadoEn,
       backend: 'django_becas',
       sync_estado: 'PENDIENTE',
       synced: false,
-      created_at: nowIso(),
+      created_at: capturadoEn,
       observaciones: payload?.observaciones || payload?.datos_identificacion?.dni || '',
       latitud: payload?.gps_lat || '',
       longitud: payload?.gps_lng || '',
     });
 
-    const syncResult = await this.syncPendingOperations();
+    const syncPromise = this.syncPendingOperations();
+    const syncResult = await Promise.race([
+      syncPromise,
+      new Promise((resolve) => {
+        setTimeout(() => resolve({ synced: 0, failed: 0, background: true }), BACKGROUND_SYNC_WAIT_MS);
+      }),
+    ]);
     return { success: true, record: localRecord, syncResult };
   },
 
@@ -1350,9 +1412,41 @@ const relevamientoService = {
     await ensureSqliteReady();
     const db = await getSqliteDb();
     const row = await db.getFirstAsync(
-      `SELECT COUNT(*) as count FROM ${SQLITE_OUTBOX_TABLE} WHERE status IN ('PENDING', 'IN_FLIGHT')`
+      `SELECT COUNT(*) as count
+       FROM ${SQLITE_OUTBOX_TABLE}
+       WHERE status IN ('PENDING', 'IN_FLIGHT', 'FAILED_PERMANENT')`
     );
     return Number(row?.count || 0);
+  },
+
+  async retryFailedOperations() {
+    await ensureSqliteReady();
+    const db = await getSqliteDb();
+    const stamp = nowIso();
+    await runSqliteTx(db, async (tx) => {
+      await tx.runAsync(
+        `UPDATE ${SQLITE_OUTBOX_TABLE}
+         SET status = 'PENDING',
+             retry_count = 0,
+             next_retry_at = NULL,
+             started_at = NULL,
+             last_error = NULL,
+             last_error_code = NULL,
+             updated_at = ?
+         WHERE status = 'FAILED_PERMANENT'`,
+        stamp
+      );
+      await tx.runAsync(
+        `UPDATE ${SQLITE_LOCAL_TABLE}
+         SET sync_estado = 'PENDIENTE',
+             sync_error = NULL,
+             sync_error_code = NULL,
+             updated_at = ?
+         WHERE synced = 0 AND sync_estado IN ('ERROR', 'PARCIAL')`,
+        stamp
+      );
+    });
+    return this.syncPendingOperations();
   },
 
   async getRelevamientos({ refreshFromRemote = true } = {}) {
@@ -1394,12 +1488,13 @@ const relevamientoService = {
 
   async getBecasFormularios(relevamientoId) {
     if (!relevamientoId) return { success: false, records: [], error: 'ID invalido' };
+    const localRecords = await getLocalBecasFormularios(relevamientoId);
     const connectivity = await getConnectivitySnapshot();
     if (!connectivity.hasInternet) {
       const cached = await readCachedRemoteRecord(relevamientoId);
       return {
         success: true,
-        records: cached?.payload?.cached_formularios || [],
+        records: mergeBecasFormularios(cached?.payload?.cached_formularios || [], localRecords),
         offline: true,
       };
     }
@@ -1410,13 +1505,13 @@ const relevamientoService = {
         ? payload
         : (payload?.results || payload?.data || []);
       await updateCachedRemoteFormularios(relevamientoId, records);
-      return { success: true, records };
+      return { success: true, records: mergeBecasFormularios(records, localRecords) };
     } catch (error) {
       const cached = await readCachedRemoteRecord(relevamientoId);
       const cachedRecords = cached?.payload?.cached_formularios || [];
       return {
-        success: cachedRecords.length > 0,
-        records: cachedRecords,
+        success: cachedRecords.length > 0 || localRecords.length > 0,
+        records: mergeBecasFormularios(cachedRecords, localRecords),
         offline: isNetworkError(error),
         error: cachedRecords.length ? '' : (error?.message || 'No se pudieron cargar los formularios'),
       };

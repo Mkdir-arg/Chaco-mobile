@@ -216,7 +216,7 @@ function AppContent() {
     try {
       syncInProgressRef.current = true;
       setSyncStatus('syncing');
-      const relevamientoResult = await relevamientoService.syncPendingOperations();
+      const relevamientoResult = await relevamientoService.retryFailedOperations();
 
       await refreshSyncStatus();
 
