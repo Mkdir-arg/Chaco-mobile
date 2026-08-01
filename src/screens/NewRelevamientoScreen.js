@@ -6,6 +6,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as Location from 'expo-location';
 import Svg, { Path } from 'react-native-svg';
 import { useTheme } from '../context/ThemeContext';
+import { useToast } from '../context/ToastContext';
 import StaggeredItem from '../components/StaggeredItem';
 import CustomButton from '../components/CustomButton';
 import SignaturePad from '../components/SignaturePad';
@@ -15,6 +16,8 @@ import { designColors, fontSizes, radii } from '../theme';
 export default function NewRelevamientoScreen({ onCancel, onSave }) {
     const MAX_IMAGES = 8;
     const { theme, typography, isDark } = useTheme();
+    const { showAlert } = useToast();
+    const Alert = { alert: showAlert };
     const [currentStep, setCurrentStep] = useState(1);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const submitLockRef = useRef(false);

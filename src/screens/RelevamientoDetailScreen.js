@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Image, Pressable, Alert, Modal, TextInput, KeyboardAvoidingView, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import NetInfo from '@react-native-community/netinfo';
-import DateTimePicker from '@react-native-community/datetimepicker';
+import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
@@ -13,6 +13,7 @@ import * as FileSystemLegacy from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as WebBrowser from 'expo-web-browser';
 import { useTheme } from '../context/ThemeContext';
+import { useToast } from '../context/ToastContext';
 import Banner from '../components/Banner';
 import relevamientoService from '../services/relevamientoService';
 import { becasRequest } from '../services/becasApi';
@@ -52,7 +53,9 @@ const RENAPER_RESET_FIELDS = ['dni_numero', 'dni_sexo', 'apellido', 'nombres', '
 const DYNAMIC_ATTACHMENTS_DIR = `${FileSystemLegacy.documentDirectory || ''}dynamic-question-images`;
 
 export default function RelevamientoDetailScreen({ relevamientoId, onClose, syncStatus = 'synced', syncPendingCount = 0, onSyncPress }) {
-  const { theme, typography } = useTheme();
+  const { theme, typography, isDark } = useTheme();
+  const { showToast, showAlert } = useToast();
+  const Alert = { alert: showAlert };
   const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = useState('RESUMEN');
   const [loading, setLoading] = useState(true);
@@ -79,14 +82,26 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
   const [dniForm, setDniForm] = useState(emptyDniForm);
   const [dynamicValues, setDynamicValues] = useState({});
   const [contactForm, setContactForm] = useState({ celular: '', email_contacto: '' });
-  const [apoderadoForm, setApoderadoForm] = useState({ nombre: '', apellido: '', fecha_nacimiento: '' });
+  const [apoderadoForm, setApoderadoForm] = useState({ nombre: '', apellido: '', dni: '', sexo: '', fecha_nacimiento: '' });
   const [datePickerFieldId, setDatePickerFieldId] = useState(null);
+  const [datePickerValue, setDatePickerValue] = useState(() => new Date());
+  const [datePickerMaximumDate, setDatePickerMaximumDate] = useState(undefined);
+  const datePickerOnSelectRef = useRef(null);
   const [submittingFormulario, setSubmittingFormulario] = useState(false);
   const [changingRelevamientoState, setChangingRelevamientoState] = useState(false);
   const [formularios, setFormularios] = useState([]);
   const [formMode, setFormMode] = useState(false);
   const gpsCoordsRef = useRef(null);
   const gpsCapturePromiseRef = useRef(null);
+  const assignedFormScrollRef = useRef(null);
+
+  useEffect(() => {
+    if (!formMode) return undefined;
+    const frame = requestAnimationFrame(() => {
+      assignedFormScrollRef.current?.scrollTo({ y: 0, animated: false });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [currentStep, formMode]);
 
   useEffect(() => {
     let mounted = true;
@@ -113,6 +128,16 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
         const responseValues = {};
         (result.detail?.campos_extra || []).forEach((item) => {
           responseValues[item.id] = item.valor || '';
+        });
+        const today = new Date();
+        const todayText = `${String(today.getDate()).padStart(2, '0')}/${String(today.getMonth() + 1).padStart(2, '0')}/${today.getFullYear()}`;
+        (result.detail?.campos_definicion || []).forEach((field) => {
+          const tipo = String(field?.tipo || '').toUpperCase();
+          if (!['DATE', 'FECHA'].includes(tipo)) return;
+          const current = String(responseValues[field.id] || '').trim();
+          if (!current || /^(0|1969-12-31|1970-01-01)(T.*)?$/.test(current)) {
+            responseValues[field.id] = todayText;
+          }
         });
         setDynamicValues(responseValues);
         if (result.detail?.backend === 'django_becas') {
@@ -154,6 +179,12 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     { id: 6, title: 'Confirmar', icon: 'checkmark-circle-outline' },
   ];
 
+  const handleDatePickerDraftChange = (event, selectedDate) => {
+    if (event.type !== 'dismissed' && selectedDate && !Number.isNaN(selectedDate.getTime())) {
+      setDatePickerValue(selectedDate);
+    }
+  };
+
   const isAssignedFlow = detail?.source === 'asignado';
 
   const clearPersonIdentityFields = (form = {}) => ({
@@ -167,8 +198,9 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
   });
 
   const updateDniField = (key, value) => {
+    const normalizedValue = key === 'dni_numero' ? cleanDigits(value).slice(0, 8) : value;
     setDniForm((prev) => {
-      const next = { ...prev, [key]: value };
+      const next = { ...prev, [key]: normalizedValue };
       return ['dni_numero', 'dni_sexo'].includes(key) ? clearPersonIdentityFields(next) : next;
     });
     if (RENAPER_RESET_FIELDS.includes(key)) {
@@ -180,6 +212,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
   };
 
   const cleanDigits = (value = '') => String(value || '').replace(/\D/g, '');
+  const isValidDni = (value = '') => /^\d{7,8}$/.test(cleanDigits(value));
 
   const goToAssignedStep = (step) => {
     setCurrentStep(step);
@@ -216,6 +249,9 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
   const normalizeDateText = (value = '') => {
     const text = String(value || '').trim();
     if (!text) return '';
+    // Algunos orígenes representan una fecha vacía como timestamp Unix 0.
+    // En Argentina eso se visualiza como 31/12/1969; no es una fecha cargada.
+    if (/^(0|1969-12-31|1970-01-01)(T.*)?$/.test(text)) return '';
     const iso = text.match(/^(\d{4})[-/](\d{2})[-/](\d{2})/);
     if (iso) return `${iso[3]}/${iso[2]}/${iso[1]}`;
     const local = text.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
@@ -439,14 +475,22 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     return { dni_numero: dniMatch?.[0] || '' };
   };
 
-  const applyDniScanResult = (scanData = {}) => {
+  const dniYaFueRelevado = async (dni) => {
+    const duplicado = await relevamientoService.dniYaRelevado(detail?.id, cleanDigits(dni));
+    if (duplicado) {
+      Alert.alert('DNI ya relevado', 'Este DNI ya fue relevado en este relevamiento.');
+    }
+    return duplicado;
+  };
+
+  const applyDniScanResult = async (scanData = {}) => {
     const nextForm = {};
     Object.entries(scanData).forEach(([key, value]) => {
       if (value !== undefined && value !== null && String(value).trim() !== '') {
         nextForm[key] = String(value).trim();
       }
     });
-    const hasDocumentIdentity = !!cleanDigits(nextForm.dni_numero)
+    const hasDocumentIdentity = isValidDni(nextForm.dni_numero)
       && !!normalizeSex(nextForm.dni_sexo)
       && !!String(nextForm.apellido || '').trim()
       && !!String(nextForm.nombres || '').trim();
@@ -459,6 +503,8 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
       return;
     }
     setDniForm({ ...emptyDniForm, ...nextForm });
+    closeDniScanner();
+    if (await dniYaFueRelevado(nextForm.dni_numero)) return;
     setIdentificationOrigin('scan');
     setRenaperStatus('VALIDADO');
     setRenaperResult({
@@ -474,7 +520,6 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
       source: 'scan',
     });
     setRenaperError('');
-    closeDniScanner();
     goToAssignedStep(2);
   };
 
@@ -688,9 +733,17 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     setCurrentStep(1);
     setMaxVisitedStep(1);
     setDniForm(emptyDniForm);
-    setDynamicValues({});
+    const today = new Date();
+    const todayText = `${String(today.getDate()).padStart(2, '0')}/${String(today.getMonth() + 1).padStart(2, '0')}/${today.getFullYear()}`;
+    const initialDynamicValues = {};
+    (detail?.campos_definicion || []).forEach((field) => {
+      if (['DATE', 'FECHA'].includes(String(field?.tipo || '').toUpperCase())) {
+        initialDynamicValues[field.id] = todayText;
+      }
+    });
+    setDynamicValues(initialDynamicValues);
     setContactForm({ celular: '', email_contacto: '' });
-    setApoderadoForm({ nombre: '', apellido: '', fecha_nacimiento: '' });
+    setApoderadoForm({ nombre: '', apellido: '', dni: '', sexo: '', fecha_nacimiento: '' });
     gpsCoordsRef.current = null;
     setIdentificationOrigin('manual');
     setRenaperStatus('PENDIENTE');
@@ -767,6 +820,37 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     setDetail((current) => ({ ...current, ...(nextDetail || {}), estado }));
   };
 
+  const iniciarRelevamiento = async () => {
+    if (changingRelevamientoState || !detail?.id) return;
+    setChangingRelevamientoState(true);
+    try {
+      const result = await relevamientoService.iniciarRelevamiento(detail.id);
+      if (!result.success) throw new Error(result.error || 'No se pudo iniciar el relevamiento.');
+      applyRelevamientoState(result.detail, 'EN_CURSO');
+      Alert.alert(
+        'Relevamiento iniciado',
+        result.pending
+          ? 'Inicio guardado en el teléfono. Ya podés cargar personas; se sincronizará al recuperar conexión.'
+          : 'Ya podés comenzar a cargar personas.'
+      );
+    } catch (stateError) {
+      Alert.alert('Iniciar relevamiento', stateError?.message || 'No se pudo iniciar el relevamiento.');
+    } finally {
+      setChangingRelevamientoState(false);
+    }
+  };
+
+  const confirmarInicio = () => {
+    Alert.alert(
+      'Iniciar relevamiento',
+      '¿Iniciar el relevamiento de hoy?',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Iniciar', onPress: iniciarRelevamiento },
+      ]
+    );
+  };
+
   const finalizarRelevamiento = async () => {
     if (changingRelevamientoState || !detail?.id) return;
     setChangingRelevamientoState(true);
@@ -828,12 +912,22 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
 
   const submitAssignedFormulario = async () => {
     if (submittingFormulario) return;
+    if (!isValidDni(dniForm.dni_numero)) {
+      showToast({
+        type: 'error',
+        message: 'El DNI debe tener 7 u 8 numeros.',
+      });
+      return;
+    }
+    if (await dniYaFueRelevado(dniForm.dni_numero)) return;
     const missing = [];
     if (!String(contactForm.celular || '').trim()) missing.push('Celular');
     if (!String(contactForm.email_contacto || '').trim()) missing.push('Email');
     if (isMinorDate(dniForm.fecha_nacimiento)) {
       if (!String(apoderadoForm.nombre || '').trim()) missing.push('Nombre del apoderado');
       if (!String(apoderadoForm.apellido || '').trim()) missing.push('Apellido del apoderado');
+      if (![7, 8].includes(cleanDigits(apoderadoForm.dni).length)) missing.push('DNI válido del apoderado');
+      if (!['F', 'M'].includes(normalizeSex(apoderadoForm.sexo))) missing.push('Sexo del apoderado');
       if (!String(apoderadoForm.fecha_nacimiento || '').trim()) missing.push('Fecha de nacimiento del apoderado');
     }
     (detail?.campos_definicion || []).forEach((field) => {
@@ -874,6 +968,8 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
         email_contacto: contactForm.email_contacto.trim(),
         apoderado_nombre: isMinorDate(dniForm.fecha_nacimiento) ? apoderadoForm.nombre.trim() : '',
         apoderado_apellido: isMinorDate(dniForm.fecha_nacimiento) ? apoderadoForm.apellido.trim() : '',
+        apoderado_dni: isMinorDate(dniForm.fecha_nacimiento) ? cleanDigits(apoderadoForm.dni) : '',
+        apoderado_genero: isMinorDate(dniForm.fecha_nacimiento) ? normalizeSex(apoderadoForm.sexo) : '',
         apoderado_fecha_nacimiento: isMinorDate(dniForm.fecha_nacimiento) ? toIsoDate(apoderadoForm.fecha_nacimiento) : null,
         datos_identificacion: {
           dni: cleanDigits(dniForm.dni_numero),
@@ -883,7 +979,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
           sexo: normalizeSex(dniForm.dni_sexo),
           origen: identificationOrigin,
         },
-        validado_renaper: ['scan', 'renaper'].includes(identificationOrigin),
+        validado_renaper: ['scan', 'personas'].includes(identificationOrigin),
         gps_lat: gpsCoords.gps_lat || null,
         gps_lng: gpsCoords.gps_lng || null,
         data,
@@ -924,7 +1020,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
 
   const nextAssignedStep = () => {
     if (currentStep === 1) {
-      Alert.alert('Identificacion', 'Escanea el documento o valida DNI y sexo con RENAPER para continuar.');
+      Alert.alert('Identificacion', 'Escanea el documento o consulta DNI y sexo en Base de Personas para continuar.');
       return;
     }
     if (currentStep === 2) {
@@ -950,10 +1046,22 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
   };
 
   const validateRenaper = async () => {
-    if (!dniForm.dni_numero.trim() || !dniForm.dni_sexo.trim()) {
-      Alert.alert('RENAPER', 'Completa DNI y sexo para validar.');
+    if (!isValidDni(dniForm.dni_numero)) {
+      showToast({
+        type: 'error',
+        message: 'El DNI debe tener 7 u 8 números.',
+      });
       return;
     }
+    if (!['F', 'M'].includes(normalizeSex(dniForm.dni_sexo))) {
+      showToast({
+        type: 'error',
+        message: 'Seleccioná sexo F o M.',
+      });
+      return;
+    }
+
+    if (await dniYaFueRelevado(dniForm.dni_numero)) return;
 
     const netState = await NetInfo.fetch();
     if (!netState.isConnected || netState.isInternetReachable === false) {
@@ -961,8 +1069,8 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
       setIdentificationOrigin('manual');
       setRenaperStatus('ERROR');
       setRenaperResult(null);
-      setRenaperError('Sin conexion. Continua con carga manual; quedara pendiente de validacion RENAPER.');
-      Alert.alert('Sin conexion', 'Continua con la carga manual de la persona. El formulario quedara como No validado RENAPER.');
+      setRenaperError('Sin conexion. Continua con carga manual; quedara pendiente de validacion.');
+      Alert.alert('Sin conexion', 'Continua con la carga manual de la persona. El formulario quedara pendiente de validacion.');
       goToAssignedStep(2);
       return;
     }
@@ -972,7 +1080,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     setRenaperStatus('VALIDANDO');
 
     try {
-      const payload = await becasRequest('/api/becas/renaper/consultar/', {
+      const payload = await becasRequest('/api/becas/personas/consultar/', {
         method: 'POST',
         body: {
           dni: cleanDigits(dniForm.dni_numero),
@@ -980,7 +1088,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
         },
       });
       if (!payload?.success) {
-        throw new Error(payload?.error || 'No se pudo consultar RENAPER.');
+        throw new Error(payload?.error || 'No se pudo consultar Base de Personas.');
       }
 
       const renaperData = payload.data || {};
@@ -993,22 +1101,42 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
         dni_sexo: normalizeSex(renaperData.sexo) || dniForm.dni_sexo,
       };
       setDniForm(nextDniForm);
+      const identidadCompleta = !!String(renaperData.apellido || '').trim()
+        && !!String(renaperData.nombre || '').trim();
       const comparisons = buildRenaperComparisons(renaperData, nextDniForm);
       setRenaperResult({
         data: renaperData,
         comparisons,
         checkedAt: new Date().toISOString(),
       });
-      setIdentificationOrigin('renaper');
-      setRenaperStatus('VALIDADO');
+      setIdentificationOrigin(identidadCompleta ? 'personas' : 'personas_incompleta');
+      setRenaperStatus(identidadCompleta ? 'VALIDADO' : 'PENDIENTE');
+      if (!identidadCompleta) {
+        setRenaperError('Base de Personas devolvio nombre o apellido incompleto. Corregilos manualmente; la identidad quedara pendiente de validacion.');
+        Alert.alert(
+          'Datos incompletos',
+          'Base de Personas no devolvio nombre y apellido por separado. Podes corregirlos en el formulario, pero esta carga no se considerara validada.'
+        );
+      }
       goToAssignedStep(2);
     } catch (e) {
       setDniForm((prev) => clearPersonIdentityFields(prev));
       setIdentificationOrigin('manual');
       setRenaperStatus('ERROR');
       setRenaperResult(null);
-      setRenaperError(e?.message || 'No se pudo consultar RENAPER.');
-      Alert.alert('RENAPER', 'No se pudo validar ahora. Continua con carga manual; quedara pendiente de validacion.');
+      setRenaperError(e?.message || 'No se pudo consultar Base de Personas.');
+      if (e?.status === 404) {
+        Alert.alert(
+          'DNI no encontrado',
+          'Base de Personas no encontró información para ese DNI y sexo. Revisalos o continuá con carga manual; quedará pendiente de validación.'
+        );
+      } else {
+        showToast({
+          type: 'error',
+          title: 'No se pudo realizar la validación online',
+          message: 'Continúe con la carga manual de los datos.',
+        });
+      }
       goToAssignedStep(2);
     } finally {
       setRenaperLoading(false);
@@ -1033,10 +1161,42 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     required = false,
     maximumDate,
   }) => {
-    const isoValue = toIsoDate(value);
-    const pickerValue = isoValue && /^\d{4}-\d{2}-\d{2}$/.test(isoValue)
-      ? new Date(`${isoValue}T12:00:00`)
-      : new Date();
+    const visibleValue = normalizeDateText(value);
+    const isoValue = visibleValue ? toIsoDate(visibleValue) : null;
+    const openPicker = () => {
+      const initialValue = isoValue && /^\d{4}-\d{2}-\d{2}$/.test(isoValue)
+        ? new Date(`${isoValue}T12:00:00`)
+        : new Date();
+      if (Number.isNaN(initialValue.getTime())) {
+        initialValue.setTime(Date.now());
+      }
+      if (!isoValue) initialValue.setHours(12, 0, 0, 0);
+      if (Platform.OS === 'android') {
+        const androidPickerOptions = {
+          value: initialValue,
+          mode: 'date',
+          display: 'calendar',
+          onChange: (event, selectedDate) => {
+            if (event.type === 'dismissed' || !selectedDate) return;
+            const year = selectedDate.getFullYear();
+            const month = String(selectedDate.getMonth() + 1).padStart(2, '0');
+            const day = String(selectedDate.getDate()).padStart(2, '0');
+            onSelect(`${day}/${month}/${year}`);
+          },
+        };
+        if (maximumDate instanceof Date && !Number.isNaN(maximumDate.getTime())) {
+          androidPickerOptions.maximumDate = maximumDate;
+        }
+        DateTimePickerAndroid.open(androidPickerOptions);
+        return;
+      }
+      datePickerOnSelectRef.current = onSelect;
+      setDatePickerMaximumDate(
+        maximumDate instanceof Date && !Number.isNaN(maximumDate.getTime()) ? maximumDate : null
+      );
+      setDatePickerValue(initialValue);
+      setDatePickerFieldId(pickerKey);
+    };
 
     if (Platform.OS === 'web') {
       return (
@@ -1054,30 +1214,13 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`${label}${required ? ', obligatorio' : ''}`}
-          onPress={() => setDatePickerFieldId(pickerKey)}
+          onPress={openPicker}
           style={[styles.textInput, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface, justifyContent: 'center' }]}
         >
           <Text style={{ color: value ? theme.colors.text : theme.colors.textSoft, fontFamily: typography.medium }}>
             {normalizeDateText(value) || 'Seleccionar fecha'}
           </Text>
         </Pressable>
-        {datePickerFieldId === pickerKey ? (
-          <DateTimePicker
-            value={pickerValue}
-            mode="date"
-            display="default"
-            maximumDate={maximumDate}
-            onChange={(event, selectedDate) => {
-              setDatePickerFieldId(null);
-              if (event.type !== 'dismissed' && selectedDate) {
-                const year = selectedDate.getFullYear();
-                const month = String(selectedDate.getMonth() + 1).padStart(2, '0');
-                const day = String(selectedDate.getDate()).padStart(2, '0');
-                onSelect(`${day}/${month}/${year}`);
-              }
-            }}
-          />
-        ) : null}
       </>
     );
   };
@@ -1087,6 +1230,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     const options = parseOptions(field.opciones);
     const setValue = (nextValue) => setDynamicValues((prev) => ({ ...prev, [field.id]: nextValue }));
     const tipo = String(field.tipo || '').toUpperCase();
+    const isObservationField = /observaci[oó]n|observaciones/i.test(String(field.etiqueta || field.texto || ''));
 
     if (['SELECTOR', 'SELECT', 'CHOICE'].includes(tipo)) {
       return (
@@ -1221,11 +1365,11 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
         <TextInput
           value={value}
           onChangeText={setValue}
-          multiline={field.tipo === 'textarea'}
+          multiline={tipo === 'TEXTAREA' || isObservationField}
           keyboardType={tipo === 'INT' || tipo === 'NUMERO' ? 'numeric' : 'default'}
           style={[
             styles.textInput,
-            tipo === 'TEXTAREA' && styles.textArea,
+            (tipo === 'TEXTAREA' || isObservationField) && styles.textArea,
             { color: theme.colors.text, borderColor: theme.colors.border, backgroundColor: theme.colors.surface },
           ]}
           placeholderTextColor={theme.colors.textSoft}
@@ -1241,8 +1385,14 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     const requisitos = definicion.requisitos || [];
     return {
       globales,
-      segmento: requisitos.filter((field) => Number(field.orden || 0) < 100),
-      subsegmento: requisitos.filter((field) => Number(field.orden || 0) >= 100),
+      segmento: requisitos.filter((field) => (
+        field.alcance === 'segmento'
+        || (!field.alcance && Number(field.orden || 0) < 100)
+      )),
+      subsegmento: requisitos.filter((field) => (
+        field.alcance === 'subsegmento'
+        || (!field.alcance && Number(field.orden || 0) >= 100)
+      )),
     };
   };
 
@@ -1297,6 +1447,35 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
                   placeholder="Apellido del apoderado"
                   placeholderTextColor={theme.colors.textSoft}
                 />
+              </View>
+              <View style={styles.formGroup}>
+                <Text style={[styles.inputLabel, { color: theme.colors.text, fontFamily: typography.semibold }]}>DNI *</Text>
+                <TextInput
+                  value={apoderadoForm.dni}
+                  onChangeText={(value) => setApoderadoForm((prev) => ({ ...prev, dni: cleanDigits(value).slice(0, 8) }))}
+                  keyboardType="number-pad"
+                  maxLength={8}
+                  style={[styles.textInput, { color: theme.colors.text, borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}
+                  placeholder="DNI del apoderado"
+                  placeholderTextColor={theme.colors.textSoft}
+                />
+              </View>
+              <View style={styles.formGroup}>
+                <Text style={[styles.inputLabel, { color: theme.colors.text, fontFamily: typography.semibold }]}>Sexo *</Text>
+                <View style={[styles.sexSegmented, { backgroundColor: theme.colors.surfaceAlt, borderColor: theme.colors.border }]}>
+                  {['F', 'M'].map((option) => {
+                    const selected = apoderadoForm.sexo === option;
+                    return (
+                      <Pressable
+                        key={option}
+                        onPress={() => setApoderadoForm((prev) => ({ ...prev, sexo: option }))}
+                        style={[styles.sexSegment, selected && { backgroundColor: theme.colors.primary }]}
+                      >
+                        <Text style={[styles.sexSegmentText, { color: selected ? '#FFFFFF' : theme.colors.text, fontFamily: selected ? typography.bold : typography.medium }]}>{option}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
               </View>
               <View style={styles.formGroup}>
                 <Text style={[styles.inputLabel, { color: theme.colors.text, fontFamily: typography.semibold }]}>Fecha de nacimiento *</Text>
@@ -1492,11 +1671,10 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
                 Identificacion
               </Text>
               <Text style={[styles.identitySubtitle, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>
-                Documento y sexo para RENAPER
+                Escanea el documento o consulta por DNI y sexo
               </Text>
             </View>
           </View>
-
           <TouchableOpacity
             activeOpacity={0.88}
             onPress={openDniScanner}
@@ -1525,6 +1703,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
                 value={dniForm.dni_numero}
                 onChangeText={(value) => updateDniField('dni_numero', value)}
                 keyboardType="number-pad"
+                maxLength={8}
                 style={[styles.identityTextInput, { color: theme.colors.text, fontFamily: typography.semibold }]}
                 placeholder="Ej: 30111222"
                 placeholderTextColor={theme.colors.textSoft}
@@ -1534,16 +1713,13 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
           <View style={styles.formGroup}>
             <Text style={[styles.inputLabel, { color: theme.colors.text, fontFamily: typography.semibold }]}>Sexo DNI *</Text>
             <View style={[styles.sexSegmented, { backgroundColor: theme.colors.surfaceAlt, borderColor: theme.colors.border }]}>
-              {['M', 'F', 'X'].map((option) => {
+              {['F', 'M'].map((option) => {
                 const selected = dniForm.dni_sexo === option;
                 return (
                   <Pressable
                     key={option}
                     onPress={() => updateDniField('dni_sexo', option)}
-                    style={[
-                      styles.sexSegment,
-                      selected && { backgroundColor: theme.colors.primary },
-                    ]}
+                    style={[styles.sexSegment, selected && { backgroundColor: theme.colors.primary }]}
                   >
                     <Text style={[styles.sexSegmentText, { color: selected ? '#FFFFFF' : theme.colors.text, fontFamily: selected ? typography.bold : typography.medium }]}>
                       {option}
@@ -1567,7 +1743,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
               )}
             </View>
             <Text style={[styles.scanActionText, { fontFamily: typography.bold }]}>
-              {renaperLoading ? 'VALIDANDO...' : 'VALIDAR CON RENAPER'}
+              {renaperLoading ? 'CONSULTANDO...' : 'SIGUIENTE'}
             </Text>
             <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
           </TouchableOpacity>
@@ -1581,10 +1757,14 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     }
 
     if (currentStep === 2) {
-      const isManualIdentity = !['scan', 'renaper'].includes(identificationOrigin);
+      const isManualIdentity = !['scan', 'personas'].includes(identificationOrigin);
       const originLabel = identificationOrigin === 'scan'
         ? 'Datos leidos del documento'
-        : (identificationOrigin === 'renaper' ? 'Datos devueltos por RENAPER' : 'Carga manual sin validacion RENAPER');
+        : (identificationOrigin === 'personas'
+          ? 'Datos completos devueltos por Base de Personas'
+          : (identificationOrigin === 'personas_incompleta'
+            ? 'Datos incompletos de Base de Personas - pendiente de validacion'
+            : 'Carga manual sin validacion'));
       const statusColor = isManualIdentity ? theme.colors.warning : theme.colors.success;
       const statusIcon = isManualIdentity ? 'alert-circle-outline' : 'checkmark-circle-outline';
 
@@ -1679,9 +1859,9 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
         <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Celular</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{contactForm.celular || '-'}</Text></View>
         <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Email</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{contactForm.email_contacto || '-'}</Text></View>
         {isMinorDate(dniForm.fecha_nacimiento) ? (
-          <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Apoderado</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{`${apoderadoForm.apellido} ${apoderadoForm.nombre}`.trim() || '-'}</Text></View>
+          <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Apoderado</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{`${apoderadoForm.apellido} ${apoderadoForm.nombre} · DNI ${apoderadoForm.dni} · ${apoderadoForm.sexo}`.trim()}</Text></View>
         ) : null}
-        <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>RENAPER</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{renaperStatus}</Text></View>
+        <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Validacion</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{renaperStatus}</Text></View>
         <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Origen identidad</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{identificationOrigin}</Text></View>
         <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Direccion</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{readValue('direccion_objetivo')}</Text></View>
       </View>
@@ -1752,6 +1932,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
         </View>
 
         <ScrollView
+          ref={assignedFormScrollRef}
           contentContainerStyle={[
             styles.assignedContent,
             {
@@ -1802,6 +1983,66 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
           </View>
         ) : null}
 
+        <Modal
+          visible={!!datePickerFieldId}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setDatePickerFieldId(null)}
+        >
+          <View style={styles.datePickerOverlay}>
+            <View style={[styles.datePickerCard, { backgroundColor: theme.colors.surfaceRaised, borderColor: theme.colors.border }]}>
+              <View style={styles.datePickerHeader}>
+                <Ionicons name="calendar-outline" size={22} color={theme.colors.primary} />
+                <Text style={[styles.datePickerTitle, { color: theme.colors.text, fontFamily: typography.bold }]}>Seleccionar fecha</Text>
+              </View>
+              {datePickerMaximumDate ? (
+                <DateTimePicker
+                  key={`bounded-${datePickerFieldId}`}
+                  value={datePickerValue}
+                  mode="date"
+                  display="inline"
+                  maximumDate={datePickerMaximumDate}
+                  themeVariant={isDark ? 'dark' : 'light'}
+                  textColor={theme.colors.text}
+                  onChange={handleDatePickerDraftChange}
+                  style={styles.datePickerControl}
+                />
+              ) : (
+                <DateTimePicker
+                  key={`unbounded-${datePickerFieldId}`}
+                  value={datePickerValue}
+                  mode="date"
+                  display="inline"
+                  themeVariant={isDark ? 'dark' : 'light'}
+                  textColor={theme.colors.text}
+                  onChange={handleDatePickerDraftChange}
+                  style={styles.datePickerControl}
+                />
+              )}
+              <View style={styles.datePickerActions}>
+                <Pressable
+                  onPress={() => setDatePickerFieldId(null)}
+                  style={[styles.datePickerButton, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}
+                >
+                  <Text style={[styles.datePickerCancelText, { color: theme.colors.text, fontFamily: typography.bold }]}>CANCELAR</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    const year = datePickerValue.getFullYear();
+                    const month = String(datePickerValue.getMonth() + 1).padStart(2, '0');
+                    const day = String(datePickerValue.getDate()).padStart(2, '0');
+                    datePickerOnSelectRef.current?.(`${day}/${month}/${year}`);
+                    setDatePickerFieldId(null);
+                  }}
+                  style={[styles.datePickerButton, { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary }]}
+                >
+                  <Text style={[styles.datePickerAcceptText, { fontFamily: typography.bold }]}>ACEPTAR</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
+
         {scannerVisible ? (
           <Modal visible transparent animationType="fade" onRequestClose={closeDniScanner}>
             <View style={styles.barcodeModalOverlay}>
@@ -1844,7 +2085,9 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     const today = new Date();
     const todayLocal = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
     const isAssignedToday = !!assignedDate && assignedDate === todayLocal;
-    const canAddPerson = isAssignedToday && !['FINALIZANDO', 'FINALIZADO', 'EN_REVISION', 'TERMINADO'].includes(relevamientoEstado);
+    const canStartRelevamiento = isAssignedToday && relevamientoEstado === 'ASIGNADO';
+    const canAddPerson = isAssignedToday && relevamientoEstado === 'EN_CURSO';
+    const canFinalizeRelevamiento = isAssignedToday && relevamientoEstado === 'EN_CURSO';
 
     return (
       <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
@@ -1888,6 +2131,19 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
                 <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Fecha límite</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{formatDate(detail?.fecha_asignada || detail?.created_at)}</Text></View>
                 <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Estado</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{relevamientoStatusLabel(detail?.estado)}</Text></View>
               </View>
+
+              {canStartRelevamiento ? (
+                <TouchableOpacity
+                  disabled={changingRelevamientoState}
+                  onPress={confirmarInicio}
+                  style={[styles.primaryAction, { backgroundColor: theme.colors.primary }, changingRelevamientoState && styles.stateActionDisabled]}
+                >
+                  {changingRelevamientoState
+                    ? <ActivityIndicator size="small" color="#FFFFFF" />
+                    : <Ionicons name="play-circle-outline" size={20} color="#FFFFFF" />}
+                  <Text style={[styles.primaryActionText, { fontFamily: typography.bold }]}>INICIAR RELEVAMIENTO</Text>
+                </TouchableOpacity>
+              ) : null}
 
               {canAddPerson ? <TouchableOpacity
                 onPress={() => {
@@ -1965,7 +2221,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
                 )}
               </View>
 
-              {relevamientoEstado === 'EN_CURSO' ? (
+              {canFinalizeRelevamiento ? (
                 <TouchableOpacity
                   disabled={changingRelevamientoState}
                   onPress={confirmarFinalizacion}
@@ -3048,6 +3304,40 @@ const styles = StyleSheet.create({
     fontSize: fontSizes.xs,
     marginRight: 6,
   },
+  datePickerOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+    backgroundColor: 'rgba(15, 23, 42, 0.48)',
+  },
+  datePickerCard: {
+    width: '100%',
+    maxWidth: 430,
+    alignSelf: 'center',
+    borderRadius: radii.xl,
+    borderWidth: 1,
+    padding: 18,
+    shadowColor: '#000000',
+    shadowOpacity: 0.2,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 9 },
+    elevation: 12,
+  },
+  datePickerHeader: { flexDirection: 'row', alignItems: 'center', gap: 9, marginBottom: 8 },
+  datePickerTitle: { fontSize: fontSizes.base },
+  datePickerControl: { width: '100%', height: 360, alignSelf: 'center' },
+  datePickerActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 10 },
+  datePickerButton: {
+    minWidth: 104,
+    minHeight: 44,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+  },
+  datePickerCancelText: { fontSize: fontSizes.xs },
+  datePickerAcceptText: { color: '#FFFFFF', fontSize: fontSizes.xs },
   barcodeModalOverlay: {
     flex: 1,
     justifyContent: 'center',

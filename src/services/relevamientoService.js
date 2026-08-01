@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as SQLite from 'expo-sqlite';
+import { Platform } from 'react-native';
 import { becasRequest, becasUploadFile, getStoredBecasUser } from './becasApi';
 
 const LOCAL_RELEVAMIENTOS_KEY = 'field_relevamientos_records';
@@ -108,6 +109,8 @@ const normalizeDjangoField = (field = {}, scope = 'globales') => ({
   requerido: !!field.obligatorio,
   obligatorio: !!field.obligatorio,
   orden: field.orden || 0,
+  alcance: field.alcance || null,
+  subsegmento_id: field.subsegmento_id ?? null,
 });
 
 const mapDjangoRelevamientoDetail = (row = {}) => {
@@ -505,6 +508,13 @@ const persistLocalFileIfNeeded = async ({ uri, fileName, mimeType, size }) => {
     return { uri, mimeType, size };
   }
 
+  // En web los URI del selector son blob/data URI del navegador y no existe
+  // el filesystem nativo de Expo. Se conservan tal como vienen para la carga
+  // online; la persistencia offline de adjuntos es una capacidad móvil.
+  if (Platform.OS === 'web') {
+    return { uri, mimeType: mimeType || inferMimeType(fileName || uri), size };
+  }
+
   await ensureAttachmentsDir();
   const sourceInfo = await FileSystem.getInfoAsync(uri, { size: true });
   const isContentUri = String(uri).startsWith('content://');
@@ -859,7 +869,12 @@ const readQueue = async () => {
     `SELECT local_id, op_id, status, type, payload_json, created_at, started_at, ack_at, server_id, retry_count, next_retry_at, last_error, last_error_code
      FROM ${SQLITE_OUTBOX_TABLE}
      WHERE status = 'PENDING'
-     ORDER BY created_at ASC`
+     ORDER BY created_at ASC,
+       CASE
+         WHEN type = 'iniciar_relevamiento' THEN 0
+         WHEN type = 'finalizar_relevamiento' THEN 2
+         ELSE 1
+       END ASC`
   );
   const ownerId = await getCurrentOwnerId();
   return rows.map(mapOutboxRow).filter((record) => belongsToOwner(record, ownerId));
@@ -918,6 +933,8 @@ const syncRemoteBecasFormulario = async (operation) => {
         email_contacto: payload.email_contacto,
         apoderado_nombre: payload.apoderado_nombre || '',
         apoderado_apellido: payload.apoderado_apellido || '',
+        apoderado_dni: payload.apoderado_dni || '',
+        apoderado_genero: payload.apoderado_genero || '',
         apoderado_fecha_nacimiento: payload.apoderado_fecha_nacimiento || null,
         gps_lat: payload.gps_lat || null,
         gps_lng: payload.gps_lng || null,
@@ -981,7 +998,12 @@ const updateCachedRelevamientoState = async (relevamientoId, estado, remoteRow =
 
 const syncRelevamientoAction = async (operation) => {
   const relevamientoId = operation?.payload?.relevamiento_id;
-  const action = operation?.type === 'finalizar_relevamiento' ? 'finalizar' : 'reabrir';
+  const actions = {
+    iniciar_relevamiento: 'iniciar',
+    finalizar_relevamiento: 'finalizar',
+    reabrir_relevamiento: 'reabrir',
+  };
+  const action = actions[operation?.type];
   const row = await becasRequest(`/api/becas/relevamientos/${relevamientoId}/${action}/`, {
     method: 'POST',
     body: { capturado_en: operation?.payload?.capturado_en || operation?.created_at || nowIso() },
@@ -1004,6 +1026,21 @@ const hasPendingFormularioOperations = async (relevamientoId) => {
     const payload = safeParse(row.payload_json, {});
     return String(payload?.relevamiento_id || payload?.relevamientoId || '') === String(relevamientoId);
   });
+};
+
+const hasBlockingStartOperation = async (relevamientoId) => {
+  await ensureSqliteReady();
+  const db = await getSqliteDb();
+  const row = await db.getFirstAsync(
+    `SELECT 1
+     FROM ${SQLITE_OUTBOX_TABLE}
+     WHERE type = 'iniciar_relevamiento'
+       AND status != 'SYNCED'
+       AND json_extract(payload_json, '$.relevamiento_id') = ?
+     LIMIT 1`,
+    Number(relevamientoId) || String(relevamientoId)
+  );
+  return !!row;
 };
 
 const enqueueRelevamientoAction = async (relevamientoId, type) => {
@@ -1046,7 +1083,7 @@ const enqueueRelevamientoAction = async (relevamientoId, type) => {
 };
 
 const syncSingleOperation = async (operation) => {
-  if (operation?.type === 'finalizar_relevamiento' || operation?.type === 'reabrir_relevamiento') {
+  if (['iniciar_relevamiento', 'finalizar_relevamiento', 'reabrir_relevamiento'].includes(operation?.type)) {
     return syncRelevamientoAction(operation);
   }
   if (operation?.payload?.backend === 'django_becas') {
@@ -1382,6 +1419,12 @@ const relevamientoService = {
       ) {
         continue;
       }
+      if (
+        operation?.type === 'insert_relevamiento'
+        && await hasBlockingStartOperation(operation?.payload?.relevamiento_id)
+      ) {
+        continue;
+      }
 
       const acquired = await markOutboxOperationInFlight(operation.local_id);
       if (!acquired) {
@@ -1580,6 +1623,42 @@ const relevamientoService = {
         offline: isNetworkError(error),
         error: cachedRecords.length ? '' : (error?.message || 'No se pudieron cargar los formularios'),
       };
+    }
+  },
+
+  async dniYaRelevado(relevamientoId, dni) {
+    const normalizedDni = String(dni || '').replace(/\D/g, '');
+    if (!relevamientoId || !normalizedDni) return false;
+    const result = await this.getBecasFormularios(relevamientoId);
+    return (result.records || []).some((formulario) => {
+      const formularioDni = formulario?.ciudadano_dni || formulario?.datos_identificacion?.dni || '';
+      return String(formularioDni).replace(/\D/g, '') === normalizedDni;
+    });
+  },
+
+  async iniciarRelevamiento(relevamientoId) {
+    if (!relevamientoId) return { success: false, error: 'ID invalido' };
+    const cached = await readCachedRemoteRecord(relevamientoId);
+    const assignedDate = String(cached?.payload?.fecha_asignada || '').slice(0, 10);
+    const localToday = new Date();
+    const todayText = `${localToday.getFullYear()}-${String(localToday.getMonth() + 1).padStart(2, '0')}-${String(localToday.getDate()).padStart(2, '0')}`;
+    if (!assignedDate || assignedDate !== todayText) {
+      return { success: false, error: 'Solo se puede iniciar el relevamiento en la fecha asignada.' };
+    }
+    const connectivity = await getConnectivitySnapshot();
+    if (!connectivity.hasInternet) {
+      await enqueueRelevamientoAction(relevamientoId, 'iniciar_relevamiento');
+      const detail = await updateCachedRelevamientoState(relevamientoId, 'EN_CURSO');
+      return { success: true, estado: 'EN_CURSO', detail, offline: true, pending: true };
+    }
+    try {
+      const row = await becasRequest(`/api/becas/relevamientos/${relevamientoId}/iniciar/`, {
+        method: 'POST',
+      });
+      const detail = await updateCachedRelevamientoState(relevamientoId, 'EN_CURSO', row);
+      return { success: true, estado: 'EN_CURSO', detail };
+    } catch (error) {
+      return { success: false, error: error?.message || 'No se pudo iniciar el relevamiento.' };
     }
   },
 

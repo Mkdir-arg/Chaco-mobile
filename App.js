@@ -8,6 +8,7 @@ import NetInfo from '@react-native-community/netinfo';
 
 import { ThemeProvider, useTheme } from './src/context/ThemeContext';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
+import { ToastProvider, useToast } from './src/context/ToastContext';
 import SplashScreen from './src/screens/SplashScreen';
 import LoginScreen from './src/screens/LoginScreen';
 import HomeScreen from './src/screens/HomeScreen';
@@ -25,6 +26,8 @@ const NEW_RELEVAMIENTO_STATES = ['ASIGNADO'];
 
 function AppContent() {
   const { theme, isDark } = useTheme();
+  const { showAlert } = useToast();
+  const Alert = { alert: showAlert };
   const { user, isAuthenticated, loading: authLoading, logout } = useAuth();
   const displayName = user?.username || user?.nombre || 'Usuario';
   const [fontsLoaded] = useFonts({
@@ -321,7 +324,9 @@ export default function App() {
       <SafeAreaProvider>
         <AuthProvider>
           <ThemeProvider>
-            <AppContent />
+            <ToastProvider>
+              <AppContent />
+            </ToastProvider>
           </ThemeProvider>
         </AuthProvider>
       </SafeAreaProvider>
