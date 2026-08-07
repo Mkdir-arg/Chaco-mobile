@@ -135,7 +135,7 @@ export default function RelevamientosScreen({ onOpenRelevamiento }) {
     const relevamientosDesdeHoy = useMemo(() => {
         const today = dateKey(new Date());
         return relevamientos
-            .filter((item) => dateKey(item.fecha_asignada || item.created_at) >= today)
+            .filter((item) => dateKey(item.fecha_hasta || item.fecha_asignada || item.created_at) >= today)
             .sort((a, b) => (
                 dateKey(a.fecha_asignada || a.created_at)
                     .localeCompare(dateKey(b.fecha_asignada || b.created_at))
@@ -367,7 +367,7 @@ function RelevamientoRow({ item, index, total, formatDate, onOpenRelevamiento, t
                         {valueOrDash(item.convocatoria_nombre || item.descripcion || item.observaciones)}
                     </Text>
                 </View>
-                <Badge label={progressLabel(item)} tone={progressBadge(item)} typography={typography} />
+                <Badge label={item.pausado ? 'Pausado' : progressLabel(item)} tone={item.pausado ? BADGE.warning : progressBadge(item)} typography={typography} />
             </View>
 
             <View style={styles.rowGrid}>
@@ -384,8 +384,8 @@ function RelevamientoRow({ item, index, total, formatDate, onOpenRelevamiento, t
                     typography={typography}
                 />
                 <MetaCell
-                    label="Fecha límite"
-                    value={formatDate(item.fecha_asignada || item.created_at || item.fecha_finalizado)}
+                    label="Vigencia"
+                    value={`${formatDate(item.fecha_asignada || item.created_at)} al ${formatDate(item.fecha_hasta || item.fecha_asignada || item.created_at)}`}
                     icon="calendar-outline"
                     typography={typography}
                 />

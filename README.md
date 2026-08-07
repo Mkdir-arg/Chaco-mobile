@@ -66,11 +66,11 @@ En términos funcionales, el backoffice crea y asigna relevamientos a un usuario
 
 ```json
 "extra": {
-  "djangoApiUrl": "http://10.5.6.209"
+  "djangoApiUrl": "https://datanach.ecomdev.ar"
 }
 ```
 
-Cada ruta se construye agregándola a esa base; por ejemplo, el login termina llamando a `http://10.5.6.209/api/becas/auth/token/`. Como no se especifica un puerto, se usa el puerto estándar 80 para HTTP.
+Cada ruta se construye agregándola a esa base; por ejemplo, el login termina llamando a `https://datanach.ecomdev.ar/api/becas/auth/token/`. Como no se especifica un puerto, se usa el puerto estándar 443 para HTTPS.
 
 Antes de generar el APK, `djangoApiUrl` debe apuntar al entorno correcto:
 

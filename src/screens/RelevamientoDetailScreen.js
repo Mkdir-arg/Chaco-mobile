@@ -982,6 +982,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
         validado_renaper: ['scan', 'personas'].includes(identificationOrigin),
         gps_lat: gpsCoords.gps_lat || null,
         gps_lng: gpsCoords.gps_lng || null,
+        _cupo_maximo: Number(detail?.cupo_maximo || 0),
         data,
         campos_definicion: detail?.campos_definicion || [],
         finalizar: false,
@@ -1080,7 +1081,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     setRenaperStatus('VALIDANDO');
 
     try {
-      const payload = await becasRequest('/api/becas/personas/consultar/', {
+      const payload = await becasRequest('/api/becas/renaper/consultar/', {
         method: 'POST',
         body: {
           dni: cleanDigits(dniForm.dni_numero),
@@ -2080,14 +2081,18 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
 
   if (isAssignedFlow) {
     const formulariosCount = formularios.length || Number(detail?.formularios_count || detail?.personas_count || 0);
+    const cupoMaximo = Number(detail?.cupo_maximo || 0);
+    const cupoCompleto = cupoMaximo > 0 && formulariosCount >= cupoMaximo;
     const relevamientoEstado = String(detail?.estado || '').toUpperCase();
     const assignedDate = String(detail?.fecha_asignada || '').slice(0, 10);
+    const assignedUntil = String(detail?.fecha_hasta || assignedDate).slice(0, 10);
     const today = new Date();
     const todayLocal = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-    const isAssignedToday = !!assignedDate && assignedDate === todayLocal;
-    const canStartRelevamiento = isAssignedToday && relevamientoEstado === 'ASIGNADO';
-    const canAddPerson = isAssignedToday && relevamientoEstado === 'EN_CURSO';
-    const canFinalizeRelevamiento = isAssignedToday && relevamientoEstado === 'EN_CURSO';
+    const isWithinAssignedPeriod = !!assignedDate && todayLocal >= assignedDate && todayLocal <= assignedUntil;
+    const isPaused = Boolean(detail?.pausado);
+    const canStartRelevamiento = !isPaused && isWithinAssignedPeriod && relevamientoEstado === 'ASIGNADO';
+    const canAddPerson = !isPaused && !cupoCompleto && isWithinAssignedPeriod && relevamientoEstado === 'EN_CURSO';
+    const canFinalizeRelevamiento = !isPaused && isWithinAssignedPeriod && relevamientoEstado === 'EN_CURSO';
 
     return (
       <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
@@ -2109,6 +2114,14 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
             <Text style={{ color: theme.colors.danger, fontFamily: typography.semibold }}>{error}</Text>
           ) : (
             <>
+              {isPaused ? (
+                <View style={[styles.card, { backgroundColor: '#FFFBEB', borderColor: '#F59E0B' }]}>
+                  <Text style={{ color: '#92400E', fontFamily: typography.bold }}>RELEVAMIENTO PAUSADO</Text>
+                  <Text style={[styles.stepHelp, { color: '#92400E', fontFamily: typography.regular }]}>
+                    {detail?.pausa_motivo || 'La carga fue pausada por el administrador del programa.'}
+                  </Text>
+                </View>
+              ) : null}
               <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
                 <View style={styles.detailHeaderRow}>
                   <View style={styles.detailHeaderCopy}>
@@ -2120,15 +2133,15 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
                     </Text>
                   </View>
                   <View style={styles.countPill}>
-                    <Text style={[styles.countPillValue, { fontFamily: typography.bold }]}>{formulariosCount}</Text>
-                    <Text style={[styles.countPillLabel, { fontFamily: typography.semibold }]}>personas</Text>
+                    <Text style={[styles.countPillValue, { fontFamily: typography.bold }]}>{formulariosCount}{cupoMaximo > 0 ? `/${cupoMaximo}` : ''}</Text>
+                    <Text style={[styles.countPillLabel, { fontFamily: typography.semibold }]}>cupo</Text>
                   </View>
                 </View>
 
                 <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Convocatoria</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{readValue('convocatoria_nombre', 'descripcion')}</Text></View>
                 <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Segmento</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{readValue('segmento')}</Text></View>
-                <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Zona</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{readValue('zona', 'localidad', 'direccion_objetivo')}</Text></View>
-                <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Fecha límite</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{formatDate(detail?.fecha_asignada || detail?.created_at)}</Text></View>
+                <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Localidad asignada</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{readValue('localidad', 'zona', 'direccion_objetivo')}</Text></View>
+                <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Vigencia</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{formatDate(detail?.fecha_asignada || detail?.created_at)} al {formatDate(detail?.fecha_hasta || detail?.fecha_asignada || detail?.created_at)}</Text></View>
                 <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Estado</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{relevamientoStatusLabel(detail?.estado)}</Text></View>
               </View>
 
@@ -2156,9 +2169,15 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
                 <Ionicons name="person-add-outline" size={18} color="#FFFFFF" />
                 <Text style={[styles.primaryActionText, { fontFamily: typography.bold }]}>AGREGAR PERSONA</Text>
               </TouchableOpacity> : null}
-              {!isAssignedToday ? (
+              {cupoCompleto ? (
+                <View style={[styles.card, { backgroundColor: '#FEF2F2', borderColor: '#EF4444' }]}>
+                  <Text style={{ color: '#991B1B', fontFamily: typography.bold }}>CUPO COMPLETO</Text>
+                  <Text style={[styles.stepHelp, { color: '#991B1B', fontFamily: typography.regular }]}>Se alcanzó el máximo de {cupoMaximo} personas. No se pueden iniciar nuevas cargas.</Text>
+                </View>
+              ) : null}
+              {!isWithinAssignedPeriod ? (
                 <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-                  <Text style={[styles.row, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>Solo se pueden cargar personas en la fecha asignada del relevamiento.</Text>
+                  <Text style={[styles.row, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>Solo se pueden cargar personas dentro del período asignado al relevamiento.</Text>
                 </View>
               ) : null}
 

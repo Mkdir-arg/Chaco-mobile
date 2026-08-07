@@ -36,14 +36,12 @@ export default function HomeScreen({
             next.setDate(today.getDate() + index);
             return dateKey(next);
         });
-        const assigned = assignedRelevamientos
-            .map((item) => assignmentDateKey(item))
-            .filter(Boolean);
+        const assigned = assignedRelevamientos.flatMap((item) => assignmentDateKeys(item));
         return Array.from(new Set([...base, ...assigned])).sort();
     }, [assignedRelevamientos]);
 
     const selectedRelevamientos = useMemo(
-        () => assignedRelevamientos.filter((item) => assignmentDateKey(item) === selectedDateKey),
+        () => assignedRelevamientos.filter((item) => assignmentIncludesDate(item, selectedDateKey)),
         [assignedRelevamientos, selectedDateKey]
     );
     const hasSelectedRelevamientos = selectedRelevamientos.length > 0;
@@ -85,7 +83,7 @@ export default function HomeScreen({
                         {calendarDays.map((key) => {
                             const selected = selectedDateKey === key;
                             const isToday = key === todayDateKey;
-                            const dayRelevamientos = assignedRelevamientos.filter((item) => assignmentDateKey(item) === key);
+                            const dayRelevamientos = assignedRelevamientos.filter((item) => assignmentIncludesDate(item, key));
                             const count = dayRelevamientos.length;
                             const hasOverdue = key < todayDateKey && dayRelevamientos.some((item) => isOverdueRelevamiento(item, todayDateKey));
                             const label = formatCalendarLabel(key);
@@ -151,6 +149,9 @@ function RelevamientoCard({ item, typography, overdue, onPress }) {
                 <Text style={[styles.actionTitle, { fontFamily: typography.bold }]} numberOfLines={1}>
                     {item.titulo || item.nombre || 'Relevamiento'}
                 </Text>
+                <Text style={[styles.actionPeriod, { fontFamily: typography.semibold }]} numberOfLines={1}>
+                    {formatAssignmentPeriod(item)}
+                </Text>
                 <View style={styles.actionMetaRow}>
                     <Text style={[styles.actionDescription, { fontFamily: typography.regular }]} numberOfLines={1}>
                         {item.zona || item.localidad || item.direccion_objetivo || 'Sin zona'}
@@ -171,14 +172,51 @@ function assignmentDateKey(item = {}) {
     return dateKey(item.fecha_asignada || item.created_at || item.relevado_at);
 }
 
+function assignmentEndDateKey(item = {}) {
+    return dateKey(item.fecha_hasta || item.fecha_asignada || item.created_at || item.relevado_at);
+}
+
+function formatDateKey(key = '') {
+    const [year, month, day] = String(key).split('-');
+    return year && month && day ? `${day}/${month}/${year}` : 'Sin fecha';
+}
+
+function formatAssignmentPeriod(item = {}) {
+    const start = assignmentDateKey(item);
+    const end = assignmentEndDateKey(item);
+    if (!start) return 'Sin fecha asignada';
+    if (!end || start === end) return formatDateKey(start);
+    return `${formatDateKey(start)} al ${formatDateKey(end)}`;
+}
+
+function assignmentIncludesDate(item = {}, key = '') {
+    const start = assignmentDateKey(item);
+    const end = assignmentEndDateKey(item);
+    return !!start && !!end && key >= start && key <= end;
+}
+
+function assignmentDateKeys(item = {}) {
+    const startKey = assignmentDateKey(item);
+    const endKey = assignmentEndDateKey(item);
+    if (!startKey || !endKey || endKey < startKey) return startKey ? [startKey] : [];
+    const keys = [];
+    const cursor = new Date(`${startKey}T12:00:00`);
+    const end = new Date(`${endKey}T12:00:00`);
+    while (cursor <= end) {
+        keys.push(dateKey(cursor));
+        cursor.setDate(cursor.getDate() + 1);
+    }
+    return keys;
+}
+
 function isOpenRelevamiento(item = {}) {
     const status = String(item.estado || '').toUpperCase();
     return status === 'ASIGNADO' || status === 'EN_CURSO' || status === 'FINALIZANDO';
 }
 
 function isOverdueRelevamiento(item = {}, todayKey = '') {
-    const assignedKey = assignmentDateKey(item);
-    return !!assignedKey && assignedKey < todayKey && isOpenRelevamiento(item);
+    const endKey = assignmentEndDateKey(item);
+    return !!endKey && endKey < todayKey && isOpenRelevamiento(item);
 }
 
 function formatCalendarLabel(key) {
@@ -369,7 +407,13 @@ const styles = StyleSheet.create({
     actionTitle: {
         color: UI.heading,
         fontSize: fontSizes.base,
-        marginBottom: 8,
+        marginBottom: 3,
+    },
+    actionPeriod: {
+        color: UI.body,
+        fontSize: fontSizes.xs,
+        lineHeight: 17,
+        marginBottom: 6,
     },
     actionMetaRow: {
         flexDirection: 'row',

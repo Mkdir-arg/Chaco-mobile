@@ -19,6 +19,8 @@ const BACKGROUND_SYNC_WAIT_MS = 1500;
 const ERROR_MISSING_LOCAL_FILE = 'ERROR_MISSING_LOCAL_FILE';
 const ERROR_ATTACHMENTS_UPLOAD = 'ERROR_ATTACHMENTS_UPLOAD';
 const ERROR_REMOTE_SCHEMA = 'ERROR_REMOTE_SCHEMA';
+const ERROR_RELEVAMIENTO_PAUSADO = 'RELEVAMIENTO_PAUSADO';
+const PAUSED_RETRY_MS = 5 * 60 * 1000;
 
 let syncInFlightPromise = null;
 let sqliteDbPromise = null;
@@ -83,6 +85,7 @@ const mapDjangoRelevamiento = (row = {}) => ({
   prioridad: 'MEDIA',
   estado: row.estado,
   fecha_asignada: row.fecha_asignada || null,
+  fecha_hasta: row.fecha_hasta || row.fecha_asignada || null,
   id_institucion: null,
   created_at: row.fecha_asignada || row.fecha_finalizado || nowIso(),
   relevado_at: row.fecha_finalizado || null,
@@ -92,9 +95,15 @@ const mapDjangoRelevamiento = (row = {}) => ({
   latitud: null,
   longitud: null,
   segmento: row.segmento || '',
+  localidad: row.localidad || '',
   convocatoria_nombre: row.convocatoria_nombre || '',
   formularios_count: row.formularios_count || 0,
   personas_count: row.formularios_count || 0,
+  cupo_maximo: Number(row.cupo_maximo || 0),
+  cupo_disponible: Number(row.cupo_disponible || 0),
+  cupo_completo: Boolean(row.cupo_completo),
+  pausado: Boolean(row.pausado),
+  pausa_motivo: row.pausa_motivo || '',
 });
 
 const normalizeDjangoField = (field = {}, scope = 'globales') => ({
@@ -1350,6 +1359,15 @@ const relevamientoService = {
     await ensureSqliteReady();
     const ownerId = await getCurrentOwnerId();
     if (!ownerId) throw new Error('No hay un usuario autenticado para guardar datos offline.');
+    const cupoMaximo = Number(payload?._cupo_maximo || 0);
+    if (cupoMaximo > 0) {
+      const existentes = await getLocalBecasFormularios(payload?.relevamiento_id);
+      if (existentes.length >= cupoMaximo) {
+        const error = new Error('Se alcanzó el cupo del relevamiento. No se pueden cargar nuevas personas.');
+        error.code = 'CUPO_RELEVAMIENTO_COMPLETO';
+        throw error;
+      }
+    }
     const capturadoEn = payload?.capturado_en || payload?.created_at || nowIso();
     const payloadWithFiles = await persistFormularioAttachments(payload);
     const localRecord = await upsertLocalRecordAndEnqueue({
@@ -1448,11 +1466,18 @@ const relevamientoService = {
       } catch (error) {
         failed += 1;
         const status = Number(error?.statusCode || error?.status || 0);
-        const retriable = isNetworkError(error) || isNetworkError(error?.cause) || (status >= 500 && status <= 599);
-        const retryCount = (operation?.retry_count || 0) + 1;
-        const canRetry = retriable && retryCount <= MAX_RETRY_COUNT;
-        const nextRetry = canRetry ? new Date(Date.now() + calculateBackoffMs(retryCount)).toISOString() : null;
-        const errorCode = error?.code || null;
+        // Una pausa es transitoria. La captura ya está persistida en SQLite y
+        // debe permanecer en la cola hasta que el backoffice la reanude.
+        const paused = error?.payload?.pausado === true
+          || (status === 409 && /pausad/i.test(String(error?.message || '')));
+        const retriable = paused || isNetworkError(error) || isNetworkError(error?.cause) || (status >= 500 && status <= 599);
+        const retryCount = paused ? (operation?.retry_count || 0) : (operation?.retry_count || 0) + 1;
+        // Las pausas no consumen el máximo de reintentos: pueden durar horas o días.
+        const canRetry = paused || (retriable && retryCount <= MAX_RETRY_COUNT);
+        const nextRetry = canRetry
+          ? new Date(Date.now() + (paused ? PAUSED_RETRY_MS : calculateBackoffMs(retryCount))).toISOString()
+          : null;
+        const errorCode = paused ? ERROR_RELEVAMIENTO_PAUSADO : (error?.code || null);
         const message = errorCode === ERROR_MISSING_LOCAL_FILE
           ? 'Adjunto no disponible, volve a adjuntarlo'
           : (error?.message || 'Error desconocido');
@@ -1640,10 +1665,11 @@ const relevamientoService = {
     if (!relevamientoId) return { success: false, error: 'ID invalido' };
     const cached = await readCachedRemoteRecord(relevamientoId);
     const assignedDate = String(cached?.payload?.fecha_asignada || '').slice(0, 10);
+    const assignedUntil = String(cached?.payload?.fecha_hasta || assignedDate).slice(0, 10);
     const localToday = new Date();
     const todayText = `${localToday.getFullYear()}-${String(localToday.getMonth() + 1).padStart(2, '0')}-${String(localToday.getDate()).padStart(2, '0')}`;
-    if (!assignedDate || assignedDate !== todayText) {
-      return { success: false, error: 'Solo se puede iniciar el relevamiento en la fecha asignada.' };
+    if (!assignedDate || todayText < assignedDate || todayText > assignedUntil) {
+      return { success: false, error: 'Solo se puede iniciar el relevamiento dentro del período asignado.' };
     }
     const connectivity = await getConnectivitySnapshot();
     if (!connectivity.hasInternet) {

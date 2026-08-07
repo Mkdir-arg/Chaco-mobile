@@ -70,10 +70,30 @@ export const clearBecasSession = async () => {
   ]);
 };
 
+const initializeWafSession = async () => {
+  try {
+    const response = await fetch(buildUrl('/'), {
+      method: 'GET',
+      headers: { Accept: 'text/html,application/json' },
+      credentials: 'include',
+    });
+    await response.text();
+  } catch {
+    // El login posterior conserva el error real si el servidor no es alcanzable.
+  }
+};
+
 export const loginBecas = async ({ username, password }) => {
+  // FortiWeb crea cookiesession1 en el primer acceso. Inicializarla antes del
+  // POST evita que Client Management trate el login nativo como una sesión nueva.
+  await initializeWafSession();
   const response = await fetch(buildUrl('/api/becas/auth/token/'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    credentials: 'include',
     body: JSON.stringify({ username, password }),
   });
   const payload = await parseResponse(response);
@@ -113,6 +133,7 @@ export const becasUploadFile = async (path, { fileUri, fileField = 'archivo', fi
 
   const response = await fetch(buildUrl(path), {
     method: 'POST',
+    credentials: 'include',
     headers: {
       Accept: 'application/json',
       ...(token ? { Authorization: `Token ${token}` } : {}),
@@ -140,6 +161,7 @@ export const becasRequest = async (path, options = {}) => {
 
   const response = await fetch(buildUrl(path), {
     ...options,
+    credentials: 'include',
     headers,
     body: options.body && typeof options.body !== 'string'
       ? JSON.stringify(options.body)
