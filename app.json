@@ -36,7 +36,7 @@
       "favicon": "./assets/brand/app-icon-chaco.png"
     },
     "extra": {
-      "djangoApiUrl": "https://relevamiento-deshum.ecomdev.ar",
+      "djangoApiUrl": "https://datanach.ecomdev.ar",
       "eas": {
         "projectId": "9bd4ef7a-6e9a-4110-91c1-3c07565eef33"
       }

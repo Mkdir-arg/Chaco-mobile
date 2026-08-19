@@ -10,12 +10,18 @@
     },
     "preview": {
       "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_DJANGO_API_URL": "https://datanach.ecomdev.ar"
+      },
       "android": {
         "buildType": "apk"
       }
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_DJANGO_API_URL": "https://datanach.chaco.gob.ar"
+      }
     }
   },
   "submit": {
