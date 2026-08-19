@@ -4,6 +4,9 @@ import { Platform } from 'react-native';
 const normalizeBaseUrl = (value = '') => String(value || '').trim().replace(/\/+$/, '');
 
 const deriveDevDjangoUrl = () => {
+  const environmentUrl = normalizeBaseUrl(process.env.EXPO_PUBLIC_DJANGO_API_URL);
+  if (environmentUrl) return environmentUrl;
+
   const configured = normalizeBaseUrl(Constants.expoConfig?.extra?.djangoApiUrl);
   if (configured) return configured;
 

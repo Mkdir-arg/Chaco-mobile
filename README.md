@@ -62,7 +62,9 @@ En términos funcionales, el backoffice crea y asigna relevamientos a un usuario
 
 ### Configuración de la URL
 
-`src/config/apiConfig.js` resuelve la URL base desde `expo.extra.djangoApiUrl` de `app.json`. La URL actual es:
+`src/config/apiConfig.js` resuelve la URL base primero desde la variable de build
+`EXPO_PUBLIC_DJANGO_API_URL` y usa `expo.extra.djangoApiUrl` de `app.json` sólo como
+fallback local/testing. La URL fallback actual es:
 
 ```json
 "extra": {
@@ -72,7 +74,17 @@ En términos funcionales, el backoffice crea y asigna relevamientos a un usuario
 
 Cada ruta se construye agregándola a esa base; por ejemplo, el login termina llamando a `https://relevamiento-deshum.ecomdev.ar/api/becas/auth/token/`. Como no se especifica un puerto, se usa el puerto estándar 443 para HTTPS.
 
-Antes de generar el APK, `djangoApiUrl` debe apuntar al entorno correcto:
+Cada pipeline debe definir `EXPO_PUBLIC_DJANGO_API_URL` con el host del ambiente. Así
+login, API y el enlace «Olvidé mi contraseña» usan siempre el mismo backend sin tocar
+el código ni reconstruir URLs manualmente. Por ejemplo:
+
+```powershell
+$env:EXPO_PUBLIC_DJANGO_API_URL = "https://hml.ejemplo.gob.ar"
+npx expo export --platform web
+```
+
+Antes de generar el APK, la variable (o, en su ausencia, `djangoApiUrl`) debe apuntar
+al entorno correcto:
 
 | Entorno | Ejemplo | Condición |
 |---|---|---|

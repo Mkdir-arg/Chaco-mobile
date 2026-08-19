@@ -247,6 +247,8 @@ const styles = StyleSheet.create({
   },
   form: {
     width: '100%',
+    maxWidth: '100%',
+    boxSizing: 'border-box',
     borderWidth: 1,
     borderRadius: radii.xl,
     padding: 18,
