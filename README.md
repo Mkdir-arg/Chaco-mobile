@@ -66,18 +66,18 @@ En términos funcionales, el backoffice crea y asigna relevamientos a un usuario
 
 ```json
 "extra": {
-  "djangoApiUrl": "https://datanach.ecomdev.ar"
+  "djangoApiUrl": "https://relevamiento-deshum.ecomdev.ar"
 }
 ```
 
-Cada ruta se construye agregándola a esa base; por ejemplo, el login termina llamando a `https://datanach.ecomdev.ar/api/becas/auth/token/`. Como no se especifica un puerto, se usa el puerto estándar 443 para HTTPS.
+Cada ruta se construye agregándola a esa base; por ejemplo, el login termina llamando a `https://relevamiento-deshum.ecomdev.ar/api/becas/auth/token/`. Como no se especifica un puerto, se usa el puerto estándar 443 para HTTPS.
 
 Antes de generar el APK, `djangoApiUrl` debe apuntar al entorno correcto:
 
 | Entorno | Ejemplo | Condición |
 |---|---|---|
 | Desarrollo local | `http://192.168.1.20:8000` | Teléfono y servidor en una red que permita llegar a esa IP y puerto |
-| QA | `https://qa.chaco.example` | Dominio accesible desde los dispositivos de prueba |
+| QA | `https://relevamiento-deshum.ecomdev.ar` | Servidor de prueba actual del equipo |
 | Producción | `https://chaco.example` | Dominio público, certificado TLS válido y API desplegada |
 
 No usar `localhost` en un teléfono físico: allí `localhost` identifica al propio teléfono, no a la computadora que ejecuta Django. Para una instalación fuera de la red local se necesita una URL accesible desde internet o desde la VPN institucional. El plugin `plugins/withAndroidNetworkSecurityConfig.js` habilita HTTP en Android para el entorno actual, pero producción debería usar HTTPS.
@@ -107,7 +107,7 @@ El backend filtra los datos por el usuario autenticado. Un territorial solo pued
 | `POST /api/becas/relevamientos/{id}/reabrir/` | Reabrir un relevamiento finalizado |
 | `GET/PATCH /api/becas/formularios/{id}/` | Consultar o actualizar un formulario propio |
 | `GET/POST /api/becas/formularios/{id}/adjuntos/` | Listar o subir archivos y fotografías |
-| `POST /api/becas/renaper/consultar/` | Consultar identidad mediante la integración del backend |
+| `POST /api/becas/personas/consultar/` | Validar el DNI mediante Gran Base/Base de Personas |
 
 Los archivos se envían como `multipart/form-data`; el resto de los cuerpos se intercambia normalmente como JSON. La app no se conecta directamente con RENAPER: solicita la consulta a Django y el backend realiza la integración externa.
 

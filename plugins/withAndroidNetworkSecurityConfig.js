@@ -11,7 +11,7 @@ const NETWORK_SECURITY_CONFIG = `<?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
     <base-config cleartextTrafficPermitted="true" />
     <domain-config cleartextTrafficPermitted="false">
-        <domain includeSubdomains="false">datanach.ecomdev.ar</domain>
+        <domain includeSubdomains="false">relevamiento-deshum.ecomdev.ar</domain>
         <trust-anchors>
             <certificates src="system" />
             <certificates src="@raw/letsencrypt_yr2" />

@@ -1081,7 +1081,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     setRenaperStatus('VALIDANDO');
 
     try {
-      const payload = await becasRequest('/api/becas/renaper/consultar/', {
+      const payload = await becasRequest('/api/becas/personas/consultar/', {
         method: 'POST',
         body: {
           dni: cleanDigits(dniForm.dni_numero),
