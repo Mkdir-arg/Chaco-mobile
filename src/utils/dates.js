@@ -42,3 +42,14 @@ export const formatDate = (value, { includeTime = false } = {}) => {
   }
   return date.toLocaleString('es-AR', options);
 };
+
+export const isDateTimeActive = (start, end, now = new Date()) => {
+  const startDate = new Date(start);
+  const endDate = new Date(end || start);
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return false;
+  return startDate <= now && now <= endDate;
+};
+
+export const formatDateTimeRange = (start, end) => (
+  `${formatDate(start, { includeTime: true })} al ${formatDate(end || start, { includeTime: true })}`
+);

@@ -9,6 +9,7 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  Linking,
 } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
@@ -16,6 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import CustomButton from '../components/CustomButton';
 import AuthVisualBackground from '../components/AuthVisualBackground';
 import { designColors, fontSizes, radii } from '../theme';
+import { API_CONFIG } from '../config/apiConfig';
 
 export default function LoginScreen({ onNavigateToRegister }) {
   const { theme, typography, branding } = useTheme();
@@ -48,6 +50,15 @@ export default function LoginScreen({ onNavigateToRegister }) {
 
     if (!result.success) {
       setError(result.error);
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    const url = `${API_CONFIG.djangoBaseUrl}/recuperar-contrasena/`;
+    try {
+      await Linking.openURL(url);
+    } catch {
+      setError('No se pudo abrir la recuperacion de contraseña.');
     }
   };
 
@@ -145,7 +156,13 @@ export default function LoginScreen({ onNavigateToRegister }) {
                       setError('');
                     }}
                   />
-                  <Pressable onPress={() => setShowPassword(!showPassword)} style={styles.eyeIcon}>
+                  <Pressable
+                    onPress={() => setShowPassword((visible) => !visible)}
+                    style={styles.eyeIcon}
+                    accessibilityRole="button"
+                    accessibilityLabel={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                    accessibilityState={{ expanded: showPassword }}
+                  >
                     <Ionicons
                       name={showPassword ? 'eye-off-outline' : 'eye-outline'}
                       size={22}
@@ -153,6 +170,14 @@ export default function LoginScreen({ onNavigateToRegister }) {
                     />
                   </Pressable>
                 </View>
+                <Pressable
+                  onPress={handleForgotPassword}
+                  accessibilityRole="link"
+                  accessibilityLabel="Olvide mi contraseña"
+                  style={styles.forgotPasswordButton}
+                >
+                  <Text style={[styles.forgotPasswordText, { color: theme.colors.primary, fontFamily: typography.semibold }]}>Olvide mi contraseña</Text>
+                </Pressable>
               </View>
 
               <CustomButton
@@ -234,6 +259,13 @@ const styles = StyleSheet.create({
   cardHeader: {
     alignItems: 'center',
     marginBottom: 8,
+  },
+  forgotPasswordButton: {
+    alignSelf: 'flex-end',
+    paddingVertical: 10,
+  },
+  forgotPasswordText: {
+    fontSize: fontSizes.sm,
   },
   errorContainer: {
     padding: 12,

@@ -18,7 +18,7 @@ import Banner from '../components/Banner';
 import relevamientoService from '../services/relevamientoService';
 import { becasRequest } from '../services/becasApi';
 import { designColors, fontSizes, radii } from '../theme';
-import { formatDate as formatAppDate } from '../utils/dates';
+import { formatDate as formatAppDate, isDateTimeActive } from '../utils/dates';
 
 const formatDate = (isoDate) => {
   return formatAppDate(isoDate, { includeTime: true });
@@ -170,13 +170,24 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     return '-';
   };
 
+  const definicionPreguntas = detail?.definicion_formulario || {};
+  const preguntasGlobales = (definicionPreguntas.globales || []).filter((field) => field.activo !== false);
+  const requisitosActivos = (definicionPreguntas.requisitos || []).filter((field) => field.activo !== false);
+  const preguntasPrograma = requisitosActivos.filter((field) => field.alcance === 'programa');
+  const preguntasSegmento = requisitosActivos.filter((field) => field.alcance === 'segmento' || (!field.alcance && Number(field.orden || 0) < 100));
+  const preguntasSubsegmento = requisitosActivos.filter((field) => field.alcance === 'subsegmento' || (!field.alcance && Number(field.orden || 0) >= 100));
+  const birthDateForSteps = new Date(`${dniForm.fecha_nacimiento || ''}T00:00:00`);
+  const adultCutoffForSteps = new Date();
+  adultCutoffForSteps.setFullYear(adultCutoffForSteps.getFullYear() - 18);
+  const minorForSteps = !Number.isNaN(birthDateForSteps.getTime()) && birthDateForSteps > adultCutoffForSteps;
   const assignedSteps = [
     { id: 1, title: 'Identidad', icon: 'card-outline' },
     { id: 2, title: 'Persona', icon: 'person-outline' },
-    { id: 3, title: 'Globales', icon: 'list-outline' },
-    { id: 4, title: 'Segmento', icon: 'layers-outline' },
-    { id: 5, title: 'Subsegmento', icon: 'git-branch-outline' },
-    { id: 6, title: 'Confirmar', icon: 'checkmark-circle-outline' },
+    ...((preguntasGlobales.length || minorForSteps) ? [{ id: 3, title: 'Globales', icon: 'list-outline' }] : []),
+    ...(preguntasPrograma.length ? [{ id: 4, title: 'Programa', icon: 'albums-outline' }] : []),
+    ...(preguntasSegmento.length ? [{ id: 5, title: 'Segmento', icon: 'layers-outline' }] : []),
+    ...(preguntasSubsegmento.length ? [{ id: 6, title: 'Subsegmento', icon: 'git-branch-outline' }] : []),
+    { id: 7, title: 'Confirmar', icon: 'checkmark-circle-outline' },
   ];
 
   const handleDatePickerDraftChange = (event, selectedDate) => {
@@ -1031,19 +1042,21 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
         return;
       }
     }
-    if (currentStep === assignedSteps.length) {
+    const currentIndex = assignedSteps.findIndex((step) => step.id === currentStep);
+    if (currentStep === assignedSteps[assignedSteps.length - 1].id) {
       submitAssignedFormulario();
       return;
     }
-    if (currentStep < assignedSteps.length) {
-      const next = currentStep + 1;
+    if (currentIndex >= 0 && currentIndex < assignedSteps.length - 1) {
+      const next = assignedSteps[currentIndex + 1].id;
       setCurrentStep(next);
       setMaxVisitedStep((prev) => Math.max(prev, next));
     }
   };
 
   const prevAssignedStep = () => {
-    if (currentStep > 1) setCurrentStep((prev) => prev - 1);
+    const currentIndex = assignedSteps.findIndex((step) => step.id === currentStep);
+    if (currentIndex > 0) setCurrentStep(assignedSteps[currentIndex - 1].id);
   };
 
   const validateRenaper = async () => {
@@ -1381,19 +1394,11 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
   };
 
   const getQuestionGroups = () => {
-    const definicion = detail?.definicion_formulario || {};
-    const globales = definicion.globales || [];
-    const requisitos = definicion.requisitos || [];
     return {
-      globales,
-      segmento: requisitos.filter((field) => (
-        field.alcance === 'segmento'
-        || (!field.alcance && Number(field.orden || 0) < 100)
-      )),
-      subsegmento: requisitos.filter((field) => (
-        field.alcance === 'subsegmento'
-        || (!field.alcance && Number(field.orden || 0) >= 100)
-      )),
+      globales: preguntasGlobales,
+      programa: preguntasPrograma,
+      segmento: preguntasSegmento,
+      subsegmento: preguntasSubsegmento,
     };
   };
 
@@ -1828,7 +1833,6 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
       return renderQuestionStep({
         title: 'Preguntas globales',
         fields: groups.globales,
-        emptyText: 'No hay preguntas globales configuradas.',
         includeContact: true,
       });
     }
@@ -1836,24 +1840,39 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     if (currentStep === 4) {
       const groups = getQuestionGroups();
       return renderQuestionStep({
-        title: 'Preguntas del segmento',
-        fields: groups.segmento,
-        emptyText: 'No hay preguntas del segmento configuradas.',
+        title: 'Preguntas del programa',
+        fields: groups.programa,
       });
     }
 
     if (currentStep === 5) {
       const groups = getQuestionGroups();
       return renderQuestionStep({
+        title: 'Preguntas del segmento',
+        fields: groups.segmento,
+      });
+    }
+
+    if (currentStep === 6) {
+      const groups = getQuestionGroups();
+      return renderQuestionStep({
         title: 'Preguntas del subsegmento',
         fields: groups.subsegmento,
-        emptyText: 'No hay preguntas del subsegmento configuradas.',
       });
     }
 
     return (
       <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
         <Text style={[styles.cardTitle, { color: theme.colors.text, fontFamily: typography.bold }]}>Confirmacion</Text>
+        <Text style={[styles.formSectionTitle, { color: theme.colors.text, fontFamily: typography.bold }]}>Contacto</Text>
+        <View style={styles.formGroup}>
+          <Text style={[styles.inputLabel, { color: theme.colors.text, fontFamily: typography.semibold }]}>Celular *</Text>
+          <TextInput value={contactForm.celular} onChangeText={(value) => setContactForm((prev) => ({ ...prev, celular: value }))} keyboardType="phone-pad" style={[styles.textInput, { color: theme.colors.text, borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]} placeholder="Ej: 3624100200" placeholderTextColor={theme.colors.textSoft} />
+        </View>
+        <View style={styles.formGroup}>
+          <Text style={[styles.inputLabel, { color: theme.colors.text, fontFamily: typography.semibold }]}>Email *</Text>
+          <TextInput value={contactForm.email_contacto} onChangeText={(value) => setContactForm((prev) => ({ ...prev, email_contacto: value }))} keyboardType="email-address" autoCapitalize="none" style={[styles.textInput, { color: theme.colors.text, borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]} placeholder="nombre@dominio.com" placeholderTextColor={theme.colors.textSoft} />
+        </View>
         <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>DNI</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{dniForm.dni_numero || '-'}</Text></View>
         <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Persona</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{`${dniForm.apellido || ''} ${dniForm.nombres || ''}`.trim() || '-'}</Text></View>
         <View style={styles.kvRow}><Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>Nacimiento</Text><Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{dniForm.fecha_nacimiento || '-'}</Text></View>
@@ -1977,9 +1996,9 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
               style={[styles.primaryFooterButton, { backgroundColor: theme.colors.primary, opacity: submittingFormulario ? 0.7 : 1 }]}
             >
               <Text style={[styles.primaryFooterText, { fontFamily: typography.bold }]}>
-                {currentStep === assignedSteps.length ? (submittingFormulario ? 'ENVIANDO...' : 'CONFIRMAR RELEVAMIENTO') : 'SIGUIENTE'}
+                {currentStep === assignedSteps[assignedSteps.length - 1].id ? (submittingFormulario ? 'ENVIANDO...' : 'CONFIRMAR RELEVAMIENTO') : 'SIGUIENTE'}
               </Text>
-              <Ionicons name={currentStep === assignedSteps.length ? 'checkmark' : 'chevron-forward'} size={18} color="#FFFFFF" />
+              <Ionicons name={currentStep === assignedSteps[assignedSteps.length - 1].id ? 'checkmark' : 'chevron-forward'} size={18} color="#FFFFFF" />
             </TouchableOpacity>
           </View>
         ) : null}
@@ -2084,11 +2103,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     const cupoMaximo = Number(detail?.cupo_maximo || 0);
     const cupoCompleto = cupoMaximo > 0 && formulariosCount >= cupoMaximo;
     const relevamientoEstado = String(detail?.estado || '').toUpperCase();
-    const assignedDate = String(detail?.fecha_asignada || '').slice(0, 10);
-    const assignedUntil = String(detail?.fecha_hasta || assignedDate).slice(0, 10);
-    const today = new Date();
-    const todayLocal = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-    const isWithinAssignedPeriod = !!assignedDate && todayLocal >= assignedDate && todayLocal <= assignedUntil;
+    const isWithinAssignedPeriod = isDateTimeActive(detail?.fecha_asignada, detail?.fecha_hasta);
     const isPaused = Boolean(detail?.pausado);
     const canStartRelevamiento = !isPaused && isWithinAssignedPeriod && relevamientoEstado === 'ASIGNADO';
     const canAddPerson = !isPaused && !cupoCompleto && isWithinAssignedPeriod && relevamientoEstado === 'EN_CURSO';

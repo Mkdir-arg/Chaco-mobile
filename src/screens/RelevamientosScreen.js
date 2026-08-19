@@ -13,7 +13,7 @@ import { useTheme } from '../context/ThemeContext';
 import StaggeredItem from '../components/StaggeredItem';
 import relevamientoService from '../services/relevamientoService';
 import { designColors, fontSizes, radii } from '../theme';
-import { dateKey, formatDate as formatAppDate } from '../utils/dates';
+import { formatDate as formatAppDate, formatDateTimeRange, isDateTimeActive } from '../utils/dates';
 
 const DONE_STATES = ['SINCRONIZADO', 'COMPLETADO_LOCAL', 'REALIZADO', 'FINALIZADO', 'TERMINADO'];
 const IN_PROGRESS_STATES = ['EN_PROGRESO', 'EN_CURSO', 'FINALIZANDO'];
@@ -133,12 +133,13 @@ export default function RelevamientosScreen({ onOpenRelevamiento }) {
     }, [loadRelevamientos]);
 
     const relevamientosDesdeHoy = useMemo(() => {
-        const today = dateKey(new Date());
         return relevamientos
-            .filter((item) => dateKey(item.fecha_hasta || item.fecha_asignada || item.created_at) >= today)
+            .filter((item) => isDateTimeActive(
+                item.fecha_asignada || item.created_at,
+                item.fecha_hasta || item.fecha_asignada || item.created_at,
+            ))
             .sort((a, b) => (
-                dateKey(a.fecha_asignada || a.created_at)
-                    .localeCompare(dateKey(b.fecha_asignada || b.created_at))
+                new Date(a.fecha_asignada || a.created_at) - new Date(b.fecha_asignada || b.created_at)
             ));
     }, [relevamientos]);
 
@@ -385,7 +386,7 @@ function RelevamientoRow({ item, index, total, formatDate, onOpenRelevamiento, t
                 />
                 <MetaCell
                     label="Vigencia"
-                    value={`${formatDate(item.fecha_asignada || item.created_at)} al ${formatDate(item.fecha_hasta || item.fecha_asignada || item.created_at)}`}
+                    value={formatDateTimeRange(item.fecha_asignada || item.created_at, item.fecha_hasta || item.fecha_asignada || item.created_at)}
                     icon="calendar-outline"
                     typography={typography}
                 />
