@@ -22,6 +22,16 @@
       "env": {
         "EXPO_PUBLIC_DJANGO_API_URL": "https://datanach.chaco.gob.ar"
       }
+    },
+    "production-apk": {
+      "distribution": "internal",
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_DJANGO_API_URL": "https://datanach.chaco.gob.ar"
+      },
+      "android": {
+        "buildType": "apk"
+      }
     }
   },
   "submit": {
