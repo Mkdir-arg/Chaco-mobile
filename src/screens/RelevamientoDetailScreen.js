@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Image, Pressable, Alert, Modal, TextInput, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Image, Pressable, Alert, Modal, TextInput, KeyboardAvoidingView, Platform, FlatList } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import NetInfo from '@react-native-community/netinfo';
 import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
-import { CameraView, useCameraPermissions } from 'expo-camera';
-import * as ImagePicker from 'expo-image-picker';
-import * as DocumentPicker from 'expo-document-picker';
+import { useCameraPermissions } from 'expo-camera';
+import * as MediaLibrary from 'expo-media-library';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
@@ -15,6 +15,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
 import Banner from '../components/Banner';
+import CameraModal from '../components/CameraModal';
 import relevamientoService from '../services/relevamientoService';
 import { becasRequest } from '../services/becasApi';
 import { designColors, fontSizes, radii } from '../theme';
@@ -51,6 +52,7 @@ const emptyDniForm = {
 
 const RENAPER_RESET_FIELDS = ['dni_numero', 'dni_sexo', 'apellido', 'nombres', 'fecha_nacimiento'];
 const DYNAMIC_ATTACHMENTS_DIR = `${FileSystemLegacy.documentDirectory || ''}dynamic-question-images`;
+const DOCUMENT_FOLDER_KEY = 'dynamic-document-folder-uri';
 
 export default function RelevamientoDetailScreen({ relevamientoId, onClose, syncStatus = 'synced', syncPendingCount = 0, onSyncPress }) {
   const { theme, typography, isDark } = useTheme();
@@ -71,7 +73,14 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
   const [scannerVisible, setScannerVisible] = useState(false);
   const [scannerLocked, setScannerLocked] = useState(false);
   const scannerLockedRef = useRef(false);
-  const [scannerCameraKey, setScannerCameraKey] = useState(0);
+  const [photoCameraField, setPhotoCameraField] = useState(null);
+  const [galleryField, setGalleryField] = useState(null);
+  const [galleryAssets, setGalleryAssets] = useState([]);
+  const [galleryLoading, setGalleryLoading] = useState(false);
+  const [documentField, setDocumentField] = useState(null);
+  const [documentEntries, setDocumentEntries] = useState([]);
+  const [documentFolderUri, setDocumentFolderUri] = useState('');
+  const [documentLoading, setDocumentLoading] = useState(false);
   const [currentStep, setCurrentStep] = useState(1);
   const [maxVisitedStep, setMaxVisitedStep] = useState(1);
   const [renaperStatus, setRenaperStatus] = useState('PENDIENTE');
@@ -79,6 +88,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
   const [renaperResult, setRenaperResult] = useState(null);
   const [renaperError, setRenaperError] = useState('');
   const [identificationOrigin, setIdentificationOrigin] = useState('manual');
+  const [pendingQrIdentity, setPendingQrIdentity] = useState(false);
   const [dniForm, setDniForm] = useState(emptyDniForm);
   const [dynamicValues, setDynamicValues] = useState({});
   const [contactForm, setContactForm] = useState({ celular: '', email_contacto: '' });
@@ -210,11 +220,15 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
 
   const updateDniField = (key, value) => {
     const normalizedValue = key === 'dni_numero' ? cleanDigits(value).slice(0, 8) : value;
+    const completesQrIdentity = pendingQrIdentity && key === 'dni_sexo';
     setDniForm((prev) => {
       const next = { ...prev, [key]: normalizedValue };
-      return ['dni_numero', 'dni_sexo'].includes(key) ? clearPersonIdentityFields(next) : next;
+      return ['dni_numero', 'dni_sexo'].includes(key) && !completesQrIdentity
+        ? clearPersonIdentityFields(next)
+        : next;
     });
-    if (RENAPER_RESET_FIELDS.includes(key)) {
+    if (RENAPER_RESET_FIELDS.includes(key) && !completesQrIdentity) {
+      setPendingQrIdentity(false);
       setIdentificationOrigin('manual');
       setRenaperStatus('PENDIENTE');
       setRenaperResult(null);
@@ -410,6 +424,22 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     return result;
   };
 
+  const parseSignedDniPayload = (raw = '') => {
+    const token = String(raw).match(/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/)?.[0];
+    if (!token) return null;
+    try {
+      const payload = token.split('.')[1];
+      const padded = `${payload.replace(/-/g, '+').replace(/_/g, '/')}${'='.repeat((4 - (payload.length % 4)) % 4)}`;
+      const binary = globalThis.atob(padded);
+      const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+      const decoded = new TextDecoder('utf-8').decode(bytes);
+      const parsed = JSON.parse(decoded);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+      return null;
+    }
+  };
+
   const parseDniCode = (rawValue = '', barcodeType = '') => {
     const raw = String(rawValue || '').trim();
     if (!raw) return {};
@@ -421,6 +451,15 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
       }
     } catch {
       // El QR puede venir como URL o texto plano, seguimos con parsers tolerantes.
+    }
+
+    const signedPayload = parseSignedDniPayload(raw);
+    if (signedPayload) {
+      const signedResult = stripEmptyValues(mapDniFields(signedPayload));
+      const signedHasIdentity = isValidDni(signedResult.dni_numero)
+        && !!String(signedResult.apellido || '').trim()
+        && !!String(signedResult.nombres || '').trim();
+      if (signedHasIdentity) return signedResult;
     }
 
     const paramResult = stripEmptyValues({
@@ -440,12 +479,15 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
       const parts = raw.split(separator).map(decodeDniPart);
       const compactParts = parts.filter(Boolean);
       const codeType = String(barcodeType || '').toUpperCase();
-      const looksLikePdf417 = codeType.includes('PDF417') || (parts.length >= 8 && /^\d{1,2}$/.test(parts[3]) && /^\d{7,8}$/.test(cleanDigits(parts[4])));
+      const hasStandardIdentityLayout = parts.length >= 8
+        && !!normalizeSex(parts[3])
+        && isValidDni(cleanDigits(parts[4]));
+      const looksLikePdf417 = codeType.includes('PDF417') || hasStandardIdentityLayout;
       const looksLikeQr = codeType.includes('QR') || (parts.length >= 8 && /^\d{7,8}$/.test(cleanDigits(parts[3])));
 
-      if (separator === '@' && looksLikePdf417) {
+      if (separator === '@' && (hasStandardIdentityLayout || looksLikePdf417)) {
         return stripEmptyValues({
-          dni_tramite: cleanDigits(parts[0]),
+          dni_tramite: cleanDigits(getObjectValue(signedPayload || {}, ['id_tramite', 'tramite'])) || cleanDigits(parts[0]),
           apellido: parts[1] || '',
           nombres: parts[2] || '',
           dni_sexo: normalizeSex(parts[3]),
@@ -494,26 +536,38 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     return duplicado;
   };
 
-  const applyDniScanResult = async (scanData = {}) => {
+  const applyDniScanResult = async (scanData = {}, barcodeType = '') => {
     const nextForm = {};
     Object.entries(scanData).forEach(([key, value]) => {
       if (value !== undefined && value !== null && String(value).trim() !== '') {
         nextForm[key] = String(value).trim();
       }
     });
-    const hasDocumentIdentity = isValidDni(nextForm.dni_numero)
-      && !!normalizeSex(nextForm.dni_sexo)
+    const hasCoreIdentity = isValidDni(nextForm.dni_numero)
       && !!String(nextForm.apellido || '').trim()
       && !!String(nextForm.nombres || '').trim();
+    const hasDocumentIdentity = hasCoreIdentity && !!normalizeSex(nextForm.dni_sexo);
     if (!hasDocumentIdentity) {
-      setScannerVisible(false);
-      setScannerLocked(false);
+      closeDniScanner();
+      if (String(barcodeType).toUpperCase() === 'QR' && hasCoreIdentity) {
+        setDniForm({ ...emptyDniForm, ...nextForm });
+        setPendingQrIdentity(true);
+        setIdentificationOrigin('scan');
+        setRenaperStatus('PENDIENTE');
+        setRenaperResult(null);
+        setRenaperError('');
+        setTimeout(() => {
+          Alert.alert('QR leido', 'El QR de este DNI no informa sexo. Seleccionalo para continuar.');
+        }, 220);
+        return;
+      }
       setTimeout(() => {
         Alert.alert('DNI', 'No pude leer datos utiles del codigo. Probemos manualmente.');
       }, 220);
       return;
     }
     setDniForm({ ...emptyDniForm, ...nextForm });
+    setPendingQrIdentity(false);
     closeDniScanner();
     if (await dniYaFueRelevado(nextForm.dni_numero)) return;
     setIdentificationOrigin('scan');
@@ -551,7 +605,6 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     }
     scannerLockedRef.current = false;
     setScannerLocked(false);
-    setScannerCameraKey((prev) => prev + 1);
     setScannerVisible(true);
   };
 
@@ -565,7 +618,8 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     if (scannerLockedRef.current) return;
     scannerLockedRef.current = true;
     setScannerLocked(true);
-    applyDniScanResult(parseDniCode(data, getBarcodeTypeLabel(type)));
+    const detectedBarcodeType = getBarcodeTypeLabel(type);
+    applyDniScanResult(parseDniCode(data, detectedBarcodeType), detectedBarcodeType);
   };
 
   const sanitizeLocalFileName = (value = 'imagen') =>
@@ -632,43 +686,157 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     }));
   };
 
-  const pickDynamicImage = async (field, source) => {
+  const closePhotoCamera = () => {
+    setPhotoCameraField(null);
+  };
+
+  const openPhotoCamera = async (field) => {
     try {
-      const permission = source === 'camera'
-        ? await ImagePicker.getCameraPermissionsAsync()
-        : await ImagePicker.getMediaLibraryPermissionsAsync();
-      const requestPermission = source === 'camera'
-        ? ImagePicker.requestCameraPermissionsAsync
-        : ImagePicker.requestMediaLibraryPermissionsAsync;
-      const granted = permission?.granted || (await requestPermission())?.granted;
-      if (!granted) {
-        Alert.alert(source === 'camera' ? 'Camara' : 'Galeria', 'Necesitamos permiso para adjuntar la imagen.');
+      if (!cameraPermission?.granted) {
+        const response = await requestCameraPermission();
+        if (!response?.granted) {
+          Alert.alert('Camara', 'Necesitamos permiso para adjuntar la imagen.');
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 350));
+      }
+      setPhotoCameraField(field);
+    } catch (e) {
+      Alert.alert('Camara', e?.message || 'No se pudo abrir la camara.');
+    }
+  };
+
+  const captureDynamicImage = async (asset) => {
+    if (!photoCameraField) return;
+    try {
+      await saveDynamicImageAsset(photoCameraField, {
+        ...asset,
+        fileName: `foto_${Date.now()}.jpg`,
+        mimeType: 'image/jpeg',
+      }, 'camera');
+      setPhotoCameraField(null);
+    } catch (e) {
+      Alert.alert('Camara', e?.message || 'No se pudo tomar la foto.');
+    }
+  };
+
+  const closeGallery = () => {
+    if (galleryLoading) return;
+    setGalleryField(null);
+    setGalleryAssets([]);
+  };
+
+  const pickDynamicGalleryImage = async (field) => {
+    try {
+      setGalleryLoading(true);
+      const permission = await MediaLibrary.requestPermissionsAsync(false, ['photo']);
+      if (!permission?.granted) {
+        Alert.alert('Galeria', 'Necesitamos permiso para mostrar las fotos del dispositivo.');
         return;
       }
-
-      const result = source === 'camera'
-        ? await ImagePicker.launchCameraAsync({ mediaTypes: 'images', allowsEditing: false, quality: 0.78, base64: true })
-        : await ImagePicker.launchImageLibraryAsync({ mediaTypes: 'images', allowsEditing: false, quality: 0.78, base64: true });
-
-      if (result?.canceled) return;
-      await saveDynamicImageAsset(field, result?.assets?.[0], source);
+      const result = await MediaLibrary.getAssetsAsync({
+        mediaType: MediaLibrary.MediaType.photo,
+        first: 100,
+        sortBy: [[MediaLibrary.SortBy.creationTime, false]],
+      });
+      setGalleryAssets(result.assets || []);
+      setGalleryField(field);
     } catch (e) {
-      Alert.alert('Imagen', e?.message || 'No se pudo adjuntar la imagen.');
+      Alert.alert('Galeria', e?.message || 'No se pudo adjuntar la imagen.');
+    } finally {
+      setGalleryLoading(false);
     }
+  };
+
+  const selectGalleryAsset = async (asset) => {
+    if (!galleryField || galleryLoading) return;
+    setGalleryLoading(true);
+    try {
+      const mediaUri = Platform.OS === 'android' && /^\d+$/.test(String(asset.id || ''))
+        ? `content://media/external/images/media/${asset.id}`
+        : asset.uri;
+      await saveDynamicImageAsset(galleryField, {
+        ...asset,
+        uri: mediaUri,
+        fileName: asset.filename,
+        width: asset.width,
+        height: asset.height,
+        mimeType: mimeTypeFromName(asset.filename || asset.uri),
+      }, 'gallery');
+      setGalleryField(null);
+      setGalleryAssets([]);
+    } catch (e) {
+      Alert.alert('Galeria', e?.message || 'No se pudo adjuntar la imagen.');
+    } finally {
+      setGalleryLoading(false);
+    }
+  };
+
+  const fileNameFromUri = (uri = '') => {
+    try {
+      return decodeURIComponent(String(uri).split('/').pop() || 'archivo');
+    } catch {
+      return String(uri).split('/').pop() || 'archivo';
+    }
+  };
+
+  const mimeTypeFromName = (name = '') => {
+    const extension = String(name).split('.').pop()?.toLowerCase();
+    return ({ jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', pdf: 'application/pdf', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', txt: 'text/plain' })[extension] || 'application/octet-stream';
+  };
+
+  const loadDocumentFolder = async (uri) => {
+    setDocumentLoading(true);
+    try {
+      const entries = await FileSystemLegacy.StorageAccessFramework.readDirectoryAsync(uri);
+      setDocumentEntries(entries.map((entryUri) => ({ uri: entryUri, name: fileNameFromUri(entryUri) })));
+      setDocumentFolderUri(uri);
+      await AsyncStorage.setItem(DOCUMENT_FOLDER_KEY, uri);
+    } catch {
+      setDocumentEntries([]);
+      setDocumentFolderUri('');
+      await AsyncStorage.removeItem(DOCUMENT_FOLDER_KEY);
+      Alert.alert('Archivos', 'La carpeta ya no esta disponible. Elegila nuevamente.');
+    } finally {
+      setDocumentLoading(false);
+    }
+  };
+
+  const authorizeDocumentFolder = async () => {
+    const result = await FileSystemLegacy.StorageAccessFramework.requestDirectoryPermissionsAsync();
+    if (!result?.granted || !result?.directoryUri) return;
+    await loadDocumentFolder(result.directoryUri);
+  };
+
+  const closeDocumentBrowser = () => {
+    if (documentLoading) return;
+    setDocumentField(null);
   };
 
   const pickDynamicDocument = async (field) => {
     try {
-      const result = await DocumentPicker.getDocumentAsync({ type: '*/*', copyToCacheDirectory: true });
-      if (result?.canceled) return;
-      const asset = result?.assets?.[0];
-      await saveDynamicImageAsset(field, {
-        ...asset,
-        fileName: asset?.name,
-        fileSize: asset?.size,
-      }, 'document');
+      setDocumentField(field);
+      const savedUri = await AsyncStorage.getItem(DOCUMENT_FOLDER_KEY);
+      if (savedUri) await loadDocumentFolder(savedUri);
     } catch (e) {
       Alert.alert('Documento', e?.message || 'No se pudo adjuntar el documento.');
+    }
+  };
+
+  const selectDocumentEntry = async (entry) => {
+    if (!documentField || documentLoading) return;
+    setDocumentLoading(true);
+    try {
+      await saveDynamicImageAsset(documentField, {
+        uri: entry.uri,
+        fileName: entry.name,
+        mimeType: mimeTypeFromName(entry.name),
+      }, 'document');
+      setDocumentField(null);
+    } catch (e) {
+      Alert.alert('Documento', e?.message || 'No se pudo adjuntar el documento.');
+    } finally {
+      setDocumentLoading(false);
     }
   };
 
@@ -692,8 +860,8 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
       field?.etiqueta || 'Imagen',
       'Adjuntar imagen',
       [
-        { text: 'Camara', onPress: () => pickDynamicImage(field, 'camera') },
-        { text: 'Galeria', onPress: () => pickDynamicImage(field, 'gallery') },
+        { text: 'Camara', onPress: () => openPhotoCamera(field) },
+        { text: 'Galeria', onPress: () => pickDynamicGalleryImage(field) },
         { text: 'Documento', onPress: () => pickDynamicDocument(field) },
         { text: 'Cancelar', style: 'cancel' },
       ],
@@ -744,6 +912,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     setCurrentStep(1);
     setMaxVisitedStep(1);
     setDniForm(emptyDniForm);
+    setPendingQrIdentity(false);
     const today = new Date();
     const todayText = `${String(today.getDate()).padStart(2, '0')}/${String(today.getMonth() + 1).padStart(2, '0')}/${today.getFullYear()}`;
     const initialDynamicValues = {};
@@ -1076,6 +1245,27 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     }
 
     if (await dniYaFueRelevado(dniForm.dni_numero)) return;
+
+    if (pendingQrIdentity) {
+      setPendingQrIdentity(false);
+      setIdentificationOrigin('scan');
+      setRenaperStatus('VALIDADO');
+      setRenaperResult({
+        data: {
+          dni: cleanDigits(dniForm.dni_numero),
+          apellido: dniForm.apellido,
+          nombre: dniForm.nombres,
+          fecha_nacimiento: toIsoDate(dniForm.fecha_nacimiento),
+          sexo: normalizeSex(dniForm.dni_sexo),
+        },
+        comparisons: [],
+        checkedAt: new Date().toISOString(),
+        source: 'scan',
+      });
+      setRenaperError('');
+      goToAssignedStep(2);
+      return;
+    }
 
     const netState = await NetInfo.fetch();
     if (!netState.isConnected || netState.isInternetReachable === false) {
@@ -2063,36 +2253,83 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
           </View>
         </Modal>
 
-        {scannerVisible ? (
-          <Modal visible transparent animationType="fade" onRequestClose={closeDniScanner}>
-            <View style={styles.barcodeModalOverlay}>
-              <View style={[styles.barcodePanel, { backgroundColor: theme.colors.surface }]}>
-                <View style={styles.barcodeHeader}>
-                  <Text style={[styles.barcodeTitle, { color: theme.colors.text, fontFamily: typography.bold }]}>Escanear DNI</Text>
-                  <TouchableOpacity onPress={closeDniScanner} style={[styles.barcodeCloseButton, { backgroundColor: theme.colors.surfaceAlt }]}>
-                    <Ionicons name="close" size={22} color={theme.colors.text} />
-                  </TouchableOpacity>
-                </View>
-                <View style={styles.barcodeCameraFrame}>
-                  <CameraView
-                    key={scannerCameraKey}
-                    style={styles.barcodeCamera}
-                    facing="back"
-                    autofocus="off"
-                    barcodeScannerSettings={{ barcodeTypes: ['qr', 'pdf417'] }}
-                    onBarcodeScanned={scannerLocked ? undefined : handleDniBarcodeScanned}
-                  />
-                  <View pointerEvents="none" style={styles.barcodeFrameBorder} />
-                </View>
-                {scannerLocked ? (
-                  <View style={styles.barcodeReading}>
-                    <ActivityIndicator color={theme.colors.primary} />
-                  </View>
-                ) : null}
+        {galleryField ? (
+          <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={closeGallery}>
+            <View style={[styles.galleryScreen, { backgroundColor: theme.colors.background, paddingTop: Math.max(insets.top, 16) }]}>
+              <View style={[styles.galleryHeader, { borderBottomColor: theme.colors.border }]}>
+                <Text style={[styles.galleryTitle, { color: theme.colors.text, fontFamily: typography.bold }]}>Seleccionar de galeria</Text>
+                <TouchableOpacity onPress={closeGallery} disabled={galleryLoading} style={[styles.galleryCancelButton, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}>
+                  <Text style={[styles.galleryCancelText, { color: theme.colors.text, fontFamily: typography.bold }]}>CANCELAR</Text>
+                </TouchableOpacity>
               </View>
+              {galleryAssets.length ? (
+                <FlatList
+                  data={galleryAssets}
+                  keyExtractor={(item) => item.id}
+                  numColumns={3}
+                  contentContainerStyle={styles.galleryGrid}
+                  renderItem={({ item }) => (
+                    <TouchableOpacity activeOpacity={0.82} onPress={() => selectGalleryAsset(item)} disabled={galleryLoading} style={styles.galleryItem}>
+                      <Image source={{ uri: item.uri }} style={styles.galleryImage} resizeMode="cover" />
+                    </TouchableOpacity>
+                  )}
+                />
+              ) : (
+                <View style={styles.galleryEmpty}>
+                  <Ionicons name="images-outline" size={46} color={theme.colors.textMuted} />
+                  <Text style={[styles.galleryEmptyText, { color: theme.colors.textMuted, fontFamily: typography.medium }]}>No hay fotos disponibles.</Text>
+                </View>
+              )}
+              {galleryLoading ? <View style={styles.galleryLoading}><ActivityIndicator color={theme.colors.primary} /></View> : null}
             </View>
           </Modal>
         ) : null}
+
+        {documentField ? (
+          <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={closeDocumentBrowser}>
+            <View style={[styles.galleryScreen, { backgroundColor: theme.colors.background, paddingTop: Math.max(insets.top, 16) }]}>
+              <View style={[styles.galleryHeader, { borderBottomColor: theme.colors.border }]}>
+                <Text style={[styles.galleryTitle, { color: theme.colors.text, fontFamily: typography.bold }]}>Seleccionar archivo</Text>
+                <TouchableOpacity onPress={closeDocumentBrowser} disabled={documentLoading} style={[styles.galleryCancelButton, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}>
+                  <Text style={[styles.galleryCancelText, { color: theme.colors.text, fontFamily: typography.bold }]}>CANCELAR</Text>
+                </TouchableOpacity>
+              </View>
+              <TouchableOpacity onPress={authorizeDocumentFolder} disabled={documentLoading} style={[styles.documentFolderButton, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}>
+                <Ionicons name="folder-open-outline" size={22} color={theme.colors.primary} />
+                <Text style={[styles.documentFolderText, { color: theme.colors.text, fontFamily: typography.bold }]}>{documentFolderUri ? 'CAMBIAR CARPETA' : 'ELEGIR CARPETA'}</Text>
+              </TouchableOpacity>
+              {documentFolderUri && documentEntries.length ? (
+                <FlatList
+                  data={documentEntries}
+                  keyExtractor={(item) => item.uri}
+                  contentContainerStyle={styles.documentList}
+                  renderItem={({ item }) => (
+                    <TouchableOpacity onPress={() => selectDocumentEntry(item)} disabled={documentLoading} style={[styles.documentItem, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}>
+                      <Ionicons name="document-outline" size={28} color={theme.colors.primary} />
+                      <Text numberOfLines={2} style={[styles.documentName, { color: theme.colors.text, fontFamily: typography.medium }]}>{item.name}</Text>
+                    </TouchableOpacity>
+                  )}
+                />
+              ) : (
+                <View style={styles.galleryEmpty}>
+                  <Ionicons name="folder-outline" size={46} color={theme.colors.textMuted} />
+                  <Text style={[styles.galleryEmptyText, { color: theme.colors.textMuted, fontFamily: typography.medium }]}>{documentFolderUri ? 'La carpeta no contiene archivos.' : 'Elegí una carpeta para ver sus archivos.'}</Text>
+                </View>
+              )}
+              {documentLoading ? <View style={styles.galleryLoading}><ActivityIndicator color={theme.colors.primary} /></View> : null}
+            </View>
+          </Modal>
+        ) : null}
+
+        <CameraModal
+          visible={Boolean(photoCameraField) || scannerVisible}
+          purpose={scannerVisible ? 'scanner' : 'photo'}
+          locked={scannerLocked}
+          onClose={scannerVisible ? closeDniScanner : closePhotoCamera}
+          onPhoto={captureDynamicImage}
+          onBarcodeScanned={handleDniBarcodeScanned}
+          onError={(cameraError) => Alert.alert('Camara', cameraError?.message || 'No se pudo iniciar la camara.')}
+        />
 
       </KeyboardAvoidingView>
     );
@@ -3372,53 +3609,89 @@ const styles = StyleSheet.create({
   },
   datePickerCancelText: { fontSize: fontSizes.xs },
   datePickerAcceptText: { color: '#FFFFFF', fontSize: fontSizes.xs },
-  barcodeModalOverlay: {
+  galleryScreen: {
     flex: 1,
-    justifyContent: 'center',
-    padding: 18,
-    backgroundColor: 'rgba(0,0,0,0.58)',
   },
-  barcodePanel: {
-    borderRadius: radii.xl,
-    padding: 14,
-  },
-  barcodeHeader: {
+  galleryHeader: {
+    minHeight: 68,
+    paddingHorizontal: 18,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  barcodeTitle: {
+  galleryTitle: {
     fontSize: fontSizes.lg,
   },
-  barcodeCloseButton: {
-    width: 38,
-    height: 38,
+  galleryCancelButton: {
+    minHeight: 42,
+    paddingHorizontal: 16,
+    borderWidth: 1,
     borderRadius: radii.full,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  barcodeCameraFrame: {
+  galleryCancelText: {
+    fontSize: fontSizes.xs,
+  },
+  galleryGrid: {
+    padding: 3,
+  },
+  galleryItem: {
+    width: '33.333%',
+    aspectRatio: 1,
+    padding: 3,
+  },
+  galleryImage: {
     width: '100%',
-    aspectRatio: 1.58,
-    borderRadius: radii.lg,
-    overflow: 'hidden',
-    backgroundColor: '#000000',
+    height: '100%',
+    borderRadius: radii.md,
   },
-  barcodeCamera: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  barcodeFrameBorder: {
-    ...StyleSheet.absoluteFillObject,
-    borderWidth: 2,
-    borderColor: '#FFFFFF',
-    borderRadius: radii.lg,
-  },
-  barcodeReading: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 18,
+  galleryEmpty: {
+    flex: 1,
     alignItems: 'center',
+    justifyContent: 'center',
+  },
+  galleryEmptyText: {
+    marginTop: 12,
+    fontSize: fontSizes.sm,
+  },
+  galleryLoading: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.18)',
+  },
+  documentFolderButton: {
+    minHeight: 54,
+    margin: 16,
+    paddingHorizontal: 18,
+    borderWidth: 1,
+    borderRadius: radii.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  documentFolderText: {
+    marginLeft: 10,
+    fontSize: fontSizes.sm,
+  },
+  documentList: {
+    paddingHorizontal: 16,
+    paddingBottom: 24,
+  },
+  documentItem: {
+    minHeight: 64,
+    marginBottom: 10,
+    paddingHorizontal: 16,
+    borderWidth: 1,
+    borderRadius: radii.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  documentName: {
+    flex: 1,
+    marginLeft: 12,
+    fontSize: fontSizes.sm,
   },
 });

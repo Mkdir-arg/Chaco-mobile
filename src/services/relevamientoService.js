@@ -14,7 +14,10 @@ const SQLITE_META_TABLE = 'sync_metadata';
 const SQLITE_MIGRATION_FLAG_KEY = 'field_relevamientos_sqlite_migrated_v1';
 const ATTACHMENTS_DIR = `${FileSystem.documentDirectory}attachments`;
 const MAX_RETRY_COUNT = 8;
-const OUTBOX_IN_FLIGHT_TIMEOUT_MS = 10 * 60 * 1000;
+// Si la app se recarga, se cierra o Android mata el proceso durante un envio,
+// no queda ninguna promesa viva que pueda completar la operacion. Recuperarla
+// pronto; el client_uuid del formulario mantiene el reintento idempotente.
+const OUTBOX_IN_FLIGHT_TIMEOUT_MS = 30 * 1000;
 const BACKGROUND_SYNC_WAIT_MS = 1500;
 const ERROR_MISSING_LOCAL_FILE = 'ERROR_MISSING_LOCAL_FILE';
 const ERROR_ATTACHMENTS_UPLOAD = 'ERROR_ATTACHMENTS_UPLOAD';
@@ -1402,6 +1405,16 @@ const relevamientoService = {
     syncInFlightPromise = (async () => {
     const db = await getSqliteDb();
     await recoverStaleInFlightOperations(db);
+    // Versiones anteriores guardaban como definitivo un rechazo HTML del proxy/WAF.
+    // Es una falla transitoria del servidor: devolverla a la cola permite que la
+    // sincronizacion automatica la recupere cuando el servicio vuelve a responder.
+    await db.runAsync(
+      `UPDATE ${SQLITE_OUTBOX_TABLE}
+       SET status = 'PENDING', retry_count = 0, next_retry_at = NULL, started_at = NULL, updated_at = ?
+       WHERE status = 'FAILED_PERMANENT'
+         AND (last_error LIKE '%<!DOCTYPE html%' OR last_error LIKE '%pagina HTML inesperada%')`,
+      nowIso()
+    );
     const queue = await readQueue();
     if (!queue.length) return { synced: 0, failed: 0, errors: [] };
 
@@ -1468,14 +1481,15 @@ const relevamientoService = {
         const status = Number(error?.statusCode || error?.status || 0);
         // Una pausa es transitoria. La captura ya está persistida en SQLite y
         // debe permanecer en la cola hasta que el backoffice la reanude.
+        const unexpectedServerPage = error?.unexpectedHtml === true || error?.cause?.unexpectedHtml === true;
         const paused = error?.payload?.pausado === true
           || (status === 409 && /pausad/i.test(String(error?.message || '')));
-        const retriable = paused || isNetworkError(error) || isNetworkError(error?.cause) || (status >= 500 && status <= 599);
-        const retryCount = paused ? (operation?.retry_count || 0) : (operation?.retry_count || 0) + 1;
+        const retriable = paused || unexpectedServerPage || isNetworkError(error) || isNetworkError(error?.cause) || (status >= 500 && status <= 599);
+        const retryCount = (paused || unexpectedServerPage) ? (operation?.retry_count || 0) : (operation?.retry_count || 0) + 1;
         // Las pausas no consumen el máximo de reintentos: pueden durar horas o días.
-        const canRetry = paused || (retriable && retryCount <= MAX_RETRY_COUNT);
+        const canRetry = paused || unexpectedServerPage || (retriable && retryCount <= MAX_RETRY_COUNT);
         const nextRetry = canRetry
-          ? new Date(Date.now() + (paused ? PAUSED_RETRY_MS : calculateBackoffMs(retryCount))).toISOString()
+          ? new Date(Date.now() + ((paused || unexpectedServerPage) ? PAUSED_RETRY_MS : calculateBackoffMs(retryCount))).toISOString()
           : null;
         const errorCode = paused ? ERROR_RELEVAMIENTO_PAUSADO : (error?.code || null);
         const message = errorCode === ERROR_MISSING_LOCAL_FILE
@@ -1601,6 +1615,9 @@ const relevamientoService = {
             belongsToOwner(item, String(ownerId))
             && !item.synced
             && !isRemoteCacheRecord(item)
+            // Los formularios de Becas usan la misma tabla offline, pero no son
+            // relevamientos y nunca deben aparecer como tarjetas en la agenda.
+            && item.payload?.backend !== 'django_becas'
           ))
           .map(mapLocalRecordForList);
         return { success: true, records: uniqueBy([...pendingLocal, ...remote], (item) => String(item.id)) };

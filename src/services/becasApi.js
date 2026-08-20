@@ -70,6 +70,23 @@ export const clearBecasSession = async () => {
   ]);
 };
 
+const isUnexpectedHtmlResponse = (response, payload) => {
+  const contentType = String(response?.headers?.get?.('content-type') || '').toLowerCase();
+  const detail = String(payload?.detail || '').trim().toLowerCase();
+  return contentType.includes('text/html') || detail.startsWith('<!doctype html') || detail.startsWith('<html');
+};
+
+const buildResponseError = (response, payload, fallback) => {
+  const unexpectedHtml = isUnexpectedHtmlResponse(response, payload);
+  const error = new Error(unexpectedHtml
+    ? `El servidor devolvio una pagina HTML inesperada (HTTP ${response.status}).`
+    : (payload?.detail || payload?.error || payload?.non_field_errors?.[0] || fallback));
+  error.status = response.status;
+  error.payload = unexpectedHtml ? null : payload;
+  error.unexpectedHtml = unexpectedHtml;
+  return error;
+};
+
 const initializeWafSession = async () => {
   try {
     const response = await fetch(buildUrl('/'), {
@@ -142,10 +159,7 @@ export const becasUploadFile = async (path, { fileUri, fileField = 'archivo', fi
   });
   const payload = await parseResponse(response);
   if (!response.ok) {
-    const error = new Error(payload?.detail || payload?.non_field_errors?.[0] || `Error HTTP ${response.status}`);
-    error.status = response.status;
-    error.payload = payload;
-    throw error;
+    throw buildResponseError(response, payload, `Error HTTP ${response.status}`);
   }
   return payload;
 };
@@ -169,10 +183,7 @@ export const becasRequest = async (path, options = {}) => {
   });
   const payload = await parseResponse(response);
   if (!response.ok) {
-    const error = new Error(payload?.detail || payload?.error || `Error HTTP ${response.status}`);
-    error.status = response.status;
-    error.payload = payload;
-    throw error;
+    throw buildResponseError(response, payload, `Error HTTP ${response.status}`);
   }
   return payload;
 };

@@ -50,6 +50,12 @@ export const isDateTimeActive = (start, end, now = new Date()) => {
   return startDate <= now && now <= endDate;
 };
 
+export const isDateTimeCurrentOrFuture = (end, now = new Date()) => {
+  const endDate = new Date(end);
+  if (Number.isNaN(endDate.getTime())) return false;
+  return now <= endDate;
+};
+
 export const formatDateTimeRange = (start, end) => (
   `${formatDate(start, { includeTime: true })} al ${formatDate(end || start, { includeTime: true })}`
 );

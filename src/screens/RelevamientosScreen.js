@@ -13,7 +13,7 @@ import { useTheme } from '../context/ThemeContext';
 import StaggeredItem from '../components/StaggeredItem';
 import relevamientoService from '../services/relevamientoService';
 import { designColors, fontSizes, radii } from '../theme';
-import { formatDate as formatAppDate, formatDateTimeRange, isDateTimeActive } from '../utils/dates';
+import { formatDate as formatAppDate, formatDateTimeRange, isDateTimeCurrentOrFuture } from '../utils/dates';
 
 const DONE_STATES = ['SINCRONIZADO', 'COMPLETADO_LOCAL', 'REALIZADO', 'FINALIZADO', 'TERMINADO'];
 const IN_PROGRESS_STATES = ['EN_PROGRESO', 'EN_CURSO', 'FINALIZANDO'];
@@ -134,8 +134,7 @@ export default function RelevamientosScreen({ onOpenRelevamiento }) {
 
     const relevamientosDesdeHoy = useMemo(() => {
         return relevamientos
-            .filter((item) => isDateTimeActive(
-                item.fecha_asignada || item.created_at,
+            .filter((item) => isDateTimeCurrentOrFuture(
                 item.fecha_hasta || item.fecha_asignada || item.created_at,
             ))
             .sort((a, b) => (

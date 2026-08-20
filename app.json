@@ -3,6 +3,7 @@
     "name": "Relevamiento Chaco",
     "slug": "nodo",
     "version": "1.0.0",
+    "newArchEnabled": true,
     "orientation": "portrait",
     "icon": "./assets/brand/app-icon-chaco.png",
     "userInterfaceStyle": "automatic",
