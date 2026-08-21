@@ -1574,7 +1574,7 @@ const relevamientoService = {
              last_error = NULL,
              last_error_code = NULL,
              updated_at = ?
-         WHERE status = 'FAILED_PERMANENT'`,
+         WHERE status IN ('FAILED_PERMANENT', 'IN_FLIGHT')`,
         stamp
       );
       await tx.runAsync(
