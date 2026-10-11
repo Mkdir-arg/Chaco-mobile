@@ -2,10 +2,39 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import { API_CONFIG } from '../config/apiConfig';
+import { apiErrorMessage } from './formularioSync';
 
 const TOKEN_KEY = 'becas_auth_token';
 const USER_DATA_KEY = 'user_data';
 const USER_ID_KEY = 'user_id';
+const sessionExpiredListeners = new Set();
+let sessionInvalidation = null;
+
+export const subscribeBecasSessionExpired = (listener) => {
+  sessionExpiredListeners.add(listener);
+  return () => sessionExpiredListeners.delete(listener);
+};
+
+// Una respuesta vieja no debe borrar el token de un login más reciente.
+const invalidateRejectedSession = async (token) => {
+  if (sessionInvalidation) {
+    await sessionInvalidation;
+    return;
+  }
+  sessionInvalidation = (async () => {
+    if (await getBecasToken() !== token) return;
+    try {
+      await clearBecasSession();
+    } finally {
+      sessionExpiredListeners.forEach((listener) => listener());
+    }
+  })();
+  try {
+    await sessionInvalidation;
+  } finally {
+    sessionInvalidation = null;
+  }
+};
 
 const storage = {
   getItem: async (key) => {
@@ -80,7 +109,7 @@ const buildResponseError = (response, payload, fallback) => {
   const unexpectedHtml = isUnexpectedHtmlResponse(response, payload);
   const error = new Error(unexpectedHtml
     ? `El servidor devolvio una pagina HTML inesperada (HTTP ${response.status}).`
-    : (payload?.detail || payload?.error || payload?.non_field_errors?.[0] || fallback));
+    : apiErrorMessage(payload, fallback));
   error.status = response.status;
   error.payload = unexpectedHtml ? null : payload;
   error.unexpectedHtml = unexpectedHtml;
@@ -101,6 +130,7 @@ const initializeWafSession = async () => {
 };
 
 export const loginBecas = async ({ username, password }) => {
+  if (sessionInvalidation) await sessionInvalidation;
   // FortiWeb crea cookiesession1 en el primer acceso. Inicializarla antes del
   // POST evita que Client Management trate el login nativo como una sesión nueva.
   await initializeWafSession();
@@ -159,6 +189,7 @@ export const becasUploadFile = async (path, { fileUri, fileField = 'archivo', fi
   });
   const payload = await parseResponse(response);
   if (!response.ok) {
+    if (response.status === 401) await invalidateRejectedSession(token);
     throw buildResponseError(response, payload, `Error HTTP ${response.status}`);
   }
   return payload;
@@ -183,6 +214,7 @@ export const becasRequest = async (path, options = {}) => {
   });
   const payload = await parseResponse(response);
   if (!response.ok) {
+    if (response.status === 401) await invalidateRejectedSession(token);
     throw buildResponseError(response, payload, `Error HTTP ${response.status}`);
   }
   return payload;

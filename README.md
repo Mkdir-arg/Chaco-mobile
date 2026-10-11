@@ -1,4 +1,4 @@
-# Relevamiento Chaco — aplicación móvil
+# DATAÑACH — aplicación móvil
 
 Aplicación móvil de relevamientos construida con React Native y Expo. Se conecta con la API de Django, permite trabajar sin conexión y sincroniza los datos pendientes cuando vuelve a haber internet.
 
@@ -68,11 +68,11 @@ fallback local/testing. La URL fallback actual es:
 
 ```json
 "extra": {
-  "djangoApiUrl": "https://relevamiento-deshum.ecomdev.ar"
+  "djangoApiUrl": "https://datanach.ecomdev.ar"
 }
 ```
 
-Cada ruta se construye agregándola a esa base; por ejemplo, el login termina llamando a `https://relevamiento-deshum.ecomdev.ar/api/becas/auth/token/`. Como no se especifica un puerto, se usa el puerto estándar 443 para HTTPS.
+Cada ruta se construye agregándola a esa base; por ejemplo, el login termina llamando a `https://datanach.ecomdev.ar/api/becas/auth/token/`. Como no se especifica un puerto, se usa el puerto estándar 443 para HTTPS.
 
 Cada pipeline debe definir `EXPO_PUBLIC_DJANGO_API_URL` con el host del ambiente. Así
 login, API y el enlace «Olvidé mi contraseña» usan siempre el mismo backend sin tocar
@@ -89,10 +89,10 @@ al entorno correcto:
 | Entorno | Ejemplo | Condición |
 |---|---|---|
 | Desarrollo local | `http://192.168.1.20:8000` | Teléfono y servidor en una red que permita llegar a esa IP y puerto |
-| QA | `https://relevamiento-deshum.ecomdev.ar` | Servidor de prueba actual del equipo |
-| Producción | `https://chaco.example` | Dominio público, certificado TLS válido y API desplegada |
+| QA | `https://datanach.ecomdev.ar` | Servidor de prueba actual del equipo |
+| Producción | `https://datanach.chaco.gob.ar` | Dominio público, certificado TLS válido y API desplegada |
 
-No usar `localhost` en un teléfono físico: allí `localhost` identifica al propio teléfono, no a la computadora que ejecuta Django. Para una instalación fuera de la red local se necesita una URL accesible desde internet o desde la VPN institucional. El plugin `plugins/withAndroidNetworkSecurityConfig.js` habilita HTTP en Android para el entorno actual, pero producción debería usar HTTPS.
+No usar `localhost` en un teléfono físico: allí `localhost` identifica al propio teléfono, no a la computadora que ejecuta Django. Para una instalación fuera de la red local se necesita una URL accesible desde internet o desde la VPN institucional. El plugin `plugins/withAndroidNetworkSecurityConfig.js` bloquea HTTP en Android y configura los dominios HTTPS de QA y producción. Para probar un backend local en Android se necesita HTTPS; el ejemplo HTTP es válido para web.
 
 ### Autenticación y permisos
 
@@ -179,9 +179,10 @@ Si el teléfono no llega a Django, comprobar que la URL de `djangoApiUrl` sea co
 
 ### Validación continua
 
-El workflow `.github/workflows/pr-mobile.yml` se ejecuta en cada pull request y push a `main`. Instala las dependencias con Node.js 20 y valida el proyecto mediante Expo Doctor. Antes de subir cambios se puede correr la misma validación localmente:
+El workflow `.github/workflows/pr-mobile.yml` se ejecuta en cada pull request y push a `main`. Instala las dependencias con Node.js 22.14.0, ejecuta `npm test` y valida el proyecto mediante Expo Doctor. Antes de subir cambios se puede correr la misma validación localmente:
 
 ```powershell
+npm test
 npx expo-doctor
 ```
 
@@ -263,3 +264,71 @@ El perfil de producción tiene `autoIncrement` habilitado, de modo que EAS incre
 - **EAS solicita credenciales Android:** permitir que EAS genere y administre el keystore, salvo que el equipo ya tenga uno oficial.
 - **Una actualización no se instala:** conservar el mismo package y la misma firma; el perfil configurado con EAS debe reutilizar el keystore del proyecto.
 - **Los datos no se sincronizan:** comprobar conectividad, sesión vigente y elementos pendientes desde el indicador de sincronización de la app.
+
+## Pruebas de sesión y cola offline
+
+Con Node 22.14 o superior, ejecutar `npm ci` y `npm test`. El CI utiliza Node
+22.14.0. Las pruebas usan SQLite en memoria y simulan las respuestas HTTP; cubren
+la expiración de sesión durante el alta y la subida de adjuntos, la conservación
+de pendientes, el reenvío después del login y las respuestas 401 concurrentes.
+
+Validación en dispositivo para #666: revocar el token con «Cerrar sesión de la app»
+con casos pendientes, sincronizar, verificar que aparece el login y volver a entrar
+con el mismo usuario. Los casos deben enviarse sin tocar «sincronizar».
+
+## Capturas tardías y errores de sincronización (#634 y #667)
+
+Cada caso conserva la fecha de captura y la versión del formulario utilizada.
+Cuando el servidor acepta una captura después del cierre, el listado la indica
+como «Sincronizado tarde». Si la gracia vence, el envío muestra «Avisá al
+coordinador» y requiere una decisión del territorial; sincronizar no lo reenvía.
+
+El detalle del relevamiento muestra «Envíos que requieren atención»:
+
+- **Corregir:** abre el mismo formulario para un alta rechazada por sus datos;
+  conserva UUID, fecha de captura, versión y archivos.
+- **Exportar:** comparte un JSON con la operación y su motivo. En Android/iOS
+  incluye los adjuntos disponibles como base64; en web conserva sus referencias.
+  Exportar conserva el envío fallido en la cola.
+- **Descartar envío:** pide confirmación y libera el cierre, conservando la
+  captura y los archivos en el teléfono.
+
+Los adjuntos admiten JPG, JPEG, PNG, WEBP, HEIC, HEIF y PDF hasta 5 MB. Un rechazo
+permanente de un archivo deja su motivo y permite intentar los demás. Un adjunto
+repetido de un caso ya resuelto se descarta automáticamente con el motivo del
+servidor. Las pausas, el cupo completo y el 401 conservan sus tratamientos propios.
+
+Para validar en dispositivo: capturar sin señal, sincronizar dentro y fuera de las
+24 h después del cierre; rechazar un adjunto con otros pendientes; corregir un alta
+400; exportar y descartar una falla y comprobar que se completa el cierre.
+
+## Vigencia con fecha y hora (#635)
+
+La franja del relevamiento se interpreta y muestra en
+`America/Argentina/Buenos_Aires`, aunque el teléfono use otra zona. Las fechas
+antiguas sin hora conservan la apertura a las 00:00 y el cierre al final del día.
+Inicio, agenda y detalle muestran la misma franja; a menos de dos horas del cierre
+aparece «Cierra a las HH:mm». La pantalla actualiza esos límites sin recargar.
+
+El servicio impide iniciar o guardar un caso nuevo fuera de la franja, también
+sin señal y si se dejó abierto un formulario hasta después del cierre. Los casos
+ya capturados conservan su fecha; pueden sincronizarse durante la gracia. Los
+relevamientos vencidos con pendientes siguen disponibles en la agenda para
+resolver sus envíos. Corregir una captura anterior conserva su fecha original.
+
+Prueba en dispositivo: asignar de 08:00 a 14:00; verificar el bloqueo a las 07:59,
+la apertura a las 08:00, el aviso después de las 12:00 y el bloqueo después de las
+14:00. Repetir sin señal y con el teléfono en otra zona horaria. Un caso capturado
+antes del cierre debe seguir en la cola después de las 14:00.
+
+### Identidad territorial (#633 y #669)
+
+La consulta de DNI y sexo envía el relevamiento abierto y conserva el origen
+`padron` o `personas` informado por el servidor, tanto en identificación como en
+los metadatos del caso. También se considera validada la lectura `scan`.
+Un 404 con `fallecido: true` impide continuar y guardar ese DNI/sexo en la sesión,
+incluso al intentar volver a escanearlo. Un 404 sin fallecimiento y un 502 permiten
+carga manual; el 429 muestra el aviso específico del tope de consultas.
+Validar en dispositivo las fuentes del padrón y Base de Personas, el bloqueo de
+fallecidos y la carga manual tras alcanzar el tope. Las pruebas automatizadas
+cubren el contrato HTTP y la clasificación de esas respuestas.

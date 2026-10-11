@@ -80,7 +80,7 @@ export default function LoginScreen({ onNavigateToRegister }) {
 
             <View style={[styles.form, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}>
               <View style={styles.cardHeader}>
-                <Text style={[styles.title, { fontFamily: typography.bold, color: theme.colors.text }]}>Bienvenido</Text>
+                <Text style={[styles.title, { fontFamily: typography.bold, color: theme.colors.text }]}>{branding.applicationName}</Text>
                 <Text style={[styles.subtitle, { fontFamily: typography.regular, color: theme.colors.textMuted }]}>
                   {branding.loginSubtitle}
                 </Text>

@@ -1,14 +1,14 @@
 {
   "expo": {
-    "name": "Relevamiento Chaco",
+    "name": "DATAÑACH",
     "slug": "nodo",
     "version": "1.0.0",
     "newArchEnabled": true,
     "orientation": "portrait",
-    "icon": "./assets/brand/app-icon-chaco.png",
+    "icon": "./assets/brand/app-icon-chaco-symbol.png",
     "userInterfaceStyle": "automatic",
     "splash": {
-      "image": "./assets/brand/logo-chaco.png",
+      "image": "./assets/brand/mini-logo-chaco.png",
       "resizeMode": "contain",
       "backgroundColor": "#F9FAFB"
     },
@@ -21,7 +21,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/brand/app-icon-chaco.png",
+        "foregroundImage": "./assets/brand/app-icon-chaco-symbol.png",
         "backgroundColor": "#ffffff"
       },
       "package": "com.pablocao.relevamientochaco",
@@ -34,7 +34,7 @@
       ]
     },
     "web": {
-      "favicon": "./assets/brand/app-icon-chaco.png"
+      "favicon": "./assets/brand/mini-logo-chaco.png"
     },
     "extra": {
       "djangoApiUrl": "https://datanach.ecomdev.ar",

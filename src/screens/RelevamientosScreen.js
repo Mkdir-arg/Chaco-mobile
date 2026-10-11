@@ -1,3 +1,4 @@
+import { statusTones as BADGE, relevamientoBadge } from '../theme/statusBadges';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
     View,
@@ -11,9 +12,10 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import StaggeredItem from '../components/StaggeredItem';
+import useAssignmentClock from '../hooks/useAssignmentClock';
 import relevamientoService from '../services/relevamientoService';
 import { designColors, fontSizes, radii } from '../theme';
-import { formatDate as formatAppDate, formatDateTimeRange, isDateTimeCurrentOrFuture } from '../utils/dates';
+import { formatDate as formatAppDate, formatDateTimeRange, isAssignmentVisible, closingSoonLabel } from '../utils/dates';
 
 const DONE_STATES = ['SINCRONIZADO', 'COMPLETADO_LOCAL', 'REALIZADO', 'FINALIZADO', 'TERMINADO'];
 const IN_PROGRESS_STATES = ['EN_PROGRESO', 'EN_CURSO', 'FINALIZANDO'];
@@ -29,15 +31,6 @@ const UI = {
     brand: designColors.brand,
 };
 
-const BADGE = {
-    gray: { bg: '#F9FAFB', bd: '#E5E7EB', tx: '#374151' },
-    white: { bg: '#FFFFFF', bd: '#E5E7EB', tx: '#374151' },
-    brand: { bg: '#FFEAF6', bd: '#FFB9DC', tx: '#A11F60' },
-    danger: { bg: '#FEF0F2', bd: '#FFCCD3', tx: '#8B0836' },
-    warning: { bg: '#FFF8F1', bd: '#FCD9BD', tx: '#771D1D' },
-    success: { bg: '#ECFDF5', bd: '#A4F4CF', tx: '#006045' },
-};
-
 const FILTER_OPTIONS = [
     { key: 'TODOS', label: 'Todos' },
     { key: 'ASIGNADOS', label: 'Asignados' },
@@ -48,23 +41,8 @@ const FILTER_OPTIONS = [
 
 const normalizeEstado = (estado) => String(estado || '').toUpperCase();
 
-const progressLabel = (item) => {
-    const estado = normalizeEstado(item.estado);
-    if (DONE_STATES.includes(estado)) return 'Finalizado';
-    if (IN_PROGRESS_STATES.includes(estado)) return 'En curso';
-    if (estado === 'ASIGNADO') return 'Asignado';
-    if (estado === 'ERROR') return 'Con error';
-    return 'Pendiente';
-};
-
-const progressBadge = (item) => {
-    const estado = normalizeEstado(item.estado);
-    if (DONE_STATES.includes(estado)) return BADGE.success;
-    if (IN_PROGRESS_STATES.includes(estado)) return BADGE.warning;
-    if (estado === 'ERROR' || estado === 'VENCIDO') return BADGE.danger;
-    if (estado === 'ASIGNADO') return BADGE.gray;
-    return BADGE.brand;
-};
+const progressLabel = (item) => relevamientoBadge(item.estado).label;
+const progressBadge = (item) => relevamientoBadge(item.estado);
 
 const syncLabel = (syncEstado) => {
     const estado = normalizeEstado(syncEstado);
@@ -110,6 +88,7 @@ export default function RelevamientosScreen({ onOpenRelevamiento }) {
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
     const [error, setError] = useState('');
+    const now = useAssignmentClock(relevamientos);
 
     const formatDate = useCallback((isoDate) => {
         return formatAppDate(isoDate);
@@ -134,13 +113,11 @@ export default function RelevamientosScreen({ onOpenRelevamiento }) {
 
     const relevamientosDesdeHoy = useMemo(() => {
         return relevamientos
-            .filter((item) => isDateTimeCurrentOrFuture(
-                item.fecha_hasta || item.fecha_asignada || item.created_at,
-            ))
+            .filter((item) => isAssignmentVisible(item, now))
             .sort((a, b) => (
                 new Date(a.fecha_asignada || a.created_at) - new Date(b.fecha_asignada || b.created_at)
             ));
-    }, [relevamientos]);
+    }, [relevamientos, now]);
 
     const filteredRelevamientos = useMemo(() => {
         if (statusFilter === 'TODOS') return relevamientosDesdeHoy;
@@ -303,6 +280,7 @@ export default function RelevamientosScreen({ onOpenRelevamiento }) {
                             <StaggeredItem key={item.id} index={index + 3}>
                                 <RelevamientoRow
                                     item={item}
+                                    now={now}
                                     index={index}
                                     total={filteredRelevamientos.length}
                                     formatDate={formatDate}
@@ -347,8 +325,9 @@ function StatCard({ stat, typography }) {
     );
 }
 
-function RelevamientoRow({ item, index, total, formatDate, onOpenRelevamiento, typography }) {
+function RelevamientoRow({ item, now, index, total, formatDate, onOpenRelevamiento, typography }) {
     const isDone = DONE_STATES.includes(normalizeEstado(item.estado));
+    const closing = !item.pausado && !isDone ? closingSoonLabel(item.fecha_asignada, item.fecha_hasta, now) : '';
     const relevados = item.relevados ?? item.relevados_count ?? item.formularios_count ?? item.personas_count ?? 0;
 
     return (
@@ -363,6 +342,10 @@ function RelevamientoRow({ item, index, total, formatDate, onOpenRelevamiento, t
                     <Text style={[styles.rowTitle, { fontFamily: typography.bold }]} numberOfLines={2}>
                         {titleFor(item)}
                     </Text>
+                    <Text style={[styles.rowSubtitle, { fontFamily: typography.medium }]}>
+                        {formatDateTimeRange(item.fecha_asignada || item.created_at, item.fecha_hasta || item.fecha_asignada || item.created_at)}
+                    </Text>
+                    {closing ? <Text accessibilityRole="alert" style={[styles.rowSubtitle, { color: BADGE.warning.tx, fontFamily: typography.semibold }]}>{closing}</Text> : null}
                     <Text style={[styles.rowSubtitle, { fontFamily: typography.medium }]} numberOfLines={1}>
                         {valueOrDash(item.convocatoria_nombre || item.descripcion || item.observaciones)}
                     </Text>
@@ -381,12 +364,6 @@ function RelevamientoRow({ item, index, total, formatDate, onOpenRelevamiento, t
                     label="Zona"
                     value={valueOrDash(item.zona || item.localidad || item.direccion_objetivo)}
                     icon="location-outline"
-                    typography={typography}
-                />
-                <MetaCell
-                    label="Vigencia"
-                    value={formatDateTimeRange(item.fecha_asignada || item.created_at, item.fecha_hasta || item.fecha_asignada || item.created_at)}
-                    icon="calendar-outline"
                     typography={typography}
                 />
                 <MetaCell

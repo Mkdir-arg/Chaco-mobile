@@ -9,16 +9,14 @@ const {
 
 const NETWORK_SECURITY_CONFIG = `<?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <base-config cleartextTrafficPermitted="true" />
+    <base-config cleartextTrafficPermitted="false" />
     <domain-config cleartextTrafficPermitted="false">
-        <domain includeSubdomains="false">relevamiento-deshum.ecomdev.ar</domain>
+        <domain includeSubdomains="false">datanach.ecomdev.ar</domain>
+        <domain includeSubdomains="false">datanach.chaco.gob.ar</domain>
         <trust-anchors>
             <certificates src="system" />
             <certificates src="@raw/letsencrypt_yr2" />
         </trust-anchors>
-    </domain-config>
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">10.5.6.209</domain>
     </domain-config>
 </network-security-config>
 `;
@@ -26,7 +24,7 @@ const NETWORK_SECURITY_CONFIG = `<?xml version="1.0" encoding="utf-8"?>
 const withAndroidManifestNetworkSecurityConfig = (config) =>
   withAndroidManifest(config, (modConfig) => {
     const application = AndroidConfig.Manifest.getMainApplicationOrThrow(modConfig.modResults);
-    application.$['android:usesCleartextTraffic'] = 'true';
+    application.$['android:usesCleartextTraffic'] = 'false';
     application.$['android:networkSecurityConfig'] = '@xml/network_security_config';
     return modConfig;
   });
