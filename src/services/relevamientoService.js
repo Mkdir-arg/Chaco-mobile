@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as SQLite from 'expo-sqlite';
+import { serializeSqliteAccess } from './sqliteAccess';
 import { Platform } from 'react-native';
 import { becasRequest, becasUploadFile, getBecasToken, getStoredBecasUser } from './becasApi';
 import { isDateTimeActive } from '../utils/dates';
@@ -153,7 +154,7 @@ const mapDjangoRelevamientoDetail = (row = {}) => {
 
 const getSqliteDb = async () => {
   if (!sqliteDbPromise) {
-    sqliteDbPromise = SQLite.openDatabaseAsync(SQLITE_DB_NAME);
+    sqliteDbPromise = SQLite.openDatabaseAsync(SQLITE_DB_NAME).then(serializeSqliteAccess);
   }
   return sqliteDbPromise;
 };
@@ -169,9 +170,7 @@ const runSqliteTx = async (db, task) => {
       }
     }
   }
-  await db.withTransactionAsync(async () => {
-    await task(db);
-  });
+  await db.withTransactionAsync(task);
 };
 
 const ensureSqliteColumn = async (db, tableName, columnName, columnDef) => {
@@ -715,9 +714,8 @@ const readCachedRemoteRecord = async (id, backend = 'django_becas') => {
   const row = await db.getFirstAsync(
     `SELECT local_id, remote_id, client_uuid, created_at, synced, sync_estado, sync_error, sync_error_code, observaciones, latitud, longitud, payload_json
      FROM ${SQLITE_LOCAL_TABLE}
-     WHERE remote_id = ? OR local_id = ?
+     WHERE local_id = ?
      LIMIT 1`,
-    String(id),
     createRemoteCacheId(backend, id)
   );
   if (!row) return null;
@@ -1466,7 +1464,8 @@ const relevamientoService = {
       `UPDATE ${SQLITE_OUTBOX_TABLE}
        SET status = 'PENDING', retry_count = 0, next_retry_at = NULL, started_at = NULL, updated_at = ?
        WHERE status = 'FAILED_PERMANENT'
-         AND (last_error LIKE '%<!DOCTYPE html%' OR last_error LIKE '%pagina HTML inesperada%')`,
+         AND (last_error LIKE '%<!DOCTYPE html%' OR last_error LIKE '%pagina HTML inesperada%'
+           OR last_error LIKE '%database is locked%')`,
       nowIso()
     );
     const queue = await readQueue();

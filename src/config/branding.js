@@ -6,7 +6,7 @@ const BRANDING_PROFILES = {
     loginSubtitle: 'Inicia sesion para continuar',
     registerSubtitle: 'Unite a DATAÑACH',
     assets: {
-      logo: require('../../assets/brand/mini-logo-chaco.png'),
+      logo: require('../../assets/brand/app-icon-chaco-symbol.png'),
       miniLogo: require('../../assets/brand/mini-logo-chaco.png'),
       bannerBackground: require('../../assets/images/back_banner.jpg'),
     },
@@ -82,7 +82,7 @@ const BRANDING_PROFILES = {
     loginSubtitle: 'Iniciá sesión para continuar',
     registerSubtitle: 'Unite a DATAÑACH',
     assets: {
-      logo: require('../../assets/brand/mini-logo-chaco.png'),
+      logo: require('../../assets/brand/app-icon-chaco-symbol.png'),
       miniLogo: require('../../assets/brand/mini-logo-chaco.png'),
       bannerBackground: require('../../assets/images/back_banner.jpg'),
     },

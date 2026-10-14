@@ -119,3 +119,25 @@ test('listado oculta vencidos sin pendientes y conserva los que requieren sincro
   assert.equal(dates.isAssignmentVisible(item, now), false);
   assert.equal(dates.isAssignmentVisible({...item, has_pending_operations: true}, now), true);
 });
+
+
+test('a submitted case with the same remote ID does not hide the assignment period', async () => {
+  const {service, sql, setFetch} = await setup();
+  const cached = sql.prepare("SELECT * FROM local_relevamientos WHERE local_id='remote_django_becas_1'").get();
+  sql.prepare("DELETE FROM local_relevamientos WHERE local_id=?").run(cached.local_id);
+  sql.prepare(`INSERT INTO local_relevamientos (local_id,remote_id,created_at,updated_at,payload_json,synced)
+    VALUES ('submitted_case','1','now','now',?,1)`).run(JSON.stringify({_owner_user_id: '7', backend: 'django_becas', relevamiento_id: 99}));
+  sql.prepare(`INSERT INTO local_relevamientos (local_id,remote_id,created_at,updated_at,payload_json,synced)
+    VALUES (?,?,?,?,?,1)`).run(cached.local_id, cached.remote_id, cached.created_at, cached.updated_at, cached.payload_json);
+  let starts = 0;
+  setFetch(async url => {
+    assert.ok(url.endsWith('/relevamientos/1/iniciar/'));
+    starts++;
+    return response(200, {id: 1, estado: 'EN_CURSO'});
+  });
+  const result = await service.iniciarRelevamiento(1);
+  assert.equal(result.success, true);
+  assert.equal(starts, 1);
+  const person = sql.prepare("SELECT payload_json FROM local_relevamientos WHERE local_id='submitted_case'").get();
+  assert.equal(JSON.parse(person.payload_json).relevamiento_id, 99);
+});
