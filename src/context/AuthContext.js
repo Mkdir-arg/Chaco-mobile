@@ -3,6 +3,7 @@ import {
   clearBecasSession,
   getStoredBecasUser,
   loginBecas,
+  subscribeBecasSessionExpired,
 } from '../services/becasApi';
 
 const AuthContext = createContext({});
@@ -13,10 +14,15 @@ export const AuthProvider = ({ children }) => {
 
   useEffect(() => {
     let mounted = true;
+    let sessionExpired = false;
+    const unsubscribe = subscribeBecasSessionExpired(() => {
+      sessionExpired = true;
+      if (mounted) setUser(null);
+    });
     (async () => {
       try {
         const stored = await getStoredBecasUser();
-        if (mounted) setUser(stored);
+        if (mounted && !sessionExpired) setUser(stored);
       } catch {
         if (mounted) setUser(null);
       } finally {
@@ -25,6 +31,7 @@ export const AuthProvider = ({ children }) => {
     })();
     return () => {
       mounted = false;
+      unsubscribe();
     };
   }, []);
 

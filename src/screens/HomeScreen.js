@@ -1,10 +1,12 @@
+import { relevamientoBadge } from '../theme/statusBadges';
 import React, { useCallback, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, RefreshControl } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
 import { Ionicons } from '@expo/vector-icons';
 import StaggeredItem from '../components/StaggeredItem';
 import { designColors, fontSizes, radii } from '../theme';
-import { dateKey } from '../utils/dates';
+import { dateKey, parseAssignmentDate, formatDateTimeRange, closingSoonLabel, isDateTimeCurrentOrFuture, ASSIGNMENT_TIME_ZONE } from '../utils/dates';
+import useAssignmentClock from '../hooks/useAssignmentClock';
 
 const UI = {
     canvas: designColors.bgSecondary,
@@ -27,18 +29,19 @@ export default function HomeScreen({
     const { typography } = useTheme();
     const [selectedDateKey, setSelectedDateKey] = useState(() => dateKey(new Date()));
     const [refreshing, setRefreshing] = useState(false);
-    const todayDateKey = dateKey(new Date());
+    const now = useAssignmentClock(assignedRelevamientos);
+    const todayDateKey = dateKey(now);
 
     const calendarDays = useMemo(() => {
-        const today = new Date();
+        const today = parseAssignmentDate(todayDateKey);
         const base = Array.from({ length: 7 }, (_, index) => {
             const next = new Date(today);
-            next.setDate(today.getDate() + index);
+            next.setUTCDate(today.getUTCDate() + index);
             return dateKey(next);
         });
         const assigned = assignedRelevamientos.flatMap((item) => assignmentDateKeys(item));
         return Array.from(new Set([...base, ...assigned])).sort();
-    }, [assignedRelevamientos]);
+    }, [assignedRelevamientos, todayDateKey]);
 
     const selectedRelevamientos = useMemo(
         () => assignedRelevamientos.filter((item) => assignmentIncludesDate(item, selectedDateKey)),
@@ -85,7 +88,7 @@ export default function HomeScreen({
                             const isToday = key === todayDateKey;
                             const dayRelevamientos = assignedRelevamientos.filter((item) => assignmentIncludesDate(item, key));
                             const count = dayRelevamientos.length;
-                            const hasOverdue = key < todayDateKey && dayRelevamientos.some((item) => isOverdueRelevamiento(item, todayDateKey));
+                            const hasOverdue = key < todayDateKey && dayRelevamientos.some((item) => isOverdueRelevamiento(item, now));
                             const label = formatCalendarLabel(key);
                             return (
                                 <Pressable
@@ -119,7 +122,8 @@ export default function HomeScreen({
                                     key={item.id}
                                     item={item}
                                     typography={typography}
-                                    overdue={isOverdueRelevamiento(item, todayDateKey)}
+                                    now={now}
+                                    overdue={isOverdueRelevamiento(item, now)}
                                     onPress={() => (onOpenRelevamiento ? onOpenRelevamiento(item.id) : onOpenRelevamientos())}
                                 />
                             ))
@@ -132,7 +136,8 @@ export default function HomeScreen({
     );
 }
 
-function RelevamientoCard({ item, typography, overdue, onPress }) {
+function RelevamientoCard({ item, typography, overdue, onPress, now }) {
+    const closing = !item.pausado && isOpenRelevamiento(item) ? closingSoonLabel(item.fecha_asignada, item.fecha_hasta, now) : '';
     return (
         <Pressable
             onPress={onPress}
@@ -143,7 +148,7 @@ function RelevamientoCard({ item, typography, overdue, onPress }) {
             ]}
         >
             <View style={[styles.actionIcon, overdue && styles.actionIconOverdue]}>
-                <Ionicons name="clipboard-outline" size={22} color={overdue ? designColors.danger : designColors.brand} />
+                <Ionicons name="clipboard-outline" size={22} color={overdue ? designColors.warning : designColors.brand} />
             </View>
             <View style={styles.actionCopy}>
                 <Text style={[styles.actionTitle, { fontFamily: typography.bold }]} numberOfLines={1}>
@@ -152,12 +157,13 @@ function RelevamientoCard({ item, typography, overdue, onPress }) {
                 <Text style={[styles.actionPeriod, { fontFamily: typography.semibold }]} numberOfLines={1}>
                     {formatAssignmentPeriod(item)}
                 </Text>
+                {closing ? <Text accessibilityRole="alert" style={[styles.actionPeriod, { color: designColors.warning, fontFamily: typography.semibold }]}>{closing}</Text> : null}
                 <View style={styles.actionMetaRow}>
                     <Text style={[styles.actionDescription, { fontFamily: typography.regular }]} numberOfLines={1}>
                         {item.zona || item.localidad || item.direccion_objetivo || 'Sin zona'}
                     </Text>
-                    <View style={[styles.statusPill, overdue && styles.statusPillOverdue]}>
-                        <Text style={[styles.statusPillText, overdue && styles.statusPillTextOverdue, { fontFamily: typography.bold }]}>
+                    <View style={[styles.statusPill, { backgroundColor: relevamientoBadge(overdue ? 'VENCIDO' : item.estado).bg, borderColor: relevamientoBadge(overdue ? 'VENCIDO' : item.estado).bd }]}>
+                        <Text style={[styles.statusPillText, { color: relevamientoBadge(overdue ? 'VENCIDO' : item.estado).tx }, { fontFamily: typography.bold }]}>
                             {overdue ? 'Vencido' : statusLabel(item.estado)}
                         </Text>
                     </View>
@@ -176,17 +182,8 @@ function assignmentEndDateKey(item = {}) {
     return dateKey(item.fecha_hasta || item.fecha_asignada || item.created_at || item.relevado_at);
 }
 
-function formatDateKey(key = '') {
-    const [year, month, day] = String(key).split('-');
-    return year && month && day ? `${day}/${month}/${year}` : 'Sin fecha';
-}
-
 function formatAssignmentPeriod(item = {}) {
-    const start = assignmentDateKey(item);
-    const end = assignmentEndDateKey(item);
-    if (!start) return 'Sin fecha asignada';
-    if (!end || start === end) return formatDateKey(start);
-    return `${formatDateKey(start)} al ${formatDateKey(end)}`;
+    return formatDateTimeRange(item.fecha_asignada || item.created_at, item.fecha_hasta || item.fecha_asignada || item.created_at);
 }
 
 function assignmentIncludesDate(item = {}, key = '') {
@@ -200,11 +197,11 @@ function assignmentDateKeys(item = {}) {
     const endKey = assignmentEndDateKey(item);
     if (!startKey || !endKey || endKey < startKey) return startKey ? [startKey] : [];
     const keys = [];
-    const cursor = new Date(`${startKey}T12:00:00`);
-    const end = new Date(`${endKey}T12:00:00`);
+    const cursor = parseAssignmentDate(startKey);
+    const end = parseAssignmentDate(endKey);
     while (cursor <= end) {
         keys.push(dateKey(cursor));
-        cursor.setDate(cursor.getDate() + 1);
+        cursor.setUTCDate(cursor.getUTCDate() + 1);
     }
     return keys;
 }
@@ -214,34 +211,22 @@ function isOpenRelevamiento(item = {}) {
     return status === 'ASIGNADO' || status === 'EN_CURSO' || status === 'FINALIZANDO';
 }
 
-function isOverdueRelevamiento(item = {}, todayKey = '') {
-    const endKey = assignmentEndDateKey(item);
-    return !!endKey && endKey < todayKey && isOpenRelevamiento(item);
+function isOverdueRelevamiento(item = {}, now = new Date()) {
+    return !isDateTimeCurrentOrFuture(item.fecha_hasta || item.fecha_asignada, now) && isOpenRelevamiento(item);
 }
 
 function formatCalendarLabel(key) {
-    const date = new Date(`${key}T12:00:00`);
-    const day = date.toLocaleDateString('es-AR', { weekday: 'short' }).replace('.', '');
-    const month = date.toLocaleDateString('es-AR', { month: 'short' }).replace('.', '');
+    const date = parseAssignmentDate(key);
+    const day = date.toLocaleDateString('es-AR', { weekday: 'short', timeZone: ASSIGNMENT_TIME_ZONE }).replace('.', '');
+    const month = date.toLocaleDateString('es-AR', { month: 'short', timeZone: ASSIGNMENT_TIME_ZONE }).replace('.', '');
     return {
         day,
-        number: String(date.getDate()).padStart(2, '0'),
+        number: key.split('-')[2],
         month,
     };
 }
 
-function statusLabel(status) {
-    const value = String(status || '').toUpperCase();
-    const labels = {
-        ASIGNADO: 'Asignado',
-        EN_CURSO: 'En curso',
-        FINALIZANDO: 'Finalizando',
-        FINALIZADO: 'Finalizado',
-        EN_REVISION: 'En revision',
-        TERMINADO: 'Terminado',
-    };
-    return labels[value] || 'Asignado';
-}
+const statusLabel = (status) => relevamientoBadge(status).label;
 
 const styles = StyleSheet.create({
     container: {
@@ -288,8 +273,8 @@ const styles = StyleSheet.create({
         borderColor: designColors.successMedium,
     },
     dayChipOverdue: {
-        backgroundColor: designColors.dangerSoft,
-        borderColor: designColors.dangerMedium,
+        backgroundColor: relevamientoBadge("VENCIDO").bg,
+        borderColor: relevamientoBadge("VENCIDO").bd,
     },
     dayName: {
         color: UI.subtle,
@@ -321,7 +306,7 @@ const styles = StyleSheet.create({
         backgroundColor: designColors.brand,
     },
     dayDotOverdue: {
-        backgroundColor: designColors.danger,
+        backgroundColor: relevamientoBadge("VENCIDO").tx,
     },
     dayDotToday: {
         backgroundColor: designColors.success,
@@ -353,9 +338,9 @@ const styles = StyleSheet.create({
         elevation: 2,
     },
     assignmentRowOverdue: {
-        borderLeftColor: designColors.danger,
-        borderColor: designColors.dangerMedium,
-        backgroundColor: designColors.dangerSoft,
+        borderLeftColor: relevamientoBadge("VENCIDO").tx,
+        borderColor: relevamientoBadge("VENCIDO").bd,
+        backgroundColor: relevamientoBadge("VENCIDO").bg,
     },
     emptyDay: {
         alignItems: 'center',
@@ -437,7 +422,7 @@ const styles = StyleSheet.create({
     },
     statusPillOverdue: {
         backgroundColor: designColors.white,
-        borderColor: designColors.dangerMedium,
+        borderColor: relevamientoBadge("VENCIDO").bd,
     },
     statusPillText: {
         color: UI.brandText,
@@ -445,6 +430,6 @@ const styles = StyleSheet.create({
         lineHeight: 13,
     },
     statusPillTextOverdue: {
-        color: designColors.danger,
+        color: relevamientoBadge("VENCIDO").tx,
     },
 });
