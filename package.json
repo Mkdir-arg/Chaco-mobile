@@ -46,5 +46,8 @@
     "react-native-svg": "15.12.1",
     "react-native-web": "^0.21.0"
   },
-  "private": true
+  "private": true,
+  "devDependencies": {
+    "react-test-renderer": "19.1.0"
+  }
 }
