@@ -3,6 +3,7 @@ import NetInfo from '@react-native-community/netinfo';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as SQLite from 'expo-sqlite';
 import { serializeSqliteAccess } from './sqliteAccess';
+import { usaConstructor, camposDelDiseno } from './definicionFormulario';
 import { Platform } from 'react-native';
 import { becasRequest, becasUploadFile, getBecasToken, getStoredBecasUser } from './becasApi';
 import { isDateTimeActive } from '../utils/dates';
@@ -139,7 +140,8 @@ const mapDjangoRelevamientoDetail = (row = {}) => {
     source: 'asignado',
     backend: 'django_becas',
     titulo: row.nombre || 'Relevamiento',
-    campos_definicion: [...globales, ...requisitos].sort((a, b) => (a.orden || 0) - (b.orden || 0)),
+    campos_definicion: usaConstructor(definicion) ? camposDelDiseno(definicion)
+      : [...globales, ...requisitos].sort((a, b) => (a.orden || 0) - (b.orden || 0)),
     definicion_formulario: {
       ...definicion,
       requiere_gps: !!definicion.requiere_gps,
@@ -624,6 +626,10 @@ export const validateFormularioAttachment = async (attachment) => {
 };
 
 const persistFormularioAttachments = async (payload = {}) => {
+  if (payload.definicion_formulario?.acepta_respuestas !== true
+    && (payload.campos_definicion || []).some(field => field.scope === 'propios')) {
+    throw new Error('El servidor necesita actualizarse para recibir los campos propios de este formulario.');
+  }
   const data = {
     ...(payload.data || {}),
     globales: { ...(payload?.data?.globales || {}) },
@@ -631,13 +637,17 @@ const persistFormularioAttachments = async (payload = {}) => {
     meta: { ...(payload?.data?.meta || {}) },
   };
   const attachments = [];
+  const respuestas = payload.respuestas ? { ...payload.respuestas } : null;
 
   for (const field of payload.campos_definicion || []) {
     if (String(field?.tipo || '').toUpperCase() !== 'ARCHIVO') continue;
-    const scope = field?.scope === 'requisitos' ? 'requisitos' : 'globales';
+    const scope = field?.scope || 'globales';
     const fieldId = String(field?.original_id || field?.id || '');
-    const storedAttachment = (payload.adjuntos_formulario || []).find((item) => item.key === `${scope}:${fieldId}`);
-    const value = data?.[scope]?.[fieldId]?.uri ? data[scope][fieldId] : storedAttachment;
+    const attachmentKey = field.clave || `${scope}:${fieldId}`;
+    const storedAttachment = (payload.adjuntos_formulario || []).find((item) => item.key === attachmentKey);
+    const responseValue = respuestas?.[field.clave];
+    const value = responseValue?.uri ? responseValue
+      : data?.[scope]?.[fieldId]?.uri ? data[scope][fieldId] : storedAttachment;
     const rawUri = value?.uri || '';
     if (!fieldId || !rawUri) continue;
 
@@ -650,7 +660,8 @@ const persistFormularioAttachments = async (payload = {}) => {
       size: value?.size || null,
     });
     attachments.push({
-      key: `${scope}:${fieldId}`,
+      key: attachmentKey,
+      clave: payload.definicion_formulario?.acepta_respuestas === true ? field.clave : null,
       scope,
       field_id: fieldId,
       uri: persisted.uri,
@@ -659,10 +670,12 @@ const persistFormularioAttachments = async (payload = {}) => {
       size: persisted.size,
       label: field?.etiqueta || field?.texto || '',
     });
-    data[scope][fieldId] = { archivo_adjunto: true, nombre: sanitizeFileName(fileName) };
+    const placeholder = { archivo_adjunto: true, nombre: sanitizeFileName(fileName) };
+    if (scope !== 'propios') data[scope][fieldId] = placeholder;
+    if (respuestas && field.clave) respuestas[field.clave] = placeholder;
   }
 
-  return { ...payload, data, adjuntos_formulario: attachments };
+  return { ...payload, ...(respuestas ? { respuestas } : {}), data, adjuntos_formulario: attachments };
 };
 
 const calculateBackoffMs = (retryCount = 0) => {
@@ -983,6 +996,8 @@ const syncRemoteBecasFormulario = async (operation) => {
         version_capturada: payload.version_capturada ?? null,
         datos_identificacion: payload.datos_identificacion,
         data: payload.data || { globales: {}, requisitos: {} },
+        ...(payload.definicion_formulario?.acepta_respuestas === true && payload.respuestas
+          ? { respuestas: payload.respuestas } : {}),
       },
     });
     formularioId = formulario.id;
@@ -1002,7 +1017,7 @@ const syncRemoteBecasFormulario = async (operation) => {
         fileUri: attachment.uri,
         fileName: attachment.fileName,
         mimeType: attachment.mimeType,
-        fields: { [relationField]: attachment.field_id },
+        fields: attachment.clave ? { clave: attachment.clave } : { [relationField]: attachment.field_id },
       });
       uploadedKeys.add(attachment.key);
     } catch (error) {
@@ -1673,6 +1688,7 @@ const relevamientoService = {
       client_uid: original.client_uid,
       capturado_en: original.capturado_en || operation.created_at,
       version_capturada: original.version_capturada,
+      definicion_formulario: original.definicion_formulario,
       created_at: original.created_at || operation.created_at,
       synced: false, sync_estado: 'PENDIENTE',
     });
@@ -1913,10 +1929,10 @@ const relevamientoService = {
     const connectivity = await getConnectivitySnapshot();
     if (!connectivity.hasInternet) {
       const cached = await readCachedRemoteRecord(id);
-      if (cached?.payload) {
+      if (cached?.payload?.definicion_formulario) {
         return { success: true, detail: { ...cached.payload, cached: true, offline: true } };
       }
-      return { success: false, error: 'Sin conexion y sin detalle descargado para este relevamiento' };
+      return { success: false, error: 'Necesitás conexión para descargar el formulario por primera vez.' };
     }
 
     try {
@@ -1934,7 +1950,7 @@ const relevamientoService = {
       }
       if (isNetworkError(djangoError)) {
         const cached = await readCachedRemoteRecord(id);
-        if (cached?.payload) {
+        if (cached?.payload?.definicion_formulario) {
           return { success: true, detail: { ...cached.payload, cached: true, offline: true } };
         }
         return { success: false, error: djangoError.message || 'No se pudo cargar el relevamiento asignado' };
@@ -1942,7 +1958,7 @@ const relevamientoService = {
     }
 
     const cached = await readCachedRemoteRecord(id);
-    if (cached?.payload) {
+    if (cached?.payload?.definicion_formulario) {
       return { success: true, detail: { ...cached.payload, cached: true } };
     }
     return { success: false, error: 'No se pudo cargar el relevamiento desde Django.' };

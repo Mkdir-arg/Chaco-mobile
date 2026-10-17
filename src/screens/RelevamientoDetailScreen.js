@@ -22,6 +22,7 @@ import Banner from '../components/Banner';
 import CameraModal from '../components/CameraModal';
 import CustomButton from '../components/CustomButton';
 import useAssignmentClock from '../hooks/useAssignmentClock';
+import { usaConstructor, gruposDelDiseno, camposDelDiseno, evaluarDiseno, faltantesDelDiseno, vinculoDelCampo, valorDelCampo, esIdentidad, datosDelDiseno } from '../services/definicionFormulario';
 import relevamientoService, { validateFormularioAttachment } from '../services/relevamientoService';
 import { becasRequest } from '../services/becasApi';
 import { designColors, fontSizes, radii } from '../theme';
@@ -87,6 +88,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
   const [dniForm, setDniForm] = useState(emptyDniForm);
   const identityBlocked = blockedIdentities.current.has(identityKey(dniForm.dni_numero, dniForm.dni_sexo));
   const [dynamicValues, setDynamicValues] = useState({});
+  const [optionSearch, setOptionSearch] = useState({});
   const [contactForm, setContactForm] = useState({ celular: '', email_contacto: '' });
   const [apoderadoForm, setApoderadoForm] = useState({ nombre: '', apellido: '', dni: '', sexo: '', fecha_nacimiento: '' });
   const [datePickerFieldId, setDatePickerFieldId] = useState(null);
@@ -97,15 +99,16 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
   const [changingRelevamientoState, setChangingRelevamientoState] = useState(false);
   const [formularios, setFormularios] = useState([]);
   const [formMode, setFormMode] = useState(false);
+  const [startingCase, setStartingCase] = useState(false);
   const [failedOperations, setFailedOperations] = useState([]);
   const [editingOperation, setEditingOperation] = useState(null);
   const [queueActionId, setQueueActionId] = useState('');
   const capturedDefinitionRef = useRef(null);
+  const capturedAtRef = useRef(null);
   const gpsCoordsRef = useRef(null);
   const gpsCapturePromiseRef = useRef(null);
   const assignedFormScrollRef = useRef(null);
   const now = useAssignmentClock(detail ? [detail] : []);
-  const formularioFields = editingOperation?.payload?.campos_definicion || detail?.campos_definicion || [];
 
   useEffect(() => {
     if (!formMode) return undefined;
@@ -201,7 +204,13 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     return '-';
   };
 
-  const definicionPreguntas = editingOperation?.payload?.definicion_formulario || detail?.definicion_formulario || {};
+  const definicionPreguntas = editingOperation?.payload?.definicion_formulario
+    || (formMode ? capturedDefinitionRef.current : null) || detail?.definicion_formulario || {};
+  const usesConstructor = usaConstructor(definicionPreguntas);
+  const designState = { identidad: dniForm, contacto: contactForm, apoderado: apoderadoForm, valores: dynamicValues };
+  const design = usesConstructor ? evaluarDiseno(definicionPreguntas, designState, capturedAtRef.current) : null;
+  const formularioFields = usesConstructor ? camposDelDiseno(definicionPreguntas)
+    : editingOperation?.payload?.campos_definicion || detail?.campos_definicion || [];
   const preguntasGlobales = (definicionPreguntas.globales || []).filter((field) => field.activo !== false);
   const requisitosActivos = (definicionPreguntas.requisitos || []).filter((field) => field.activo !== false);
   const preguntasPrograma = requisitosActivos.filter((field) => field.alcance === 'programa');
@@ -211,7 +220,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
   const adultCutoffForSteps = new Date();
   adultCutoffForSteps.setFullYear(adultCutoffForSteps.getFullYear() - 18);
   const minorForSteps = !Number.isNaN(birthDateForSteps.getTime()) && birthDateForSteps > adultCutoffForSteps;
-  const assignedSteps = [
+  const legacyAssignedSteps = [
     { id: 1, title: 'Identidad', icon: 'card-outline' },
     { id: 2, title: 'Persona', icon: 'person-outline' },
     ...((preguntasGlobales.length || minorForSteps) ? [{ id: 3, title: 'Globales', icon: 'list-outline' }] : []),
@@ -220,6 +229,18 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     ...(preguntasSubsegmento.length ? [{ id: 6, title: 'Subsegmento', icon: 'git-branch-outline' }] : []),
     { id: 7, title: 'Confirmar', icon: 'checkmark-circle-outline' },
   ];
+  const confirmDesignStep = usesConstructor ? gruposDelDiseno(definicionPreguntas).length + 2 : 7;
+  const assignedSteps = usesConstructor ? [
+    { id: 1, title: 'Identidad', icon: 'card-outline' },
+    ...design.grupos.map(group => ({ id: group.stepId, title: group.titulo, icon: 'list-outline' })),
+    { id: confirmDesignStep, title: 'Confirmar', icon: 'checkmark-circle-outline' },
+  ] : legacyAssignedSteps;
+
+  useEffect(() => {
+    if (!formMode || !usesConstructor || assignedSteps.some(step => step.id === currentStep)) return;
+    const previous = assignedSteps.filter(step => step.id < currentStep).pop();
+    setCurrentStep(previous?.id || assignedSteps[0].id);
+  }, [formMode, usesConstructor, currentStep, assignedSteps.map(step => step.id).join(',')]);
 
   const handleDatePickerDraftChange = (event, selectedDate) => {
     if (event.type !== 'dismissed' && selectedDate && !Number.isNaN(selectedDate.getTime())) {
@@ -265,8 +286,11 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     if (step > 1 && blockedIdentities.current.has(identityKey(identity.dni_numero, identity.dni_sexo))) {
       setRenaperError(DECEASED_MESSAGE); return;
     }
-    setCurrentStep(step);
-    setMaxVisitedStep((prev) => Math.max(prev, step));
+    const target = usesConstructor && step === 2
+      ? evaluarDiseno(definicionPreguntas, { ...designState, identidad: identity }, capturedAtRef.current).grupos[0]?.stepId ?? confirmDesignStep
+      : step;
+    setCurrentStep(target);
+    setMaxVisitedStep((prev) => Math.max(prev, target));
   };
 
   const toIsoDate = (value = '') => {
@@ -953,9 +977,11 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
       .map(([, label]) => label);
   };
 
-  const resetPersonForm = () => {
+  const resetPersonForm = (definition = detail?.definicion_formulario || {}) => {
     setEditingOperation(null);
-    capturedDefinitionRef.current = detail?.definicion_formulario || {};
+    capturedDefinitionRef.current = definition;
+    capturedAtRef.current = new Date().toISOString();
+    setOptionSearch({});
     setCurrentStep(1);
     setMaxVisitedStep(1);
     setDniForm(emptyDniForm);
@@ -963,7 +989,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     const today = new Date();
     const todayText = `${String(today.getDate()).padStart(2, '0')}/${String(today.getMonth() + 1).padStart(2, '0')}/${today.getFullYear()}`;
     const initialDynamicValues = {};
-    (formularioFields).forEach((field) => {
+    (usaConstructor(detail?.definicion_formulario) ? [] : formularioFields).forEach((field) => {
       if (['DATE', 'FECHA'].includes(String(field?.tipo || '').toUpperCase())) {
         initialDynamicValues[field.id] = todayText;
       }
@@ -976,6 +1002,29 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     setRenaperStatus('PENDIENTE');
     setRenaperResult(null);
     setRenaperError('');
+  };
+
+  const startNewCase = async () => {
+    if (startingCase) return;
+    setStartingCase(true);
+    try {
+      const result = await relevamientoService.getRelevamientoDetail(relevamientoId);
+      if (!result.success) throw new Error(result.error || 'No se pudo descargar el formulario.');
+      const fresh = result.detail;
+      if (!isDateTimeActive(fresh.fecha_asignada, fresh.fecha_hasta)) {
+        Alert.alert('Período cerrado', 'Solo se pueden cargar casos dentro de la fecha y hora asignadas.');
+        return;
+      }
+      if (fresh.estado !== 'EN_CURSO') throw new Error('El relevamiento ya no está en curso. Actualizá la agenda.');
+      setDetail(fresh);
+      resetPersonForm(fresh.definicion_formulario || {});
+      captureGpsSilently();
+      setFormMode(true);
+    } catch (error) {
+      Alert.alert('Formulario', error.message);
+    } finally {
+      setStartingCase(false);
+    }
   };
 
   const setGpsCoordsFromPosition = (position) => {
@@ -1049,11 +1098,12 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     const payload = operation.payload;
     const identity = payload.datos_identificacion || {};
     const values = {};
-    (payload.campos_definicion || detail?.campos_definicion || []).forEach((field) => {
+    (usaConstructor(payload.definicion_formulario) ? camposDelDiseno(payload.definicion_formulario)
+      : payload.campos_definicion || detail?.campos_definicion || []).forEach((field) => {
       const scope = field.scope === 'requisitos' ? 'requisitos' : 'globales';
       const fieldId = String(field.original_id || field.id);
-      const attachment = (payload.adjuntos_formulario || []).find((item) => item.key === `${scope}:${fieldId}`);
-      values[field.id] = attachment || payload.data?.[scope]?.[fieldId] || '';
+      const attachment = (payload.adjuntos_formulario || []).find((item) => item.key === (field.clave || `${scope}:${fieldId}`));
+      values[field.id] = attachment || (payload.respuestas?.[field.clave] ?? payload.data?.[scope]?.[fieldId] ?? '');
     });
     setDniForm({ ...emptyDniForm, dni_numero: identity.dni || '', dni_sexo: identity.sexo || '',
       apellido: identity.apellido || '', nombres: identity.nombre || '', fecha_nacimiento: identity.fecha_nacimiento || '' });
@@ -1066,6 +1116,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     setRenaperResult(payload.data?.meta?.renaper_resultado || null);
     gpsCoordsRef.current = { gps_lat: payload.gps_lat, gps_lng: payload.gps_lng };
     capturedDefinitionRef.current = payload.definicion_formulario || { version: payload.version_capturada };
+    capturedAtRef.current = payload.capturado_en || payload.created_at;
     setEditingOperation(operation);
     setFormMode(true);
   };
@@ -1219,15 +1270,15 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
       return;
     }
     if (await dniYaFueRelevado(dniForm.dni_numero)) return;
-    const missing = [];
-    if (isMinorDate(dniForm.fecha_nacimiento)) {
+    const missing = usesConstructor ? faltantesDelDiseno(design.campos, design.efectivas) : [];
+    if (!usesConstructor && isMinorDate(dniForm.fecha_nacimiento)) {
       if (!String(apoderadoForm.nombre || '').trim()) missing.push('Nombre del apoderado');
       if (!String(apoderadoForm.apellido || '').trim()) missing.push('Apellido del apoderado');
       if (![7, 8].includes(cleanDigits(apoderadoForm.dni).length)) missing.push('DNI válido del apoderado');
       if (!['F', 'M'].includes(normalizeSex(apoderadoForm.sexo))) missing.push('Sexo del apoderado');
       if (!String(apoderadoForm.fecha_nacimiento || '').trim()) missing.push('Fecha de nacimiento del apoderado');
     }
-    (formularioFields).forEach((field) => {
+    (usesConstructor ? [] : formularioFields).forEach((field) => {
       const tipo = String(field.tipo || '').toUpperCase();
       if (!field.requerido) return;
       const value = dynamicValues[field.id];
@@ -1242,13 +1293,20 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
       return;
     }
 
+    if (usesConstructor && definicionPreguntas.acepta_respuestas !== true
+      && design.campos.some(field => field.scope === 'propios')) {
+      Alert.alert('Formulario', 'El servidor necesita actualizarse para recibir los campos propios de este formulario.');
+      return;
+    }
     const data = { globales: {}, requisitos: {}, meta: {} };
-    (formularioFields).forEach((field) => {
+    const capturedFields = usesConstructor ? design.campos : formularioFields;
+    capturedFields.forEach((field) => {
+      if (field.scope === 'propios') return;
       const bucket = field.scope === 'requisitos' ? 'requisitos' : 'globales';
       const tipo = String(field.tipo || '').toUpperCase();
       data[bucket][String(field.original_id || field.id)] = tipo === 'ARCHIVO'
-        ? (dynamicValues[field.id] || null)
-        : (dynamicValues[field.id] || '');
+        ? ((usesConstructor ? design.efectivas[field.clave] : dynamicValues[field.id]) || null)
+        : (usesConstructor ? design.efectivas[field.clave] ?? '' : dynamicValues[field.id] ?? '');
     });
     data.meta = {
       renaper_estado: renaperStatus,
@@ -1283,7 +1341,9 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
         gps_lng: gpsCoords.gps_lng || null,
         _cupo_maximo: Number(detail?.cupo_maximo || 0),
         data,
-        campos_definicion: formularioFields,
+        ...(usesConstructor ? datosDelDiseno(definicionPreguntas, design) : {}),
+        capturado_en: editingOperation?.payload?.capturado_en || capturedAtRef.current || new Date().toISOString(),
+        campos_definicion: capturedFields,
         finalizar: false,
       };
       const result = editingOperation
@@ -1327,7 +1387,12 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
       Alert.alert('Identificacion', 'Escanea el documento o consulta DNI y sexo en Base de Personas para continuar.');
       return;
     }
-    if (currentStep === 2) {
+    if (usesConstructor) {
+      const group = design.grupos.find(item => item.stepId === currentStep);
+      const missing = group ? faltantesDelDiseno(group.items.filter(item => item.tipo !== 'texto'), design.efectivas) : [];
+      if (missing.length) { Alert.alert('Faltan datos', 'Completá antes de continuar: ' + missing.join(', ')); return; }
+    }
+    if (!usesConstructor && currentStep === 2) {
       const missing = getMissingPersonFields();
       if (missing.length) {
         Alert.alert('Datos de la persona', `Completa antes de continuar: ${missing.join(', ')}.`);
@@ -1438,7 +1503,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
           'Base de Personas no devolvio nombre y apellido por separado. Podes corregirlos en el formulario, pero esta carga no se considerara validada.'
         );
       }
-      goToAssignedStep(2);
+      goToAssignedStep(2, nextDniForm);
     } catch (e) {
       const failure = identityFailure(e);
       if (failure.blocked) {
@@ -1563,9 +1628,32 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
   };
 
   const renderDynamicField = (field) => {
-    const value = dynamicValues[field.id] || '';
-    const options = parseOptions(field.opciones);
-    const setValue = (nextValue) => setDynamicValues((prev) => ({ ...prev, [field.id]: nextValue }));
+    const value = usesConstructor ? valorDelCampo(field, designState) : dynamicValues[field.id] ?? '';
+    const readOnly = usesConstructor && esIdentidad(field)
+      && (field.vinculo === 'dni' || isValidatedIdentity(identificationOrigin));
+    const options = parseOptions(field.opciones).filter(option => !optionSearch[field.id]
+      || String(option).toLocaleLowerCase().includes(optionSearch[field.id].toLocaleLowerCase()));
+    const setValue = (nextValue) => {
+      const bound = usesConstructor ? vinculoDelCampo(field) : null;
+      if (bound?.form === 'identidad') setDniForm(prev => ({ ...prev, [bound.key]: nextValue }));
+      else if (bound?.form === 'contacto') setContactForm(prev => ({ ...prev, [bound.key]: nextValue }));
+      else if (bound?.form === 'apoderado') setApoderadoForm(prev => ({ ...prev, [bound.key]: nextValue }));
+      else setDynamicValues(prev => ({ ...prev, [field.id]: nextValue }));
+    };
+    if (readOnly) return (
+      <View key={field.id} style={styles.formGroup}>
+        <Text style={[styles.inputLabel, { color: theme.colors.text, fontFamily: typography.semibold }]}>{field.etiqueta}</Text>
+        <View style={[styles.identityReadOnlyBox, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}>
+          <Text style={[styles.identityReadOnlyText, { color: theme.colors.text, fontFamily: typography.bold }]}>{String(value || '-')}</Text>
+        </View>
+      </View>
+    );
+    const searchInput = field.presentacion === 'BUSCADOR' ? (
+      <TextInput value={optionSearch[field.id] || ''} onChangeText={text => setOptionSearch(prev => ({ ...prev, [field.id]: text }))}
+        accessibilityLabel={'Buscar opciones de ' + field.etiqueta} placeholder="Buscar opciones"
+        placeholderTextColor={theme.colors.textSoft}
+        style={[styles.textInput, { color: theme.colors.text, borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]} />
+    ) : null;
     const tipo = String(field.tipo || '').toUpperCase();
     const isObservationField = /observaci[oó]n|observaciones/i.test(String(field.etiqueta || field.texto || ''));
 
@@ -1575,6 +1663,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
           <Text style={[styles.inputLabel, { color: theme.colors.text, fontFamily: typography.semibold }]}>
             {field.etiqueta}{field.requerido ? ' *' : ''}
           </Text>
+          {searchInput}
           <View style={styles.optionWrap}>
             {options.map((option) => {
               const selected = value === option;
@@ -1606,6 +1695,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
           <Text style={[styles.inputLabel, { color: theme.colors.text, fontFamily: typography.semibold }]}>
             {field.etiqueta}{field.requerido ? ' *' : ''}
           </Text>
+          {searchInput}
           <View style={styles.optionWrap}>
             {options.map((option) => {
               const selected = selectedValues.includes(option);
@@ -1647,7 +1737,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     }
 
     if (tipo === 'ARCHIVO') {
-      const fileValue = dynamicValues[field.id];
+      const fileValue = value;
       const isImageFile = String(fileValue?.mimeType || '').startsWith('image/');
       return (
         <View key={field.id} style={styles.formGroup}>
@@ -1700,7 +1790,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
           {field.etiqueta}{field.requerido ? ' *' : ''}
         </Text>
         <TextInput
-          value={value}
+          value={String(value ?? '')}
           onChangeText={setValue}
           multiline={tipo === 'TEXTAREA' || isObservationField}
           keyboardType={tipo === 'INT' || tipo === 'NUMERO' ? 'numeric' : 'default'}
@@ -2081,6 +2171,43 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
               {identityBlocked ? DECEASED_MESSAGE : renaperError}
             </Text>
           )}
+        </View>
+      );
+    }
+
+    if (usesConstructor) {
+      const group = design.grupos.find(item => item.stepId === currentStep);
+      if (group) return (
+        <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+          <Text style={[styles.cardTitle, { color: theme.colors.text, fontFamily: typography.bold }]}>{group.titulo}</Text>
+          {!!group.subtitulo && <Text style={[styles.personMeta, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{group.subtitulo}</Text>}
+          {group.items.map(item => item.tipo === 'texto' ? (
+            <Text key={item.clave} style={[styles.personMeta, { color: theme.colors.text, fontFamily: typography.medium }]}>
+              {String(item.texto || '').split(/(https?:\/\/[^\s]+)/g).map((part, index) => /^https?:\/\//.test(part) ? (
+                <Text key={index} accessibilityRole="link" style={{ color: theme.colors.primary, textDecorationLine: 'underline' }}
+                  onPress={() => WebBrowser.openBrowserAsync(part).catch(() => Alert.alert('Enlace', 'No se pudo abrir el enlace.'))}>{part}</Text>
+              ) : part)}
+            </Text>
+          ) : renderDynamicField(item))}
+        </View>
+      );
+      return (
+        <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+          <Text style={[styles.cardTitle, { color: theme.colors.text, fontFamily: typography.bold }]}>Confirmación</Text>
+          {design.grupos.map(item => (
+            <View key={item.clave}>
+              <Text style={[styles.formSectionTitle, { color: theme.colors.text, fontFamily: typography.semibold }]}>{item.titulo}</Text>
+              {item.items.filter(field => field.tipo !== 'texto').map(field => {
+                const value = design.efectivas[field.clave];
+                const label = field.tipo === 'ARCHIVO' ? value?.fileName || value?.nombre || '-'
+                  : Array.isArray(value) ? value.join(', ') : String(value ?? '-');
+                return <View key={field.clave} style={styles.kvRow}>
+                  <Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>{field.etiqueta}</Text>
+                  <Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{label}</Text>
+                </View>;
+              })}
+            </View>
+          ))}
         </View>
       );
     }
@@ -2552,15 +2679,8 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
               ) : null}
 
               {canAddPerson ? <TouchableOpacity
-                onPress={() => {
-                  if (!isDateTimeActive(detail?.fecha_asignada, detail?.fecha_hasta)) {
-                    Alert.alert('Período cerrado', 'Solo se pueden cargar casos dentro de la fecha y hora asignadas.');
-                    return;
-                  }
-                  resetPersonForm();
-                  captureGpsSilently();
-                  setFormMode(true);
-                }}
+                disabled={startingCase}
+                onPress={startNewCase}
                 style={[styles.primaryAction, { backgroundColor: theme.colors.primary }]}
               >
                 <Ionicons name="person-add-outline" size={18} color="#FFFFFF" />

@@ -30,7 +30,7 @@ async function setup(platform = 'web') {
   const context = vm.createContext({
     Date: ClockDate,
     console: { log() {}, warn() {} }, setTimeout, clearTimeout,
-    fetch: (...args) => fetchHandler(...args), FormData: class {append() {}},
+    fetch: (...args) => fetchHandler(...args), FormData: class {constructor() {this.fields = [];} append(...args) {this.fields.push(args);}},
   });
   const mocks = {
     '@react-native-async-storage/async-storage': {default: storage},
@@ -71,7 +71,7 @@ async function setup(platform = 'web') {
     VALUES ('remote_django_becas_1','1','now','now',?,1)`).run(JSON.stringify(campaign));
   const setPeriod = (start, end) => sql.prepare("UPDATE local_relevamientos SET payload_json=? WHERE local_id='remote_django_becas_1'")
     .run(JSON.stringify({...campaign, fecha_asignada: start, fecha_hasta: end}));
-  return {identity: load('./identityLookup'), api, service, dates: load('../utils/dates'), values, sql, setPeriod,
+  return {definition: load('./definicionFormulario'), conditions: load('./condiciones'), identity: load('./identityLookup'), api, service, dates: load('../utils/dates'), values, sql, setPeriod,
     setNow: value => {currentTime = new Date(value).getTime();}, setOnline: value => {online = value;}, setFetch: handler => {fetchHandler = handler;}};
 }
 function response(status, payload) {

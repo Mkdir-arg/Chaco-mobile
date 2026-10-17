@@ -332,3 +332,40 @@ carga manual; el 429 muestra el aviso específico del tope de consultas.
 Validar en dispositivo las fuentes del padrón y Base de Personas, el bloqueo de
 fallecidos y la carga manual tras alcanzar el tope. Las pruebas automatizadas
 cubren el contrato HTTP y la clasificación de esas respuestas.
+
+
+## Formularios del constructor (#348)
+
+Cuando la API entrega `definicion_formulario.items`, la app usa sus grupos,
+textos y preguntas en el orden recibido. El `orden` del catálogo no reemplaza
+el orden del diseño. Reutiliza los controles de la app para campos, fechas,
+selectores, búsqueda de opciones y archivos. Los vínculos de identidad se
+precargan y quedan en solo lectura cuando la identidad está validada; contacto
+y apoderado se completan dentro de los grupos del diseño.
+
+Las condiciones se evalúan en vivo con el motor de `nodo-condiciones.js` portado
+a `src/services/condiciones.js`. Un campo oculto no se exige ni se manda, incluidos
+sus adjuntos. La condición del diseño determina cuándo aparece Apoderado; no se
+impone la regla fija de menores al usar el constructor. Los textos se muestran
+como texto plano, con enlaces HTTP/HTTPS tocables.
+
+Cada captura nueva descarga la definición vigente si hay conexión. Sin señal
+usa la copia descargada; sin copia pide conexión. Durante la captura y al corregir
+un envío se conserva la definición local y la fecha original: no se reinterpreta
+la carga al cambiar el diseño del servidor.
+
+Con `acepta_respuestas: true`, se envían `respuestas` por clave y los adjuntos
+referencian `clave` (también `cp-`). Se conserva el payload anterior para servidores
+sin esa señal. No se permite enviar campos propios a un servidor que aún no los
+acepta. Sin `items` se mantiene el formulario legacy.
+
+La definición se guarda solo en el celular: al servidor se envía
+`version_capturada`, no una foto `definicion`. Si el diseño cambió mientras el
+agente estaba sin conexión, el servidor puede aceptar el caso y dejarlo observado
+por diferencia de versión; no reconstruye el diseño anterior.
+
+Prueba en HML: guardar un cambio de orden en el constructor, iniciar una captura
+nueva con señal y verificar los grupos y preguntas; cambiar una respuesta que
+oculta otra obligatoria; repetir una captura offline y sincronizar tras cambiar
+la versión. Las capturas ya pendientes deben conservar la definición con la que
+se hicieron.
