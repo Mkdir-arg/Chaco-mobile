@@ -172,11 +172,15 @@ export const becasUploadFile = async (path, { fileUri, fileField = 'archivo', fi
   Object.entries(fields).forEach(([key, value]) => {
     if (value !== null && value !== undefined) formData.append(key, String(value));
   });
-  formData.append(fileField, {
-    uri: fileUri,
-    name: fileName || fileUri.split('/').pop() || 'archivo.jpg',
-    type: mimeType,
-  });
+  const name = fileName || 'archivo.jpg';
+  if (Platform.OS === 'web') {
+    const fileResponse = await fetch(fileUri);
+    if (!fileResponse.ok) throw new Error('Adjunto no disponible. Volvé a seleccionarlo.');
+    const blob = await fileResponse.blob();
+    formData.append(fileField, blob, name);
+  } else {
+    formData.append(fileField, { uri: fileUri, name, type: mimeType });
+  }
 
   const response = await fetch(buildUrl(path), {
     method: 'POST',

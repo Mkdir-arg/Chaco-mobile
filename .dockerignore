@@ -1,0 +1,13 @@
+.git
+.github
+node_modules
+.expo
+dist
+dist-browser
+web-build
+android
+ios
+.env
+.env.*
+*.log
+.DS_Store

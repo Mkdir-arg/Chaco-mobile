@@ -1,282 +1,304 @@
-# DATAÑACH — aplicación móvil
+# DATAÑACH — PWA de relevamientos
 
-Aplicación móvil de relevamientos construida con React Native y Expo. Se conecta con la API de Django, permite trabajar sin conexión y sincroniza los datos pendientes cuando vuelve a haber internet.
+Aplicación de campo instalable desde el navegador, construida con React Native,
+React Native Web y Expo. Descarga los relevamientos del usuario territorial,
+permite guardar capturas y adjuntos sin conexión y sincroniza contra la API Django
+existente cuando vuelve la conectividad.
 
-> **Repositorio independiente:** este código vive en [Mkdir-arg/Chaco-mobile](https://github.com/Mkdir-arg/Chaco-mobile). Puede estar clonado dentro del directorio del sistema Chaco por comodidad, pero tiene su propio historial Git, remoto, ramas, pull requests y pipeline. Todos los comandos de este documento se ejecutan desde la raíz de **Chaco-mobile** y no desde el repositorio del backend.
+**La entrega web es un build estático servido por Nginx.** No necesita Expo, Node
+ni un servidor de aplicación en ejecución dentro del contenedor final. El backend
+sigue siendo Chaco; este repositorio no agrega otro backend.
 
-## Tecnologías principales
+Repositorio: [Mkdir-arg/Chaco-mobile](https://github.com/Mkdir-arg/Chaco-mobile).
+Ejecutar todos los comandos desde su raíz, independientemente de dónde esté
+clonado. Tiene historial, ramas y CI propios; no es una carpeta del backend.
+La rama de entrega a test es `test`.
 
-- React Native 0.81 y Expo SDK 54.
-- React 19.
-- EAS Build para generar instaladores Android.
-- SQLite para datos locales y cola de sincronización.
-- Secure Store para guardar el token de sesión en el dispositivo.
-- Async Storage para preferencias y compatibilidad con datos locales anteriores.
-- NetInfo para detectar cambios de conectividad.
+- [Despliegue con Docker](#despliegue-estático-con-docker--ticket-213472026)
+- [Configuración del backend](#configuración-del-backend)
+- [Desarrollo local](#desarrollo-local)
+- [Instalación y funcionamiento offline](#instalación-y-funcionamiento-offline)
+- [Validación](#validación)
+- [Compilación nativa opcional](#compilación-nativa-opcional)
 
-## Arquitectura
+## Tecnologías del repositorio
 
-```text
-Chaco-mobile/                       # Raíz de este repositorio
-├── .github/workflows/             # Integración continua del repositorio móvil
-├── App.js                         # Composición general, sesión, pantallas y sincronización
-├── index.js                       # Punto de entrada de Expo
-├── app.json                       # Identidad, permisos, API y plugins nativos
-├── eas.json                       # Perfiles de compilación de EAS
-├── assets/                        # Iconos, logos e imágenes
-├── plugins/                       # Configuración nativa adicional de Android
-└── src/
-    ├── components/                # Componentes visuales reutilizables
-    ├── config/                    # URL de la API y branding
-    ├── context/                   # Estado global de autenticación y tema
-    ├── navigation/                # Navegación reutilizable
-    ├── screens/                   # Pantallas y flujos de usuario
-    ├── services/                  # API, persistencia local y sincronización
-    ├── theme/                     # Colores, tipografías y tokens visuales
-    └── utils/                     # Utilidades generales
-```
+Estas son las versiones declaradas actualmente, no una lista de las últimas
+versiones disponibles. Cambiar a PWA no implica reemplazar React Native o Expo.
 
-### Flujo de la aplicación
-
-`App.js` monta los proveedores de autenticación y tema. Mientras se recupera la sesión muestra el splash; sin una sesión válida muestra el login y, una vez autenticado, habilita Inicio, Relevamientos, el detalle y el panel de configuración.
-
-La navegación principal se controla actualmente desde `App.js` mediante estado (`activeTab` y `selectedRelevamientoId`). El directorio `src/navigation/` contiene una alternativa basada en React Navigation, pero no es el punto principal de navegación usado por `App.js`.
-
-## Conexión con la webapp Chaco
-
-La app móvil y la webapp son repositorios y aplicaciones independientes. **No comparten código, sesión del navegador ni acceso directo a la base de datos.** La integración se realiza por HTTP contra la API REST que expone el backend Django de Chaco bajo `/api/becas/`.
-
-```text
-App móvil (Chaco-mobile)
-        │
-        │ HTTPS + JSON/multipart
-        │ Authorization: Token <token>
-        ▼
-API Django (webapp Chaco) ──────► Base de datos y archivos del backend
-        ▲
-        │
-Backoffice web ─────────────────► administra asignaciones y revisa resultados
-```
-
-En términos funcionales, el backoffice crea y asigna relevamientos a un usuario territorial. La app inicia sesión con ese usuario, descarga únicamente sus relevamientos, permite completar formularios —incluso sin conexión— y envía formularios y adjuntos a la misma webapp. Los resultados sincronizados quedan disponibles en el backoffice para continuar su gestión y revisión.
-
-### Configuración de la URL
-
-`src/config/apiConfig.js` resuelve la URL base primero desde la variable de build
-`EXPO_PUBLIC_DJANGO_API_URL` y usa `expo.extra.djangoApiUrl` de `app.json` sólo como
-fallback local/testing. La URL fallback actual es:
-
-```json
-"extra": {
-  "djangoApiUrl": "https://datanach.ecomdev.ar"
-}
-```
-
-Cada ruta se construye agregándola a esa base; por ejemplo, el login termina llamando a `https://datanach.ecomdev.ar/api/becas/auth/token/`. Como no se especifica un puerto, se usa el puerto estándar 443 para HTTPS.
-
-Cada pipeline debe definir `EXPO_PUBLIC_DJANGO_API_URL` con el host del ambiente. Así
-login, API y el enlace «Olvidé mi contraseña» usan siempre el mismo backend sin tocar
-el código ni reconstruir URLs manualmente. Por ejemplo:
-
-```powershell
-$env:EXPO_PUBLIC_DJANGO_API_URL = "https://hml.ejemplo.gob.ar"
-npx expo export --platform web
-```
-
-Antes de generar el APK, la variable (o, en su ausencia, `djangoApiUrl`) debe apuntar
-al entorno correcto:
-
-| Entorno | Ejemplo | Condición |
-|---|---|---|
-| Desarrollo local | `http://192.168.1.20:8000` | Teléfono y servidor en una red que permita llegar a esa IP y puerto |
-| QA | `https://datanach.ecomdev.ar` | Servidor de prueba actual del equipo |
-| Producción | `https://datanach.chaco.gob.ar` | Dominio público, certificado TLS válido y API desplegada |
-
-No usar `localhost` en un teléfono físico: allí `localhost` identifica al propio teléfono, no a la computadora que ejecuta Django. Para una instalación fuera de la red local se necesita una URL accesible desde internet o desde la VPN institucional. El plugin `plugins/withAndroidNetworkSecurityConfig.js` bloquea HTTP en Android y configura los dominios HTTPS de QA y producción. Para probar un backend local en Android se necesita HTTPS; el ejemplo HTTP es válido para web.
-
-### Autenticación y permisos
-
-1. La app envía usuario y contraseña como JSON a `POST /api/becas/auth/token/`.
-2. Django valida las credenciales y exige la capacidad `becas.campo`.
-3. La API responde con `token`, `user_id` y `username`.
-4. La app guarda el token en Secure Store en Android/iOS —Async Storage en web—.
-5. Las siguientes peticiones incluyen `Authorization: Token <token>`.
-
-El backend filtra los datos por el usuario autenticado. Un territorial solo puede consultar y modificar relevamientos que le fueron asignados y los formularios asociados a ellos. Compartir un APK no otorga acceso por sí solo: cada operador necesita un usuario habilitado en la webapp con la capacidad correspondiente.
-
-### Operaciones utilizadas
-
-`src/services/becasApi.js` centraliza autenticación, peticiones JSON y carga multipart. `src/services/relevamientoService.js` consume principalmente estas operaciones del backend:
-
-| Método y ruta | Uso desde la app |
+| Componente | Uso actual |
 |---|---|
-| `POST /api/becas/auth/token/` | Iniciar sesión y obtener el token |
-| `GET /api/becas/relevamientos/` | Descargar los relevamientos del territorial |
-| `GET /api/becas/relevamientos/{id}/` | Descargar definición y detalle |
-| `POST /api/becas/relevamientos/{id}/iniciar/` | Pasar un relevamiento asignado a curso |
-| `GET/POST /api/becas/relevamientos/{id}/formularios/` | Listar o crear formularios |
-| `POST /api/becas/relevamientos/{id}/finalizar/` | Finalizar el relevamiento |
-| `POST /api/becas/relevamientos/{id}/reabrir/` | Reabrir un relevamiento finalizado |
-| `GET/PATCH /api/becas/formularios/{id}/` | Consultar o actualizar un formulario propio |
-| `GET/POST /api/becas/formularios/{id}/adjuntos/` | Listar o subir archivos y fotografías |
-| `POST /api/becas/personas/consultar/` | Validar el DNI mediante Gran Base/Base de Personas |
+| React 19.1, React Native 0.81.5, React Native Web 0.21 | Interfaz compartida y renderizado en navegador |
+| Expo SDK 54 y Metro | Desarrollo y export estático web |
+| Node.js 22.14.0 y npm | Compilación y CI; no son el servidor del contenedor final |
+| Nginx `stable-alpine` | Hosting estático del contenedor, puerto 8080 |
+| Service worker y manifiesto web | Arranque offline, actualización e instalación PWA |
+| Expo SQLite / WebAssembly / OPFS | Persistencia de datos y cola offline en web |
+| Async Storage | Sesión web y preferencias; en web utiliza almacenamiento del navegador |
+| NetInfo | Cambios de conectividad |
+| ZXing | Lectura web QR/PDF417 incluida en el bundle, sin CDN |
+| Playwright | Pruebas en Chromium de persistencia y recuperación offline |
 
-Los archivos se envían como `multipart/form-data`; el resto de los cuerpos se intercambia normalmente como JSON. La app no se conecta directamente con RENAPER: solicita la consulta a Django y el backend realiza la integración externa.
+El código conserva soporte nativo Android/iOS. Secure Store, plugins nativos y EAS
+corresponden a esa distribución opcional, no al despliegue PWA.
 
-### Requisitos del backend
+## Despliegue estático con Docker — ticket 21347/2026
 
-Para aceptar conexiones de la app, el despliegue Django debe:
+El sitio de test acordado es **https://datanach-app.ecomdev.ar/**. La API permanece
+**https://datanach.ecomdev.ar/**. El contenedor solo sirve archivos estáticos con
+Nginx: no ejecuta Expo/Node en producción ni incorpora otro backend o un proxy a Django.
 
-- Publicar las rutas `/api/becas/` y disponer de `rest_framework.authtoken`.
-- Permitir el dominio o IP en `DJANGO_ALLOWED_HOSTS`.
-- Tener usuarios territoriales activos con la capacidad `becas.campo` y relevamientos asignados.
-- Exponer también el almacenamiento de adjuntos según la configuración del entorno.
-- Incluir el origen en `DJANGO_CORS_ALLOWED_ORIGINS` si se ejecuta la variante web de Expo desde otro origen.
+La imagen se construye desde la raíz del repositorio:
 
-CORS afecta principalmente a la variante web ejecutada en un navegador. Una app Android nativa no aplica la política CORS del navegador, aunque igualmente necesita conectividad, DNS, TLS y permisos correctos en el servidor.
+```sh
+docker build -t chaco-mobile:pwa-test .
+docker run --rm -p 127.0.0.1:8080:8080 \
+  -e URL_backoffice=https://datanach.ecomdev.ar \
+  chaco-mobile:pwa-test
+```
 
-### Funcionamiento offline y sincronización
+| Configuración | Test | Producción |
+|---|---|---|
+| Sitio PWA | `https://datanach-app.ecomdev.ar/` | A confirmar por infraestructura |
+| `URL_backoffice` | `https://datanach.ecomdev.ar` | `https://datanach.chaco.gob.ar` |
+| Puerto del contenedor | `8080` | `8080` |
+| Health check | `GET /healthz` → `200 ok` | Igual |
 
-`src/services/relevamientoService.js` concentra la lógica offline-first:
+`URL_backoffice` se pasa **al arrancar el contenedor**, con ese nombre y mayúsculas
+exactos. No requiere reconstruir la imagen. El entrypoint valida un origen HTTPS
+sin rutas, credenciales ni parámetros y genera `/runtime-config.js`, cargado antes
+del bundle. Esta configuración tiene prioridad sobre `EXPO_PUBLIC_DJANGO_API_URL`;
+la variable de Expo sigue disponible para desarrollo local y builds nativos.
+Los archivos `.env*` locales, incluyendo la IP de desarrollo, se excluyen del
+contexto Docker. No se debe incluir secretos en la configuración pública de la PWA.
 
-1. Descarga y guarda localmente los relevamientos asignados.
-2. Persiste relevamientos y operaciones pendientes en SQLite.
-3. Conserva los adjuntos en el almacenamiento local de la aplicación.
-4. Procesa una cola de salida (`outbox`) cuando hay conexión.
-5. Reintenta errores temporales con espera incremental y conserva los errores permanentes para su revisión.
+El service worker obtiene la configuración con red primero y conserva la última
+copia para arrancar offline. Las respuestas de la API y los tokens no se guardan
+en el caché del service worker. SQLite y la cola siguen siendo la persistencia de
+las capturas y adjuntos.
 
-La sincronización se ejecuta al iniciar una sesión, periódicamente mientras la app está activa, al recuperar conectividad y cuando el usuario la solicita manualmente.
+### Configuración que debe realizar infraestructura
 
-## Ejecutar en desarrollo
+- Crear DNS e ingress HTTPS con certificado válido para el sitio PWA; el TLS
+  termina en el ingress y el servicio interno apunta al puerto HTTP `8080`.
+- Conservar las cabeceras `Cross-Origin-Opener-Policy: same-origin` y
+  `Cross-Origin-Embedder-Policy: require-corp`, también en HTML, JS, workers,
+  archivos WASM y respuestas recuperadas de un caché intermedio. Nginx las envía.
+- Conservar el fallback SPA: una ruta de pantalla sin archivo devuelve
+  `index.html`. Un JS/WASM inexistente y `/api/` devuelven 404 en este contenedor;
+  nunca se sirven como HTML de la app.
+- No cachear `/runtime-config.js`; revalidar `index.html`, `sw.js`, manifiesto e
+  íconos. Solo los bundles versionados bajo `/_expo/static/` usan caché inmutable.
+- En **Django HML**, agregar `https://datanach-app.ecomdev.ar` a
+  `DJANGO_CORS_ALLOWED_ORIGINS`. El middleware `ApiCorsMiddleware` del backend ya
+  admite esa lista; comprobar OPTIONS y POST sobre `/api/becas/`, con credenciales
+  y headers `Authorization` y `Content-Type`. El WAF/ingress tampoco debe bloquear
+  OPTIONS, sustituir JSON por HTML ni quitar los headers CORS.
+- Verificar el mismo permiso de origen en producción cuando se confirme su dominio.
 
-### Requisitos
+El último punto es necesario: **publicar el estático en el dominio nuevo no arregla
+por sí solo CORS**. La app consulta directamente al Django indicado por
+`URL_backoffice`; no hay un proxy oculto en esta imagen. La inicialización del WAF
+puede solicitar la raíz del backend antes del login; revisar también sus cookies
+entre los subdominios del mismo ambiente.
 
-- Node.js LTS y npm.
-- Un teléfono con Expo Go o un emulador Android.
-- Acceso desde el dispositivo al backend Django.
+## Configuración del backend
 
-Clonar y entrar al repositorio móvil:
+La PWA y Django se publican en dominios distintos. No confundir la URL del sitio
+instalable con la URL de la API:
 
-```powershell
-git clone https://github.com/Mkdir-arg/Chaco-mobile.git
+| Ambiente | Sitio PWA | Backend Django |
+|---|---|---|
+| Test | `https://datanach-app.ecomdev.ar` | `https://datanach.ecomdev.ar` |
+| Producción | A confirmar por infraestructura | `https://datanach.chaco.gob.ar` |
+
+`src/config/apiConfig.js` resuelve la dirección en este orden:
+
+1. **PWA en Docker:** `URL_backoffice`, inyectada en `/runtime-config.js` al iniciar
+   el contenedor. Tiene prioridad y permite cambiar el backend sin recompilar.
+2. **Desarrollo local / build sin configuración runtime / nativo:**
+   `EXPO_PUBLIC_DJANGO_API_URL`, leída por Expo durante el desarrollo o compilación.
+3. `expo.extra.djangoApiUrl` en `app.json`, cuyo fallback actual es el backend de test.
+4. Solo si tampoco existe esa configuración, se intenta derivar una dirección local.
+
+Ejemplo de `.env.local` para trabajar contra el backend de test:
+
+```dotenv
+EXPO_PUBLIC_DJANGO_API_URL=https://datanach.ecomdev.ar
+```
+
+Para usar Django local, reemplazarla por `http://localhost:8000` desde la misma
+computadora o por la IP real de esa computadora desde otro dispositivo. `localhost`
+en un teléfono identifica al teléfono. Reiniciar Expo con `--clear` o reconstruir
+el export después de cambiar la variable de compilación.
+
+El backend debe publicar `/api/becas/`, admitir el hostname de la propia API en
+`DJANGO_ALLOWED_HOSTS` y autorizar el origen de la PWA en
+`DJANGO_CORS_ALLOWED_ORIGINS`. No alcanza con que el dominio PWA tenga certificado:
+OPTIONS, JSON, multipart y cookies deben atravesar el WAF/ingress correctamente.
+El origen de la PWA no se agrega a `ALLOWED_HOSTS` salvo que Django también atienda
+ese hostname.
+
+### Sesión, permisos y operaciones
+
+La app inicia sesión mediante `POST /api/becas/auth/token/`. Django exige un usuario
+activo con capacidad `becas.campo` y responde con `token`, `user_id` y `username`.
+Las siguientes solicitudes incluyen `Authorization: Token <token>`.
+La sesión de la PWA se guarda mediante Async Storage; la distribución nativa usa
+Secure Store con fallback a Async Storage. No se debe dar por compartida la sesión
+del backoffice con la app.
+
+Django filtra los relevamientos y formularios por territorial. Instalar la PWA no
+habilita acceso por sí solo; el usuario necesita asignaciones en el backend.
+La identidad se consulta a Django, que resuelve padrón/Base de Personas; la PWA no
+se conecta directamente a esas integraciones externas.
+
+| Método y ruta | Operación |
+|---|---|
+| `POST /api/becas/auth/token/` | Login |
+| `GET /api/becas/relevamientos/` | Agenda del territorial |
+| `GET /api/becas/relevamientos/{id}/` | Detalle y definición del formulario |
+| `POST /api/becas/relevamientos/{id}/iniciar/` | Iniciar relevamiento |
+| `GET/POST /api/becas/relevamientos/{id}/formularios/` | Listar o crear capturas |
+| `POST /api/becas/relevamientos/{id}/finalizar/` | Finalizar relevamiento |
+| `POST /api/becas/relevamientos/{id}/reabrir/` | Reabrir relevamiento |
+| `GET/PATCH /api/becas/formularios/{id}/` | Consultar o editar formulario |
+| `GET/POST /api/becas/formularios/{id}/adjuntos/` | Adjuntos |
+| `POST /api/becas/personas/consultar/` | Consulta de identidad |
+
+Los adjuntos se envían como multipart; los demás cuerpos normalmente como JSON.
+
+## Desarrollo local
+
+Requisitos: Node.js 22.14.0 o superior dentro de la rama 22, npm y acceso al backend
+que se quiera probar. Para la PWA no se necesita Expo Go, Android Studio ni EAS.
+
+```sh
+git clone --branch test https://github.com/Mkdir-arg/Chaco-mobile.git
 cd Chaco-mobile
 npm ci
-npm start
+npm run web -- --clear
 ```
 
-Si el repositorio ya está clonado dentro de otro proyecto, abrir una terminal directamente en su carpeta `mobile`; esa carpeta es la raíz Git para todo el trabajo de la app. Los commits y pushes se realizan allí y se envían a `Mkdir-arg/Chaco-mobile`, no al remoto del backend.
+Configurar `.env.local` antes de iniciar. `npm run web -- --host lan` permite
+revisar la interfaz desde la IP de la computadora y el puerto que indique Expo,
+si la red y el firewall lo permiten. Una IP privada por HTTP no habilita todas las
+capacidades PWA: para cámara, instalación y persistencia web completa en teléfonos
+se necesita un contexto HTTPS válido.
 
-Expo mostrará un código QR. En Android, abrir Expo Go y escanearlo. La computadora y el teléfono deben poder comunicarse por la misma red.
+Para probar el export de producción en la misma computadora:
 
-Otros comandos disponibles:
-
-```powershell
-npm run android   # Compilación nativa local; requiere Android Studio/SDK
-npm run web       # Ejecuta la variante web
+```sh
+npm run build:web
+npm run serve:web
 ```
 
-Si el teléfono no llega a Django, comprobar que la URL de `djangoApiUrl` sea correcta, que el servidor escuche en una interfaz accesible y que el firewall permita el puerto correspondiente.
+Abrir **http://localhost:4173**. El servidor de vista previa escucha solo en loopback
+y aplica las cabeceras de aislamiento. La prueba offline se hace sobre este export;
+Metro de desarrollo no registra el service worker de producción.
 
-### Validación continua
+## Instalación y funcionamiento offline
 
-El workflow `.github/workflows/pr-mobile.yml` se ejecuta en cada pull request y push a `main`. Instala las dependencias con Node.js 22.14.0, ejecuta `npm test` y valida el proyecto mediante Expo Doctor. Antes de subir cambios se puede correr la misma validación localmente:
+Publicar la app en la raíz de su dominio y con HTTPS válido. SQLite web necesita
+OPFS, WebAssembly y SharedArrayBuffer, además de estas cabeceras:
 
-```powershell
+```text
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+El Dockerfile ya configura Nginx para enviarlas. `public/_headers` sirve para hosts
+que admitan ese formato; otros servidores deben configurarlas expresamente.
+Los archivos WASM deben servirse como `application/wasm`.
+
+En Android se instala desde Chrome; en iPhone/iPad, desde Safari usando Compartir
+→ Agregar a inicio. El login muestra un instructivo por dispositivo que puede
+cerrarse y reabrirse. Al abrir la app en modo instalado no aparece el instructivo.
+Una pestaña normal no permite determinar de forma universal si ya existe otra
+instalación en el dispositivo.
+
+- La primera carga, el primer login y la descarga de asignaciones requieren conexión.
+- El service worker precarga código, fuentes, íconos, imágenes, lector y SQLite/WASM.
+  `/runtime-config.js` usa red primero con recuperación desde caché al estar offline.
+- Las capturas, datos del formulario y cola se persisten en SQLite/OPFS. En web los
+  adjuntos se convierten a data URL y se guardan con la captura y su operación,
+  evitando referencias `blob:` que se pierdan al cerrar. Ocupan aproximadamente un
+  tercio más que el archivo binario. En nativo se copian al filesystem de la app.
+- La cola conserva propietario, UUID, fecha y versión. Con la app abierta, sincroniza
+  al iniciar sesión, periódicamente, al recuperar conexión o por solicitud del usuario.
+  Un 401 conserva pendientes y pide volver a entrar con el mismo usuario; un alta
+  aceptada no se repite por tener un adjunto pendiente.
+- La app solicita almacenamiento persistente, pero el navegador decide si lo concede.
+  Borrar los datos del sitio puede eliminar capturas todavía no sincronizadas.
+  Solo una captura guardada entra en la cola; un formulario abierto sin guardar
+  no sobrevive al cierre.
+- Las actualizaciones esperan al cierre de las ventanas; no recargan una captura
+  en curso. El navegador puede suspender una PWA cerrada: hay que reabrirla para
+  asegurar el envío de pendientes.
+- El APK y la PWA tienen almacenamiento independiente. Sincronizar el APK antes
+  de cambiar de distribución; instalar la PWA no migra los datos del APK.
+
+## Validación
+
+El workflow `.github/workflows/pr-mobile.yml` valida pushes y PRs hacia `main` y
+`test`: suite Node, export PWA, prueba Chromium, build Docker, prueba del contenedor
+y Expo Doctor. Usa Node 22.14.0.
+
+```sh
+npm ci
 npm test
 npx expo-doctor
+npm run build:web
+npx playwright install chromium
+npm run test:web
+docker build -t chaco-mobile:pwa-test .
+node tests/docker-smoke.cjs chaco-mobile:pwa-test
 ```
 
-## Generar un enlace para descargar en Android
+Las pruebas de servicios usan SQLite en memoria y HTTP simulado. La prueba de
+Chromium utiliza SQLite/OPFS real y cubre captura con archivo offline, recarga,
+cierre y reapertura, multipart, 401 y reanudación sin duplicar el alta, además del
+modal por dispositivo y la prioridad de la configuración runtime. Puede usarse
+Chrome instalado definiendo `CHROME_PATH` con su ejecutable.
 
-El perfil `preview` de `eas.json` genera un **APK de distribución interna**. Ese es el formato que se puede descargar desde un enlace e instalar directamente en un teléfono Android.
+`npm run test:web` genera `dist-browser/` con hooks de prueba: **no se publica**.
+`npm run build:web` genera `dist/` sin esos hooks. Las pruebas de contenedor usan
+puertos efímeros de loopback para comprobar rutas SPA, 404 de recursos, cabeceras,
+MIME WASM, caché y URLs de test/producción sobre la misma imagen.
 
-### 1. Instalar e iniciar sesión en EAS
+Antes de dar un despliegue por operativo, validar con la API real y los teléfonos
+objetivo: login, descarga, cámara/DNI QR-PDF417, ubicación, instalación, guardado
+sin señal, cierre/reapertura, sincronización y manejo de errores. Las pruebas
+locales no validan CORS, cookies, certificados ni WAF del sitio desplegado.
 
-```powershell
-npm install --global eas-cli
-eas login
+## Estructura del repositorio
+
+```text
+Chaco-mobile/
+├── Dockerfile, .dockerignore       # Build estático y contenedor Nginx
+├── docker/                        # Hosting y configuración runtime
+├── public/                        # Manifiesto, íconos y configuración pública
+├── scripts/                       # Export PWA y vista previa local
+├── .github/workflows/             # CI
+├── App.js, index.js               # Inicio, proveedores, navegación y sincronización
+├── app.json                      # Configuración Expo y fallback de API
+├── src/components/               # UI compartida y variantes .web
+├── src/config/                   # Branding y resolución del backend
+├── src/screens/                  # Pantallas
+├── src/services/                 # API, persistencia, cola y PWA
+├── src/theme/                    # Tokens y tema
+├── tests/                        # Pruebas de servicios, interfaz, navegador y Docker
+├── assets/                       # Logos, imágenes y fuentes
+└── eas.json, plugins/             # Distribución nativa opcional
 ```
 
-También se puede evitar la instalación global usando `npx eas-cli@latest` en lugar de `eas` en los comandos siguientes.
+La navegación activa vive en `App.js`, mediante `activeTab` y
+`selectedRelevamientoId`. `src/navigation/` conserva una alternativa React Navigation
+que no es el punto principal de navegación.
 
-El proyecto ya tiene un `projectId` de EAS en `app.json`, por lo que normalmente no hace falta volver a ejecutar `eas init`. La cuenta utilizada debe tener acceso a ese proyecto de Expo.
+## Reglas funcionales de los relevamientos
 
-### 2. Revisar la configuración antes de compilar
-
-- Confirmar la URL de Django en `app.json`.
-- Confirmar el identificador Android: `com.pablocao.relevamientochaco`.
-- Confirmar que se está trabajando en el repositorio `Mkdir-arg/Chaco-mobile` y guardar allí todos los cambios que deban formar parte de la versión.
-- Verificar la sesión y el proyecto con `eas whoami` y `eas project:info`.
-
-### 3. Generar el APK
-
-```powershell
-eas build --platform android --profile preview
-```
-
-EAS sube el código, compila la aplicación y, al finalizar, imprime una URL de la página del build. Esa página contiene el botón para descargar el APK y se puede compartir con las personas que deban instalarlo.
-
-Para recuperar el enlace más tarde:
-
-```powershell
-eas build:list --platform android --status finished --limit 5
-```
-
-También se puede entrar al panel del proyecto en Expo, abrir **Builds**, elegir Android y seleccionar la compilación terminada.
-
-### 4. Instalar desde el enlace
-
-1. Abrir el enlace del build desde el teléfono Android.
-2. Descargar el APK.
-3. Autorizar, si Android lo solicita, la instalación desde esa fuente.
-4. Abrir el archivo descargado e instalarlo.
-
-Para publicar una nueva versión, repetir el build con el perfil `preview` y compartir el nuevo enlace. El enlace identifica una compilación concreta; no actualiza automáticamente las instalaciones anteriores.
-
-## Compilación para Google Play
-
-El perfil `production` está pensado para distribución en la tienda y genera normalmente un **AAB**, no un APK instalable desde un enlace:
-
-```powershell
-eas build --platform android --profile production
-```
-
-Luego puede enviarse a Google Play Console manualmente o, una vez configuradas las credenciales de la tienda, mediante:
-
-```powershell
-eas submit --platform android --profile production
-```
-
-El perfil de producción tiene `autoIncrement` habilitado, de modo que EAS incrementa el código de versión de Android en cada build.
-
-## Perfiles de EAS disponibles
-
-| Perfil | Uso | Resultado Android |
-|---|---|---|
-| `development` | Desarrollo con cliente nativo | Development build interno |
-| `preview` | Pruebas y descarga directa | APK instalable mediante enlace |
-| `production` | Publicación en Google Play | AAB de tienda |
-
-## Diagnóstico rápido
-
-- **El APK abre pero no inicia sesión:** revisar que `djangoApiUrl` sea accesible desde la red del teléfono.
-- **El build no encuentra el proyecto:** ejecutar `eas login` con una cuenta que tenga acceso al `projectId` configurado.
-- **EAS solicita credenciales Android:** permitir que EAS genere y administre el keystore, salvo que el equipo ya tenga uno oficial.
-- **Una actualización no se instala:** conservar el mismo package y la misma firma; el perfil configurado con EAS debe reutilizar el keystore del proyecto.
-- **Los datos no se sincronizan:** comprobar conectividad, sesión vigente y elementos pendientes desde el indicador de sincronización de la app.
-
-## Pruebas de sesión y cola offline
-
-Con Node 22.14 o superior, ejecutar `npm ci` y `npm test`. El CI utiliza Node
-22.14.0. Las pruebas usan SQLite en memoria y simulan las respuestas HTTP; cubren
-la expiración de sesión durante el alta y la subida de adjuntos, la conservación
-de pendientes, el reenvío después del login y las respuestas 401 concurrentes.
-
-Validación en dispositivo para #666: revocar el token con «Cerrar sesión de la app»
-con casos pendientes, sincronizar, verificar que aparece el login y volver a entrar
-con el mismo usuario. Los casos deben enviarse sin tocar «sincronizar».
-
-## Capturas tardías y errores de sincronización (#634 y #667)
+### Capturas tardías y errores de sincronización (#634 y #667)
 
 Cada caso conserva la fecha de captura y la versión del formulario utilizada.
 Cuando el servidor acepta una captura después del cierre, el listado la indica
@@ -288,10 +310,10 @@ El detalle del relevamiento muestra «Envíos que requieren atención»:
 - **Corregir:** abre el mismo formulario para un alta rechazada por sus datos;
   conserva UUID, fecha de captura, versión y archivos.
 - **Exportar:** comparte un JSON con la operación y su motivo. En Android/iOS
-  incluye los adjuntos disponibles como base64; en web conserva sus referencias.
+  incluye los adjuntos disponibles como base64; la PWA también incluye el contenido disponible de sus archivos locales.
   Exportar conserva el envío fallido en la cola.
 - **Descartar envío:** pide confirmación y libera el cierre, conservando la
-  captura y los archivos en el teléfono.
+  captura y los archivos locales.
 
 Los adjuntos admiten JPG, JPEG, PNG, WEBP, HEIC, HEIF y PDF hasta 5 MB. Un rechazo
 permanente de un archivo deja su motivo y permite intentar los demás. Un adjunto
@@ -302,7 +324,7 @@ Para validar en dispositivo: capturar sin señal, sincronizar dentro y fuera de 
 24 h después del cierre; rechazar un adjunto con otros pendientes; corregir un alta
 400; exportar y descartar una falla y comprobar que se completa el cierre.
 
-## Vigencia con fecha y hora (#635)
+### Vigencia con fecha y hora (#635)
 
 La franja del relevamiento se interpreta y muestra en
 `America/Argentina/Buenos_Aires`, aunque el teléfono use otra zona. Las fechas
@@ -334,7 +356,7 @@ fallecidos y la carga manual tras alcanzar el tope. Las pruebas automatizadas
 cubren el contrato HTTP y la clasificación de esas respuestas.
 
 
-## Formularios del constructor (#348)
+### Formularios del constructor (#348)
 
 Cuando la API entrega `definicion_formulario.items`, la app usa sus grupos,
 textos y preguntas en el orden recibido. El `orden` del catálogo no reemplaza
@@ -359,7 +381,7 @@ referencian `clave` (también `cp-`). Se conserva el payload anterior para servi
 sin esa señal. No se permite enviar campos propios a un servidor que aún no los
 acepta. Sin `items` se mantiene el formulario legacy.
 
-La definición se guarda solo en el celular: al servidor se envía
+La definición se guarda localmente en el dispositivo: al servidor se envía
 `version_capturada`, no una foto `definicion`. Si el diseño cambió mientras el
 agente estaba sin conexión, el servidor puede aceptar el caso y dejarlo observado
 por diferencia de versión; no reconstruye el diseño anterior.
@@ -369,3 +391,38 @@ nueva con señal y verificar los grupos y preguntas; cambiar una respuesta que
 oculta otra obligatoria; repetir una captura offline y sincronizar tras cambiar
 la versión. Las capturas ya pendientes deben conservar la definición con la que
 se hicieron.
+
+
+## Compilación nativa opcional
+
+<details>
+<summary>Android/iOS con Expo y EAS — no requerido para desplegar la PWA</summary>
+
+El proyecto conserva sus configuraciones nativas. Estos comandos generan
+instaladores, no el sitio estático y no reemplazan `npm run build:web` o Docker.
+
+| Perfil de `eas.json` | Resultado / uso | Backend configurado |
+|---|---|---|
+| `development` | Cliente de desarrollo interno | Variable de build o fallback de `app.json` |
+| `preview` | APK interno de test | `https://datanach.ecomdev.ar` |
+| `production` | Build de tienda; Android AAB por defecto | `https://datanach.chaco.gob.ar` |
+| `production-apk` | APK interno de producción | `https://datanach.chaco.gob.ar` |
+
+La cuenta Expo debe tener acceso al proyecto indicado en `app.json`. El package
+Android actual es `com.pablocao.relevamientochaco`. Mantener package y firma para
+actualizar instalaciones existentes.
+
+```sh
+npx eas-cli@latest login
+npx eas-cli@latest project:info
+npx eas-cli@latest build --platform android --profile preview
+npx eas-cli@latest build:list --platform android --status finished --limit 5
+```
+
+Para compilar Android nativo localmente, `npm run android` requiere Android
+Studio/SDK. `npm start` inicia Expo y puede usarse con un cliente compatible;
+no es el servidor de producción de la PWA. El plugin
+`plugins/withAndroidNetworkSecurityConfig.js` bloquea HTTP en Android: usar HTTPS
+para el backend de un APK, incluso durante una prueba local.
+
+</details>

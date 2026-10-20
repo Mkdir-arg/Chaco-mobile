@@ -1,11 +1,12 @@
+import TextInput, { FormInputContainer } from '../components/FormInput';
 import { relevamientoBadge, casoBadge } from '../theme/statusBadges';
 import { consultarIdentidad, identityKey, identityFailure, isValidatedIdentity, DECEASED_MESSAGE } from '../services/identityLookup';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Image, Pressable, Alert, Modal, TextInput, KeyboardAvoidingView, Platform, FlatList } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Image, Pressable, Alert, Modal, KeyboardAvoidingView, Platform, FlatList } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import NetInfo from '@react-native-community/netinfo';
 import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
-import { useCameraPermissions } from 'expo-camera';
+import useCameraPermissions from '../hooks/useCameraPermissions';
 import * as MediaLibrary from 'expo-media-library';
 import * as ImagePicker from 'expo-image-picker';
 import Constants from 'expo-constants';
@@ -2040,6 +2041,23 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     const id = String(item?.id || item?.storage_path || Math.random());
     try {
       setSharingId(id);
+      if (Platform.OS === 'web') {
+        const url = await resolveAttachmentUrl(item);
+        if (!url) throw new Error('Adjunto sin URL');
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('No se pudo descargar el adjunto');
+        const fileName = sanitizeFileName(item?.nombre_original || 'adjunto');
+        const file = new File([await response.blob()], fileName);
+        if (navigator.canShare?.({ files: [file] })) {
+          await navigator.share({ files: [file] });
+        } else {
+          const objectUrl = URL.createObjectURL(file);
+          const link = document.createElement('a');
+          link.href = objectUrl; link.download = fileName; link.click();
+          setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+        }
+        return;
+      }
       const canShare = await Sharing.isAvailableAsync();
       if (!canShare) throw new Error('Compartir no disponible en este dispositivo');
       const url = await resolveAttachmentUrl(item);
@@ -2116,7 +2134,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
 
           <View style={styles.formGroup}>
             <Text style={[styles.inputLabel, { color: theme.colors.text, fontFamily: typography.semibold }]}>Numero de DNI *</Text>
-            <View style={[styles.identityInputShell, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}>
+            <FormInputContainer style={[styles.identityInputShell, { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt }]}>
               <Ionicons name="id-card-outline" size={20} color={theme.colors.icon} />
               <TextInput
                 value={dniForm.dni_numero}
@@ -2127,7 +2145,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
                 placeholder="Ej: 30111222"
                 placeholderTextColor={theme.colors.textSoft}
               />
-            </View>
+            </FormInputContainer>
           </View>
           <View style={styles.formGroup}>
             <Text style={[styles.inputLabel, { color: theme.colors.text, fontFamily: typography.semibold }]}>Sexo DNI *</Text>

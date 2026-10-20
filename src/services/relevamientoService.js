@@ -3,6 +3,7 @@ import NetInfo from '@react-native-community/netinfo';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as SQLite from 'expo-sqlite';
 import { serializeSqliteAccess } from './sqliteAccess';
+import { persistWebAttachment } from './webAttachments';
 import { usaConstructor, camposDelDiseno } from './definicionFormulario';
 import { Platform } from 'react-native';
 import { becasRequest, becasUploadFile, getBecasToken, getStoredBecasUser } from './becasApi';
@@ -525,11 +526,8 @@ const persistLocalFileIfNeeded = async ({ uri, fileName, mimeType, size }) => {
     return { uri, mimeType, size };
   }
 
-  // En web los URI del selector son blob/data URI del navegador y no existe
-  // el filesystem nativo de Expo. Se conservan tal como vienen para la carga
-  // online; la persistencia offline de adjuntos es una capacidad móvil.
   if (Platform.OS === 'web') {
-    return { uri, mimeType: mimeType || inferMimeType(fileName || uri), size };
+    return persistWebAttachment({ uri, mimeType: mimeType || inferMimeType(fileName), size });
   }
 
   await ensureAttachmentsDir();
@@ -1699,7 +1697,16 @@ const relevamientoService = {
   async exportFailedOperation(localId) {
     const operation = await this.getFailedOperation(localId);
     const attachments = [];
-    if (Platform.OS !== 'web') {
+    if (Platform.OS === 'web') {
+      for (const attachment of operation.payload.adjuntos_formulario || []) {
+        try {
+          const persisted = await persistWebAttachment(attachment);
+          attachments.push({ ...attachment, content_base64: persisted.uri.split(',')[1] });
+        } catch {
+          attachments.push({ ...attachment, export_error: 'Archivo no disponible en el navegador' });
+        }
+      }
+    } else {
       for (const attachment of operation.payload.adjuntos_formulario || []) {
         try {
           const content = await FileSystem.readAsStringAsync(attachment.uri, { encoding: FileSystem.EncodingType.Base64 });
