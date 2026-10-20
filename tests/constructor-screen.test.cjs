@@ -31,6 +31,7 @@ async function mount(items, options = {}) {
   const theme = {colors: new Proxy({}, {get: () => '#5059BC'})};
   const mocks = {
     react: React, 'react-native': native,
+    '../components/FormInput': {__esModule:true, default:native.TextInput, FormInputContainer:native.View},
     '../services/definicionFormulario': runtime.definition,
     '../services/identityLookup': {...runtime.identity, consultarIdentidad: async () => {if (options.identityError) throw options.identityError; return {origen: 'padron', success: true,
       data: {dni: '30123456', sexo: 'F', nombre: 'Ana', apellido: 'Prueba', fecha_nacimiento: '1991-03-14'}};}},
@@ -44,7 +45,7 @@ async function mount(items, options = {}) {
     '@expo/vector-icons': {Ionicons: 'Ionicons'},
     '@react-native-community/netinfo': {__esModule: true, default: {fetch: async () => ({isConnected: true, isInternetReachable: true})}},
     '@react-native-community/datetimepicker': {__esModule: true, default: 'DateTimePicker', DateTimePickerAndroid: {open() {}}},
-    'expo-camera': {useCameraPermissions: () => [{granted: true}, async () => ({granted: true})]},
+    '../hooks/useCameraPermissions': {__esModule:true, default: () => [{granted: true}, async () => ({granted: true})]},
     'expo-media-library': {}, 'expo-image-picker': {}, 'expo-constants': {},
     '@react-native-async-storage/async-storage': {__esModule: true, default: {getItem: async () => null}},
     'expo-location': {getForegroundPermissionsAsync: async () => ({status: 'denied'}), requestForegroundPermissionsAsync: async () => ({status: 'denied'})},

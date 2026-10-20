@@ -4,9 +4,11 @@ on:
   pull_request:
     branches:
       - main
+      - test
   push:
     branches:
       - main
+      - test
 
 permissions:
   contents: read
@@ -31,6 +33,21 @@ jobs:
 
       - name: Test session and offline queue
         run: npm test
+
+      - name: Build PWA
+        run: npm run build:web
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Test PWA offline persistence
+        run: npm run test:web
+
+      - name: Build static PWA container
+        run: docker build -t chaco-mobile:pwa-ci .
+
+      - name: Check static hosting and runtime configuration
+        run: node tests/docker-smoke.cjs chaco-mobile:pwa-ci
 
       - name: Run Expo Doctor
         run: npx expo-doctor

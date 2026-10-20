@@ -34,7 +34,9 @@
       ]
     },
     "web": {
-      "favicon": "./assets/brand/mini-logo-chaco.png"
+      "favicon": "./assets/brand/mini-logo-chaco.png",
+      "bundler": "metro",
+      "output": "single"
     },
     "extra": {
       "djangoApiUrl": "https://datanach.ecomdev.ar",

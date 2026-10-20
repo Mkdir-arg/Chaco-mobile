@@ -7,7 +7,10 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "test": "node --test tests/*.test.cjs"
+    "test": "node --test tests/*.test.cjs",
+    "build:web": "expo export --platform web --clear && node scripts/build-pwa.cjs",
+    "serve:web": "node scripts/serve-pwa.cjs",
+    "test:web": "node tests/pwa-browser.cjs"
   },
   "dependencies": {
     "@expo-google-fonts/manrope": "^0.4.2",
@@ -19,6 +22,8 @@
     "@react-navigation/bottom-tabs": "^7.10.1",
     "@react-navigation/native": "^7.1.28",
     "@react-navigation/native-stack": "^7.10.1",
+    "@zxing/browser": "^0.1.5",
+    "@zxing/library": "^0.21.3",
     "expo": "~54.0.37",
     "expo-blur": "~15.0.8",
     "expo-camera": "~17.0.10",
@@ -48,6 +53,7 @@
   },
   "private": true,
   "devDependencies": {
+    "playwright": "^1.56.1",
     "react-test-renderer": "19.1.0"
   }
 }

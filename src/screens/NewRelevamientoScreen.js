@@ -1,5 +1,6 @@
+import TextInput, { FormInputContainer } from '../components/FormInput';
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Platform, Image, Alert, Animated, Easing, KeyboardAvoidingView, Modal, ActivityIndicator, AppState, InteractionManager } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, Image, Alert, Animated, Easing, KeyboardAvoidingView, Modal, ActivityIndicator, AppState, InteractionManager } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
@@ -613,7 +614,7 @@ export default function NewRelevamientoScreen({ onCancel, onSave }) {
     const renderInput = (label, placeholder, key, icon, keyboardType = 'default') => (
         <View style={styles.inputGroup}>
             <Text style={[styles.label, { color: theme.colors.text, fontFamily: typography.semibold }]}>{label}</Text>
-            <View style={[styles.inputWrapper, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+            <FormInputContainer style={[styles.inputWrapper, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
                 <Ionicons name={icon} size={20} color={theme.colors.icon} style={styles.inputIcon} />
                 <TextInput
                     style={[styles.input, { color: theme.colors.text, fontFamily: typography.regular }]}
@@ -624,7 +625,7 @@ export default function NewRelevamientoScreen({ onCancel, onSave }) {
                     keyboardType={keyboardType}
                     autoCapitalize={getAutoCapitalizeByKey(key)}
                 />
-            </View>
+            </FormInputContainer>
         </View>
     );
 
@@ -1095,7 +1096,7 @@ export default function NewRelevamientoScreen({ onCancel, onSave }) {
 
                     <StaggeredItem index={1}>
                         <Text style={[styles.label, { color: theme.colors.text, fontFamily: typography.semibold }]}>Observaciones</Text>
-                        <View style={[styles.textAreaWrapper, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+                        <FormInputContainer style={[styles.textAreaWrapper, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
                             <TextInput
                                 style={[styles.textAreaInput, { color: theme.colors.text, fontFamily: typography.regular }]}
                                 placeholder="Escribe observaciones"
@@ -1105,7 +1106,7 @@ export default function NewRelevamientoScreen({ onCancel, onSave }) {
                                 value={formData.observaciones}
                                 onChangeText={(text) => setFormData({ ...formData, observaciones: text })}
                             />
-                        </View>
+                        </FormInputContainer>
                     </StaggeredItem>
 
                     <StaggeredItem index={2}>

@@ -5,7 +5,7 @@ const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 const { transformSync } = require('@babel/core');
 
-async function setup(platform = 'web') {
+async function setup(platform = 'android') {
   const values = new Map([['becas_auth_token', 'old-token'], ['user_data', JSON.stringify({id: 7})]]);
   const storage = {
     getItem: async key => values.get(key) ?? null,
@@ -30,7 +30,8 @@ async function setup(platform = 'web') {
   const context = vm.createContext({
     Date: ClockDate,
     console: { log() {}, warn() {} }, setTimeout, clearTimeout,
-    fetch: (...args) => fetchHandler(...args), FormData: class {constructor() {this.fields = [];} append(...args) {this.fields.push(args);}},
+    fetch: (...args) => /^(file:|blob:|data:)/.test(String(args[0])) ? Promise.resolve({ok: true, blob: async () => new Blob(['image'], {type: 'image/jpeg'})}) : fetchHandler(...args),
+    Blob, FormData: class {constructor() {this.fields = [];} append(...args) {this.fields.push(args);}},
   });
   const mocks = {
     '@react-native-async-storage/async-storage': {default: storage},

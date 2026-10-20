@@ -1,8 +1,8 @@
+import TextInput, { FormInputContainer } from '../components/FormInput';
 import React, { useState } from 'react';
 import {
   View,
   Text,
-  TextInput,
   Pressable,
   StyleSheet,
   Image,
@@ -15,6 +15,7 @@ import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import { Ionicons } from '@expo/vector-icons';
 import CustomButton from '../components/CustomButton';
+import PwaInstallGuide from '../components/PwaInstallGuide';
 import AuthVisualBackground from '../components/AuthVisualBackground';
 import { designColors, fontSizes, radii } from '../theme';
 import { API_CONFIG } from '../config/apiConfig';
@@ -102,7 +103,7 @@ export default function LoginScreen({ onNavigateToRegister }) {
 
               <View style={styles.inputGroup}>
                 <Text style={[styles.label, { fontFamily: typography.semibold, color: theme.colors.text }]}>Usuario</Text>
-                <View
+                <FormInputContainer
                   style={[
                     styles.input,
                   { borderColor: theme.colors.border, backgroundColor: theme.colors.surfaceAlt },
@@ -120,18 +121,20 @@ export default function LoginScreen({ onNavigateToRegister }) {
                     placeholderTextColor={theme.colors.textSoft}
                     style={[styles.field, { fontFamily: typography.regular, color: theme.colors.text }]}
                     autoCapitalize="none"
+                    accessibilityLabel="Usuario"
+                    selectionColor={theme.colors.primary}
                     value={username}
                     onChangeText={(text) => {
                       setUsername(text);
                       setError('');
                     }}
                   />
-                </View>
+                </FormInputContainer>
               </View>
 
               <View style={styles.inputGroup}>
                 <Text style={[styles.label, { fontFamily: typography.semibold, color: theme.colors.text }]}>Contraseña</Text>
-                <View
+                <FormInputContainer
                   style={[
                     styles.input,
                     styles.passwordInputWrapper,
@@ -150,6 +153,8 @@ export default function LoginScreen({ onNavigateToRegister }) {
                     placeholderTextColor={theme.colors.textSoft}
                     secureTextEntry={!showPassword}
                     style={[styles.field, { fontFamily: typography.regular, color: theme.colors.text }]}
+                    accessibilityLabel="Contraseña"
+                    selectionColor={theme.colors.primary}
                     value={password}
                     onChangeText={(text) => {
                       setPassword(text);
@@ -169,7 +174,7 @@ export default function LoginScreen({ onNavigateToRegister }) {
                       color={theme.colors.textSoft}
                     />
                   </Pressable>
-                </View>
+                </FormInputContainer>
                 <Pressable
                   onPress={handleForgotPassword}
                   accessibilityRole="link"
@@ -188,6 +193,8 @@ export default function LoginScreen({ onNavigateToRegister }) {
                 pressAnimation="scale"
                 style={styles.buttonMargin}
               />
+
+              <PwaInstallGuide linkStyle={[styles.forgotPasswordText, { color: theme.colors.primary, fontFamily: typography.semibold }]} />
 
               {onNavigateToRegister ? (
                 <View style={styles.registerLinkContainer}>

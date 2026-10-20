@@ -369,3 +369,175 @@ nueva con señal y verificar los grupos y preguntas; cambiar una respuesta que
 oculta otra obligatoria; repetir una captura offline y sincronizar tras cambiar
 la versión. Las capturas ya pendientes deben conservar la definición con la que
 se hicieron.
+
+## PWA: instalación y trabajo sin conexión
+
+La misma app puede compilarse para navegador sin reemplazar la versión Android/iOS.
+Con Node 22.14 o superior:
+
+```sh
+npm ci
+npm test
+npm run build:web
+npm run serve:web
+```
+
+Abrir `http://localhost:4173`. Para instalarla en un teléfono debe publicarse `dist/`
+en HTTPS y abrirse desde ese teléfono. En Chrome se instala desde el menú del navegador;
+en Safari/iOS se usa Compartir → Agregar a inicio. `expo start --web` sirve para desarrollo:
+la prueba offline se hace con el export de producción, no con Metro de desarrollo.
+
+### Qué se conserva offline
+
+- Después de la primera carga completa con conexión, el service worker precarga el
+  código, fuentes, imágenes, lector QR/PDF417, worker SQLite y WebAssembly.
+- El primer inicio de sesión y la descarga de las asignaciones requieren conexión.
+  Los relevamientos y definiciones descargados siguen disponibles sin señal.
+- Las capturas y sus adjuntos se guardan juntos en SQLite persistido en el navegador
+  (OPFS). Los archivos elegidos se convierten a data URL antes de guardar: no se
+  conservan referencias `blob:` que caduquen al cerrar. Esta representación ocupa
+  aproximadamente un tercio más que el archivo original.
+- La cola conserva UUID, fecha, versión, propietario y estado de cada envío. Al
+  recuperar conectividad con la app abierta, reanuda los envíos; un 401 conserva la
+  cola y requiere iniciar sesión con el mismo usuario. No duplica un alta ya
+  aceptada cuando falta subir un adjunto. Los errores que requieren decisión
+  mantienen las acciones Corregir, Exportar y Descartar.
+- Se solicita almacenamiento persistente al navegador. La concesión depende del
+  navegador: borrar los datos del sitio, desinstalar con eliminación de datos o usar
+  navegación privada puede borrar capturas no sincronizadas. Una falla de cuota o
+  escritura impide confirmar el guardado. Instalar la PWA no migra datos del APK:
+  ambos tienen almacenamiento independiente. Sincronizar el APK antes de cambiar.
+- Los cambios de versión esperan al cierre de las ventanas abiertas: no se fuerza
+  una recarga mientras hay un formulario abierto. Solo una captura guardada entra
+  en la cola; un formulario todavía sin guardar no sobrevive al cierre.
+- El navegador puede suspender la app cerrada: para sincronizar pendientes hay que
+  volver a abrirla. No se promete sincronización con la aplicación cerrada.
+
+### Hosting requerido
+
+Servir desde la raíz del dominio, con HTTPS, y conservar estas cabeceras también
+para documentos de navegación recuperados offline:
+
+```text
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+`public/_headers` sirve para hosts compatibles con ese formato. Otros servidores
+(Nginx, Apache, etc.) deben configurar las cabeceras expresamente. `sw.js` e
+`index.html` deben revalidarse (`Cache-Control: no-cache`); `.wasm` debe servirse como
+`application/wasm`. El servidor local de producción ya aplica estas reglas.
+SQLite web requiere un navegador con OPFS, WebAssembly y SharedArrayBuffer.
+Probar especialmente la versión de Safari/iOS de los dispositivos del equipo.
+
+Definir `EXPO_PUBLIC_DJANGO_API_URL` antes de compilar y reconstruir al cambiarla.
+Si la API usa otro origen, debe permitir el origen de la PWA mediante CORS,
+credenciales y los headers `Authorization` y `Content-Type`, incluido el preflight
+OPTIONS. También deben revisarse las cookies del proxy/WAF. Como alternativa,
+el hosting puede hacer proxy de `/api/` al backend en el mismo origen. El service
+worker nunca cachea solicitudes a la API, tokens ni subidas.
+
+Cámara y ubicación requieren HTTPS y permiso del usuario. El lector web QR/PDF417
+se incluye en el bundle; no descarga decodificadores de un CDN. La interfaz existente
+se conserva, con implementación web para cámara, permisos, multipart y compartir
+archivos (descarga cuando Web Share no está disponible).
+
+### Prueba automatizada en navegador real
+
+```sh
+npx playwright install chromium
+npm run test:web
+```
+
+Puede usarse Chrome instalado definiendo `CHROME_PATH` con su ejecutable. La prueba
+compila un artefacto separado en `dist-browser/` con acceso de prueba a los servicios;
+**ese directorio no se publica**. `npm run build:web` produce `dist/` sin esos hooks.
+Usa una API simulada: comprueba SQLite/OPFS real, captura offline con archivo,
+recarga offline, cierre y reapertura de Chrome, multipart, 401 durante el adjunto y
+reanudación sin duplicar el alta. No usa credenciales ni registros reales.
+
+Antes de publicar: validar en los teléfonos objetivo cámara, lectura de DNI QR y
+PDF417, geolocalización, instalación, persistencia después de cerrar, almacenamiento
+con poco espacio, corrección/exportación de errores y conexión con la API real.
+La prueba local no valida los permisos, CORS, certificados ni WAF del hosting final.
+
+## Despliegue estático con Docker — ticket 21347/2026
+
+El sitio de test acordado es **https://datanach-app.ecomdev.ar/**. La API permanece
+**https://datanach.ecomdev.ar/**. El contenedor solo sirve archivos estáticos con
+Nginx: no ejecuta Expo/Node en producción ni incorpora otro backend o un proxy a Django.
+
+La imagen se construye desde la raíz del repositorio:
+
+```sh
+docker build -t chaco-mobile:pwa-test .
+docker run --rm -p 127.0.0.1:8080:8080 \
+  -e URL_backoffice=https://datanach.ecomdev.ar \
+  chaco-mobile:pwa-test
+```
+
+| Configuración | Test | Producción |
+|---|---|---|
+| Sitio PWA | `https://datanach-app.ecomdev.ar/` | A confirmar por infraestructura |
+| `URL_backoffice` | `https://datanach.ecomdev.ar` | `https://datanach.chaco.gob.ar` |
+| Puerto del contenedor | `8080` | `8080` |
+| Health check | `GET /healthz` → `200 ok` | Igual |
+
+`URL_backoffice` se pasa **al arrancar el contenedor**, con ese nombre y mayúsculas
+exactos. No requiere reconstruir la imagen. El entrypoint valida un origen HTTPS
+sin rutas, credenciales ni parámetros y genera `/runtime-config.js`, cargado antes
+del bundle. Esta configuración tiene prioridad sobre `EXPO_PUBLIC_DJANGO_API_URL`;
+la variable de Expo sigue disponible para desarrollo local y builds nativos.
+Los archivos `.env*` locales, incluyendo la IP de desarrollo, se excluyen del
+contexto Docker. No se debe incluir secretos en la configuración pública de la PWA.
+
+El service worker obtiene la configuración con red primero y conserva la última
+copia para arrancar offline. Las respuestas de la API y los tokens no se guardan
+en el caché del service worker. SQLite y la cola siguen siendo la persistencia de
+las capturas y adjuntos.
+
+### Configuración que debe realizar infraestructura
+
+- Crear DNS e ingress HTTPS con certificado válido para el sitio PWA; el TLS
+  termina en el ingress y el servicio interno apunta al puerto HTTP `8080`.
+- Conservar las cabeceras `Cross-Origin-Opener-Policy: same-origin` y
+  `Cross-Origin-Embedder-Policy: require-corp`, también en HTML, JS, workers,
+  archivos WASM y respuestas recuperadas de un caché intermedio. Nginx las envía.
+- Conservar el fallback SPA: una ruta de pantalla sin archivo devuelve
+  `index.html`. Un JS/WASM inexistente y `/api/` devuelven 404 en este contenedor;
+  nunca se sirven como HTML de la app.
+- No cachear `/runtime-config.js`; revalidar `index.html`, `sw.js`, manifiesto e
+  íconos. Solo los bundles versionados bajo `/_expo/static/` usan caché inmutable.
+- En **Django HML**, agregar `https://datanach-app.ecomdev.ar` a
+  `DJANGO_CORS_ALLOWED_ORIGINS`. El middleware `ApiCorsMiddleware` del backend ya
+  admite esa lista; comprobar OPTIONS y POST sobre `/api/becas/`, con credenciales
+  y headers `Authorization` y `Content-Type`. El WAF/ingress tampoco debe bloquear
+  OPTIONS, sustituir JSON por HTML ni quitar los headers CORS.
+- Verificar el mismo permiso de origen en producción cuando se confirme su dominio.
+
+El último punto es necesario: **publicar el estático en el dominio nuevo no arregla
+por sí solo CORS**. La app consulta directamente al Django indicado por
+`URL_backoffice`; no hay un proxy oculto en esta imagen. La inicialización del WAF
+puede solicitar la raíz del backend antes del login; revisar también sus cookies
+entre los subdominios del mismo ambiente.
+
+### Validaciones de la entrega
+
+```sh
+npm ci
+npm test
+npm run build:web
+npx playwright install chromium
+npm run test:web
+docker build -t chaco-mobile:pwa-test .
+node tests/docker-smoke.cjs chaco-mobile:pwa-test
+```
+
+La prueba del contenedor abre puertos efímeros solo en loopback y comprueba fallback,
+cabeceras de aislamiento, MIME de WASM, caché y dos valores de `URL_backoffice`
+sobre la misma imagen. La prueba de navegador comprueba que la configuración runtime
+prevalece sobre la de compilación y se conserva al recargar offline, además del ciclo
+de captura, adjuntos y recuperación de sesión. No inicia sesión contra HML.
+Antes de dar el despliegue por operativo hay que validar login real, descarga,
+captura offline y sincronización desde Safari/iPhone y Chrome/Android con el DNS y
+las políticas CORS/WAF finales.

@@ -1,0 +1,8 @@
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  X-Content-Type-Options: nosniff
+/sw.js
+  Cache-Control: no-cache
+/index.html
+  Cache-Control: no-cache
