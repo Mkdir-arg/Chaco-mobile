@@ -50,7 +50,22 @@ self.addEventListener('fetch', event => {
       }
     }));
   } else if (event.request.mode === 'navigate') {
-    event.respondWith(caches.open(CACHE).then(cache => cache.match('/index.html')));
+    // Red primero. El shell cacheado conserva los headers que tenia al guardarse, CSP
+    // incluida, y el nombre del cache solo cambia si cambian los bytes de los archivos:
+    // servirlo sin revalidar dejaba al dispositivo clavado con una politica vieja para
+    // siempre, sin forma de actualizarlo salvo borrar los datos del sitio a mano.
+    event.respondWith(caches.open(CACHE).then(async cache => {
+      try {
+        const response = await fetch(event.request);
+        // Un 5xx del servidor no vale mas que el shell que ya funciona.
+        if (response.ok) {
+          await cache.put('/index.html', response.clone());
+          return response;
+        }
+      } catch {}
+      // Sin red seguimos sirviendo el shell: la captura en campo no se interrumpe.
+      return cache.match('/index.html');
+    }));
   } else if (ASSETS.includes(url.pathname)) {
     event.respondWith(caches.open(CACHE).then(async cache =>
       (await cache.match(url.pathname)) || fetch(event.request)));
