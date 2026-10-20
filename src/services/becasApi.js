@@ -4,6 +4,14 @@ import { Platform } from 'react-native';
 import { API_CONFIG } from '../config/apiConfig';
 import { apiErrorMessage } from './formularioSync';
 
+// En el navegador no mandamos cookies. Si el usuario tiene sesion abierta en el
+// backoffice del mismo dominio, el navegador adjunta su `sessionid`, DRF autentica con
+// SessionAuthentication y entonces exige CSRF en los POST: la llamada muere con 403
+// "CSRF Failed: CSRF token missing" antes de que nadie mire las credenciales. La app
+// autentica con Token, asi que las cookies no le aportan nada. En nativo se mantienen
+// porque ahi sostienen la sesion de Client Management de FortiWeb.
+const CREDENCIALES = Platform.OS === 'web' ? 'omit' : 'include';
+
 const TOKEN_KEY = 'becas_auth_token';
 const USER_DATA_KEY = 'user_data';
 const USER_ID_KEY = 'user_id';
@@ -117,11 +125,14 @@ const buildResponseError = (response, payload, fallback) => {
 };
 
 const initializeWafSession = async () => {
+  // Inutil en el navegador: va contra `/` y el CORS del backend solo cubre `/api/`, con
+  // lo cual la respuesta se descarta y la cookie nunca llega. Sin cookies, menos todavia.
+  if (Platform.OS === 'web') return;
   try {
     const response = await fetch(buildUrl('/'), {
       method: 'GET',
       headers: { Accept: 'text/html,application/json' },
-      credentials: 'include',
+      credentials: CREDENCIALES,
     });
     await response.text();
   } catch {
@@ -140,7 +151,7 @@ export const loginBecas = async ({ username, password }) => {
       Accept: 'application/json',
       'Content-Type': 'application/json',
     },
-    credentials: 'include',
+    credentials: CREDENCIALES,
     body: JSON.stringify({ username, password }),
   });
   const payload = await parseResponse(response);
@@ -184,7 +195,7 @@ export const becasUploadFile = async (path, { fileUri, fileField = 'archivo', fi
 
   const response = await fetch(buildUrl(path), {
     method: 'POST',
-    credentials: 'include',
+    credentials: CREDENCIALES,
     headers: {
       Accept: 'application/json',
       ...(token ? { Authorization: `Token ${token}` } : {}),
@@ -210,7 +221,7 @@ export const becasRequest = async (path, options = {}) => {
 
   const response = await fetch(buildUrl(path), {
     ...options,
-    credentials: 'include',
+    credentials: CREDENCIALES,
     headers,
     body: options.body && typeof options.body !== 'string'
       ? JSON.stringify(options.body)
