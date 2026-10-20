@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const {execFileSync, spawnSync} = require('node:child_process');
 const vm = require('node:vm');
+const http = require('node:http');
 const image = process.argv[2] || 'chaco-mobile:pwa-test';
 const docker = args => execFileSync('docker', args, {encoding:'utf8'}).trim();
 let container;
@@ -37,6 +38,23 @@ const stop = () => { if(container) {docker(['stop',container]); container=null;}
     assert.match((await fetch(origin + '/sw.js')).headers.get('cache-control'),/no-cache/);
     assert.match((await fetch(origin + bundle)).headers.get('cache-control'),/immutable/);
     assert.match((await fetch(origin + wasm)).headers.get('content-type'),/application\/wasm/);
+    // Sin compresion el bundle son 2,2 MB en el primer arranque de cada dispositivo.
+    // Los .gz los genera el build: si el find del Dockerfile deja de matchear, esto falla.
+    const rawHeaders = (route, encoding) => new Promise((resolve, reject) => {
+      const target = new URL(origin + route);
+      http.get({hostname: target.hostname, port: target.port, path: target.pathname,
+        headers: {'Accept-Encoding': encoding}}, response => { response.resume(); resolve(response.headers); })
+        .on('error', reject);
+    });
+    const comprimido = await rawHeaders(bundle, 'gzip');
+    const crudo = await rawHeaders(bundle, 'identity');
+    assert.equal(comprimido['content-encoding'],'gzip','el bundle debe viajar comprimido');
+    assert.equal(crudo['content-encoding'],undefined,'un cliente sin gzip igual recibe el bundle');
+    assert.ok(Number(comprimido['content-length'])*2 < Number(crudo['content-length']),'el .gz precomprimido no se esta sirviendo');
+    assert.match(comprimido['vary']||'',/accept-encoding/i);
+    assert.equal(comprimido['cache-control'],crudo['cache-control']);
+    // Un .gz viejo de runtime-config.js serviria la URL del backend equivocada.
+    assert.equal(docker(['exec',container,'sh','-c','test ! -e /usr/share/nginx/html/runtime-config.js.gz && echo ok']),'ok');
     for(const route of ['/missing.js','/missing.wasm','/api/becas/relevamientos/']) {
       assert.equal((await fetch(origin + route)).status,404,route);
     }
