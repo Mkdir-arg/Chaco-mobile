@@ -1,0 +1,10 @@
+# Normalizacion de fin de linea.
+#
+# Los archivos que entran en la imagen de Docker se ejecutan dentro de un
+# contenedor Linux. Si el checkout es en Windows con core.autocrlf=true, git los
+# deja con CRLF y el contenedor muere al arrancar: el kernel lee el shebang
+# "#!/bin/sh\r" y responde "not found". Forzamos LF para estos archivos aunque
+# se trabaje desde Windows.
+*.sh          text eol=lf
+Dockerfile    text eol=lf
+docker/*.conf text eol=lf
