@@ -46,7 +46,7 @@ async function mount(items, options = {}) {
     '@react-native-community/netinfo': {__esModule: true, default: {fetch: async () => ({isConnected: true, isInternetReachable: true})}},
     '@react-native-community/datetimepicker': {__esModule: true, default: 'DateTimePicker', DateTimePickerAndroid: {open() {}}},
     '../hooks/useCameraPermissions': {__esModule:true, default: () => [{granted: true}, async () => ({granted: true})]},
-    'expo-media-library': {}, 'expo-image-picker': {}, 'expo-constants': {},
+    'expo-media-library': {}, '../services/imagePicker': {}, 'expo-constants': {},
     '@react-native-async-storage/async-storage': {__esModule: true, default: {getItem: async () => null}},
     'expo-location': {getForegroundPermissionsAsync: async () => ({status: 'denied'}), requestForegroundPermissionsAsync: async () => ({status: 'denied'})},
     'react-native-safe-area-context': {useSafeAreaInsets: () => ({top: 0, bottom: 0})},

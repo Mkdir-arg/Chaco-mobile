@@ -8,7 +8,7 @@ import NetInfo from '@react-native-community/netinfo';
 import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
 import useCameraPermissions from '../hooks/useCameraPermissions';
 import * as MediaLibrary from 'expo-media-library';
-import * as ImagePicker from 'expo-image-picker';
+import * as ImagePicker from '../services/imagePicker';
 import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
@@ -787,7 +787,11 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
       setGalleryLoading(true);
       // Expo Go cannot request broad photo-library access on Android.
       // The system picker grants access only to the image selected by the user.
-      if (Platform.OS === 'android' && Constants.executionEnvironment === 'storeClient') {
+      // En web tampoco hay galeria que listar: expo-media-library no existe en el
+      // navegador y su permiso vuelve siempre denegado. El selector de archivos no
+      // necesita permiso.
+      if (Platform.OS === 'web'
+        || (Platform.OS === 'android' && Constants.executionEnvironment === 'storeClient')) {
         const result = await ImagePicker.launchImageLibraryAsync({
           mediaTypes: ['images'],
           allowsEditing: false,

@@ -3,7 +3,7 @@ import NetInfo from '@react-native-community/netinfo';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as SQLite from 'expo-sqlite';
 import { serializeSqliteAccess } from './sqliteAccess';
-import { persistWebAttachment } from './webAttachments';
+import { persistWebAttachment, readWebBlob } from './webAttachments';
 import { usaConstructor, camposDelDiseno } from './definicionFormulario';
 import { Platform } from 'react-native';
 import { becasRequest, becasUploadFile, getBecasToken, getStoredBecasUser } from './becasApi';
@@ -618,7 +618,7 @@ export const validateFormularioAttachment = async (attachment) => {
     const info = await FileSystem.getInfoAsync(attachment.uri, { size: true });
     if (info.exists) size = info.size ?? size;
   } else if (size == null && /^(blob:|data:)/.test(String(attachment.uri))) {
-    size = (await (await fetch(attachment.uri)).blob()).size;
+    size = (await readWebBlob(attachment.uri)).size;
   }
   validateAttachmentMetadata({ ...attachment, size });
 };

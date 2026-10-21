@@ -3,6 +3,7 @@ import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import { API_CONFIG } from '../config/apiConfig';
 import { apiErrorMessage } from './formularioSync';
+import { readWebBlob } from './webAttachments';
 
 // En el navegador no mandamos cookies. Si el usuario tiene sesion abierta en el
 // backoffice del mismo dominio, el navegador adjunta su `sessionid`, DRF autentica con
@@ -185,10 +186,7 @@ export const becasUploadFile = async (path, { fileUri, fileField = 'archivo', fi
   });
   const name = fileName || 'archivo.jpg';
   if (Platform.OS === 'web') {
-    const fileResponse = await fetch(fileUri);
-    if (!fileResponse.ok) throw new Error('Adjunto no disponible. Volvé a seleccionarlo.');
-    const blob = await fileResponse.blob();
-    formData.append(fileField, blob, name);
+    formData.append(fileField, await readWebBlob(fileUri), name);
   } else {
     formData.append(fileField, { uri: fileUri, name, type: mimeType });
   }

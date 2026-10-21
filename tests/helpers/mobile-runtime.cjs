@@ -30,8 +30,13 @@ async function setup(platform = 'android') {
   const context = vm.createContext({
     Date: ClockDate,
     console: { log() {}, warn() {} }, setTimeout, clearTimeout,
-    fetch: (...args) => /^(file:|blob:|data:)/.test(String(args[0])) ? Promise.resolve({ok: true, blob: async () => new Blob(['image'], {type: 'image/jpeg'})}) : fetchHandler(...args),
-    Blob, FormData: class {constructor() {this.fields = [];} append(...args) {this.fields.push(args);}},
+    // En web, igual que el navegador bajo la CSP de ECOM (`connect-src` sin blob: ni
+    // data:): un fetch a una URL local se rechaza. Antes este mock la aceptaba y los
+    // tests pasaban mientras cada adjunto real moria en el navegador.
+    fetch: (...args) => !/^(file:|blob:|data:)/.test(String(args[0])) ? fetchHandler(...args)
+      : platform === 'web' ? Promise.reject(new TypeError('Refused to connect: violates Content Security Policy'))
+      : Promise.resolve({ok: true, blob: async () => new Blob(['image'], {type: 'image/jpeg'})}),
+    atob, btoa, Blob, FormData: class {constructor() {this.fields = [];} append(...args) {this.fields.push(args);}},
   });
   const mocks = {
     '@react-native-async-storage/async-storage': {default: storage},
@@ -72,7 +77,7 @@ async function setup(platform = 'android') {
     VALUES ('remote_django_becas_1','1','now','now',?,1)`).run(JSON.stringify(campaign));
   const setPeriod = (start, end) => sql.prepare("UPDATE local_relevamientos SET payload_json=? WHERE local_id='remote_django_becas_1'")
     .run(JSON.stringify({...campaign, fecha_asignada: start, fecha_hasta: end}));
-  return {definition: load('./definicionFormulario'), conditions: load('./condiciones'), identity: load('./identityLookup'), api, service, dates: load('../utils/dates'), values, sql, setPeriod,
+  return {definition: load('./definicionFormulario'), attachments: load('./webAttachments'), conditions: load('./condiciones'), identity: load('./identityLookup'), api, service, dates: load('../utils/dates'), values, sql, setPeriod,
     setNow: value => {currentTime = new Date(value).getTime();}, setOnline: value => {online = value;}, setFetch: handler => {fetchHandler = handler;}};
 }
 function response(status, payload) {

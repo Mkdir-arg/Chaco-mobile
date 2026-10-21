@@ -8,7 +8,9 @@ for (const method of ['becasRequest', 'becasUploadFile']) {
     const {api, values} = await setup(platform);
     let expired = 0;
     const unsubscribe = api.subscribeBecasSessionExpired(() => expired++);
-    await assert.rejects(api[method]('/endpoint/', {fileUri: 'file:///photo.jpg'}), e => e.status === 401);
+    // En el navegador no hay file://: un adjunto ya guardado es un data: URI.
+    const fileUri = platform === 'web' ? 'data:image/jpeg;base64,aW1hZ2U=' : 'file:///photo.jpg';
+    await assert.rejects(api[method]('/endpoint/', {fileUri}), e => e.status === 401);
     assert.equal(values.has('becas_auth_token'), false);
     assert.equal(values.has('user_data'), false);
     assert.equal(expired, 1);
