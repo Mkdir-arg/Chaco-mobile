@@ -54,3 +54,15 @@ test('read-only and disabled fields do not acquire editable focus styling',async
   await renderer.act(async()=>tree.unmount());
  }
 });
+
+
+test('web fields use at least 16px and preserve larger text to avoid focus zoom', async () => {
+  for (const [requested, expected] of [[14, 16], [12, 16], [20, 20], [undefined, 16]]) {
+    let tree;
+    await renderer.act(async () => {tree = renderer.create(React.createElement(Input, {
+      style: {fontSize: requested}, value: 'Texto', multiline: true,
+    }));});
+    assert.equal(flatten(tree.root.findByType('TextInput').props.style).fontSize, expected);
+    await renderer.act(async () => tree.unmount());
+  }
+});

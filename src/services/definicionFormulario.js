@@ -71,18 +71,37 @@ export const evaluarDiseno = (definition, state, capturedAt) => {
   return { ...result, grupos: visibleGroups, campos: fields.filter(field => result.visibles.has(field.clave)) };
 };
 
-export const faltantesDelDiseno = (fields, answers) => fields.filter(field => {
-  const value = answers[field.clave];
-  if (field.tipo === 'ARCHIVO') return field.requerido && !value?.uri && !value?.dataUri && !value?.archivo_adjunto;
-  if (estaVacio(value)) return field.requerido;
-  if (field.tipo === 'INT') return !/^-?\d+$/.test(String(value).trim());
-  if (field.tipo === 'DATE') {
+export const esCampoEmail = field => ['email', 'email_contacto'].includes(field.vinculo)
+  || String(field.tipo || '').toUpperCase() === 'EMAIL';
+
+export const errorDelCampo = (field, value) => {
+  const tipo = String(field.tipo || '').toUpperCase();
+  if (tipo === 'ARCHIVO') return field.requerido && !value?.uri && !value?.dataUri && !value?.archivo_adjunto
+    ? 'Adjuntá un archivo.' : '';
+  if (estaVacio(value)) return field.requerido ? 'Este campo es obligatorio.' : '';
+  if (esCampoEmail(field) && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value).trim())) {
+    return 'Ingresá un correo electrónico válido, por ejemplo nombre@dominio.com.';
+  }
+  if (['INT', 'NUMERO'].includes(tipo) && !/^-?\d+$/.test(String(value).trim())) {
+    return 'Ingresá un número entero, sin letras ni decimales.';
+  }
+  if (['DATE', 'FECHA'].includes(tipo)) {
     const text = fechaRespuesta(value);
     const parsed = new Date(text + 'T12:00:00Z');
-    return !/^\d{4}-\d{2}-\d{2}$/.test(text) || !Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== text;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(text) || !Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== text) {
+      return 'Ingresá una fecha válida.';
+    }
   }
-  return false;
-}).map(field => field.etiqueta);
+  return '';
+};
+
+export const faltantesDelDiseno = (fields, answers) => fields
+  .filter(field => errorDelCampo(field, answers[field.clave])).map(field => field.etiqueta);
+
+export const problemasDelDiseno = (fields, answers) => fields.flatMap(field => {
+  const error = errorDelCampo(field, answers[field.clave]);
+  return error ? [`${field.etiqueta}: ${error}`] : [];
+});
 
 export const columnasLegacy = (fields, answers) => {
   const columns = {};

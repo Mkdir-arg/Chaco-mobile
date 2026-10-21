@@ -22,7 +22,8 @@ async function mount(items, options = {}) {
     definicion_formulario: definition, campos_definicion: runtime.definition.camposDelDiseno(definition)});
   const service = {
     getRelevamientoDetail: async () => ({success: true, detail: detail()}),
-    getBecasFormularios: async () => ({records: []}), getFailedOperations: async () => [], dniYaRelevado: async () => false,
+    getBecasFormularios: async () => ({records: []}), getFailedOperations: async () => options.failedOperation ? [options.failedOperation] : [], dniYaRelevado: async () => false,
+    correctFailedFormulario: async (id, payload) => {assert.equal(id, options.failedOperation.local_id); submitted = payload; return {success: true, syncResult: {synced: 1}};},
     saveBecasFormulario: async payload => {submitted = payload; return {success: true, syncResult: {synced: 1}};},
   };
   const native = Object.fromEntries(['View','Text','ScrollView','TouchableOpacity','ActivityIndicator','Image','Pressable',
@@ -54,7 +55,7 @@ async function mount(items, options = {}) {
     'react-native-svg': {__esModule: true, default: 'Svg', Path: 'Path'},
     'expo-file-system/legacy': {documentDirectory: 'file:///test/'}, 'expo-sharing': {}, 'expo-web-browser': {},
   };
-  for (const name of ['Banner','CameraModal','CustomButton','AuthVisualBackground']) mocks['../components/' + name] = {__esModule: true, default: name};
+  for (const name of ['Banner','CameraModal','CustomButton','AuthVisualBackground','WebDateInput']) mocks['../components/' + name] = {__esModule: true, default: name};
   const root = path.join(__dirname, '..');
   const tokenExports = {};
   const tokenCode = transformSync(fs.readFileSync(path.join(root, 'src/theme/tokens.js'), 'utf8'), {
@@ -120,7 +121,7 @@ test('screen evaluates live conditions and sends only visible answers on confirm
     await ui.press('Sí', 'Pressable');
     assert.equal(ui.labels().includes('Detalle condicional *'), true);
     await ui.press('SIGUIENTE');
-    assert.ok(ui.alerts.some(args => args[0] === 'Faltan datos'));
+    assert.ok(ui.alerts.some(args => args[0] === 'Revisá los datos'));
     await ui.press('No', 'Pressable');
     assert.equal(ui.labels().includes('Detalle condicional *'), false);
     await ui.press('SIGUIENTE'); await ui.press('CONFIRMAR CASO');
@@ -141,7 +142,7 @@ test('verified identity is read-only while linked contact remains editable', asy
     assert.ok(ui.labels().includes('Ana'));
     const inputs = ui.tree.root.findAllByType('TextInput');
     assert.equal(inputs.some(node => node.props.value === 'Ana'), false);
-    const contact = inputs.find(node => node.props.placeholder === 'Completar');
+    const contact = inputs.find(node => node.props.accessibilityLabel === 'Correo de contacto');
     assert.ok(contact);
     await renderer.act(async () => contact.props.onChangeText('qa@example.com'));
     await ui.press('SIGUIENTE'); await ui.press('CONFIRMAR CASO');
@@ -161,4 +162,67 @@ test('deceased identity still blocks constructor navigation and submission', asy
     assert.equal(groupButton.props.disabled, true);
     assert.equal(ui.submitted(), undefined);
   } finally {await ui.close();}
+});
+
+
+test('integer fields explain the type, show inline errors and block continuing until corrected', async () => {
+  const ui = await mount([group('g-numeros', 'Datos', [field('cp-num', 'Cantidad', {tipo: 'INT'})])]);
+  try {
+    await ui.press('AGREGAR PERSONA'); await ui.identify();
+    const input = () => ui.tree.root.findAllByType('TextInput').find(n => n.props.placeholder === 'Ej.: 12');
+    assert.ok(input());
+    assert.equal(input().props.inputMode, 'numeric');
+    assert.ok(ui.labels().includes('Número entero, sin letras ni decimales.'));
+    await renderer.act(async () => input().props.onChangeText('12abc'));
+    assert.equal(input().props['aria-invalid'], true);
+    assert.ok(ui.labels().includes('Ingresá un número entero, sin letras ni decimales.'));
+    await ui.press('SIGUIENTE');
+    assert.ok(ui.alerts.some(args => args[0] === 'Revisá los datos' && args[1].includes('Cantidad: Ingresá un número entero')));
+    await renderer.act(async () => input().props.onChangeText('0'));
+    assert.equal(input().props['aria-invalid'], false);
+    await ui.press('SIGUIENTE'); await ui.press('CONFIRMAR CASO');
+    assert.equal(ui.submitted().respuestas['cp-num'], '0');
+  } finally { await ui.close(); }
+});
+
+
+test('correction opens rejected email step and preserves captured identity and other answers', async () => {
+  const items = [group('g-persona', 'Persona', [
+    field('cp-nombre', 'Nombre', {origen: 'legajo', vinculo: 'nombre'}),
+    field('cp-apellido', 'Apellido', {origen: 'legajo', vinculo: 'apellido'}),
+  ]), group('g-contacto', 'Contacto', [
+    field('cp-email', 'Correo', {origen: 'legajo', vinculo: 'email'}),
+    field('cp-otro', 'Otra respuesta'),
+  ])];
+  const operation = {local_id: 'original-local-id', last_error_code: 'ALTA_INVALIDA',
+    last_error: 'email_contacto: Introduzca una dirección de correo electrónico válida.',
+    payload: {definicion_formulario: {items, version: 3, acepta_respuestas: true},
+      datos_identificacion: {dni: '24459124', sexo: 'F', origen: 'manual'},
+      respuestas: {'cp-nombre': 'Ana', 'cp-apellido': 'Prueba', 'cp-email': 'mal', 'cp-otro': 'Respuesta guardada'},
+      email_contacto: 'mal', capturado_en: '2026-10-20T15:00:00Z'}};
+  const ui = await mount(items, {failedOperation: operation});
+  try {
+    const correct = ui.tree.root.findAllByType('CustomButton').find(n => n.props.title === 'Corregir');
+    assert.ok(correct);
+    await renderer.act(async () => correct.props.onPress());
+    assert.equal(ui.labels().includes('Identificacion'), false);
+    const email = () => ui.tree.root.findAllByType('TextInput').find(n => n.props.accessibilityLabel === 'Correo');
+    assert.equal(email().props.value, 'mal');
+    assert.equal(email().props.inputMode, 'email');
+    assert.equal(email().props.autoCapitalize, 'none');
+    assert.ok(ui.labels().some(t => t.includes('Ingresá un correo electrónico válido')));
+    await ui.press('SIGUIENTE');
+    assert.ok(ui.alerts.some(args => args[1].includes('Correo: Ingresá un correo electrónico válido')));
+    await renderer.act(async () => email().props.onChangeText('qa@example.com'));
+    assert.equal(email().props['aria-invalid'], false);
+    await ui.press('SIGUIENTE'); await ui.press('CONFIRMAR CASO');
+    const payload = ui.submitted();
+    assert.ok(payload);
+    assert.equal(payload.datos_identificacion.nombre, 'Ana');
+    assert.equal(payload.datos_identificacion.apellido, 'Prueba');
+    assert.equal(payload.datos_identificacion.dni, '24459124');
+    assert.equal(payload.respuestas['cp-otro'], 'Respuesta guardada');
+    assert.equal(payload.email_contacto, 'qa@example.com');
+    assert.equal(payload.capturado_en, operation.payload.capturado_en);
+  } finally { await ui.close(); }
 });

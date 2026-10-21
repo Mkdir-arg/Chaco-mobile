@@ -7,8 +7,12 @@ const files = dir => fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry 
   return entry.isDirectory() ? files(name) : [name];
 });
 let html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+// Keep the layout inside the available screen when the on-screen keyboard opens.
+// The field app keeps a fixed scale; scrolling is still available on both axes.
+html = html.replace(/(<meta name="viewport" content=")[^"]*("\s*\/?>)/,
+  '$1width=device-width, initial-scale=1, shrink-to-fit=no, maximum-scale=1, user-scalable=no, interactive-widget=resizes-content$2');
 // Load runtime settings before Expo executes the application bundle.
-html = html.replace('<head>', '<head><script src="/runtime-config.js"></script>');
+html = html.replace('<head>', '<head><script src="/runtime-config.js"></script><script src="/pwa-gestures.js"></script><style>html,body,#root{touch-action:pan-x pan-y}</style>');
 html = html.replace('</head>', `<link rel="manifest" href="/manifest.webmanifest" />
 <meta name="theme-color" content="#F9FAFB" />
 <link rel="apple-touch-icon" href="/icons/icon-192.png" /></head>`);
