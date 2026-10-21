@@ -12,6 +12,7 @@ import * as ImagePicker from '../services/imagePicker';
 import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
+import { posicionActual } from '../services/ubicacion';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
 import * as FileSystemLegacy from 'expo-file-system/legacy';
@@ -1061,9 +1062,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
           setGpsCoordsFromPosition(lastKnown);
         }
 
-        const current = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
+        const current = await posicionActual(Location.Accuracy.Balanced);
         return setGpsCoordsFromPosition(current);
       } catch {
         return null;

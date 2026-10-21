@@ -22,6 +22,7 @@ async function setup(platform = 'android') {
   };
   let online = true;
   let fetchHandler = async () => response(401, {detail: 'Invalid token.'});
+  let locationHandler = async () => ({coords: {latitude: -27.45, longitude: -58.98}});
   let currentTime = null;
   class ClockDate extends Date {
     constructor(...args) { super(...(args.length ? args : currentTime == null ? [] : [currentTime])); }
@@ -46,6 +47,7 @@ async function setup(platform = 'android') {
     '@react-native-community/netinfo': {default: {fetch: async () => ({isConnected: online, isInternetReachable: online})}},
     'expo-file-system/legacy': {documentDirectory: 'file:///test/', getInfoAsync: async () => ({exists: true, size: 100}), copyAsync: async () => {}, makeDirectoryAsync: async () => {}, EncodingType: {Base64: 'base64'}, readAsStringAsync: async () => 'aW1hZ2U='},
     'expo-sqlite': {openDatabaseAsync: async () => db},
+    'expo-location': {getCurrentPositionAsync: (...args) => locationHandler(...args)},
   };
   const modules = new Map();
   function load(name) {
@@ -77,8 +79,8 @@ async function setup(platform = 'android') {
     VALUES ('remote_django_becas_1','1','now','now',?,1)`).run(JSON.stringify(campaign));
   const setPeriod = (start, end) => sql.prepare("UPDATE local_relevamientos SET payload_json=? WHERE local_id='remote_django_becas_1'")
     .run(JSON.stringify({...campaign, fecha_asignada: start, fecha_hasta: end}));
-  return {definition: load('./definicionFormulario'), attachments: load('./webAttachments'), conditions: load('./condiciones'), identity: load('./identityLookup'), api, service, dates: load('../utils/dates'), values, sql, setPeriod,
-    setNow: value => {currentTime = new Date(value).getTime();}, setOnline: value => {online = value;}, setFetch: handler => {fetchHandler = handler;}};
+  return {definition: load('./definicionFormulario'), attachments: load('./webAttachments'), images: load('./webImages'), location: load('./ubicacion'), conditions: load('./condiciones'), identity: load('./identityLookup'), api, service, dates: load('../utils/dates'), values, sql, setPeriod,
+    setNow: value => {currentTime = new Date(value).getTime();}, setOnline: value => {online = value;}, setFetch: handler => {fetchHandler = handler;}, setLocation: handler => {locationHandler = handler;}};
 }
 function response(status, payload) {
   return {status, ok: status >= 200 && status < 300, headers: {get: () => 'application/json'}, text: async () => JSON.stringify(payload)};

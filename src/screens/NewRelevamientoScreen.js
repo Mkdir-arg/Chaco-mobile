@@ -5,6 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from '../services/imagePicker';
 import * as DocumentPicker from '../services/documentPicker';
 import * as Location from 'expo-location';
+import { posicionActual, UBICACION_DEMORADA } from '../services/ubicacion';
 import Svg, { Path } from 'react-native-svg';
 import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
@@ -589,9 +590,7 @@ export default function NewRelevamientoScreen({ onCancel, onSave }) {
                 return;
             }
 
-            const current = await Location.getCurrentPositionAsync({
-                accuracy: Location.Accuracy.High,
-            });
+            const current = await posicionActual(Location.Accuracy.High);
 
             setFormData({
                 ...formData,
@@ -599,7 +598,7 @@ export default function NewRelevamientoScreen({ onCancel, onSave }) {
                 longitud: String(current.coords.longitude.toFixed(6)),
             });
         } catch (error) {
-            setLocationError('No se pudo obtener la ubicacion.');
+            setLocationError(error?.code === UBICACION_DEMORADA ? error.message : 'No se pudo obtener la ubicacion.');
         } finally {
             setLocationLoading(false);
         }
