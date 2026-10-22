@@ -522,7 +522,7 @@ test('requiereActualizacionGuardada compara la versión mínima guardada con la 
   const r = await setup(); const version = r.load('./versionApp');
   assert.equal(await version.requiereActualizacionGuardada(), false);
   await login(r, {modulos: ['becas'], app: {version_minima: '9.0.0'}});
-  assert.equal(version.versionActual(), '1.1.2');
+  assert.equal(version.versionActual(), '1.1.3');
   assert.equal(await version.requiereActualizacionGuardada(), true);
   r.setAppVersion('9.0.0'); assert.equal(await version.requiereActualizacionGuardada(), false);
   r.setAppVersion('10.0.1'); assert.equal(await version.requiereActualizacionGuardada(), false);
@@ -536,7 +536,7 @@ test('compararVersiones tolera partes faltantes y sufijos; una versión mínima 
   assert.equal(version.compararVersiones('1.2.3-beta.1', '1.2.3'), 0);
   assert.equal(version.compararVersiones('v1.2.4+7', '1.2.3'), 1);
   for (const invalida of [null, undefined, '', 'basura']) assert.equal(version.requiereActualizacion(invalida), false);
-  assert.equal(version.requiereActualizacion('1.1.3'), true); assert.equal(version.requiereActualizacion('1.1.2'), false);
+  assert.equal(version.requiereActualizacion('1.1.4'), true); assert.equal(version.requiereActualizacion('1.1.3'), false);
 });
 
 // Revisión: errores de red de Safari/iOS, cupo viejo, 403 del WAF, descartadas y reemplazo.

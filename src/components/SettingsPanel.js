@@ -1,11 +1,18 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { View, Text, StyleSheet, Animated, Pressable, Dimensions, Switch, Platform, Modal } from 'react-native';
+import { View, Text, StyleSheet, Animated, Pressable, Dimensions, Switch, Platform, Modal, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import CustomButton from './CustomButton';
+import usePermisos from '../hooks/usePermisos';
+import { ETIQUETAS_ESTADO, ayudaBloqueado, abrirAjustes } from '../services/permisos';
 import { designColors, fontSizes, gradients, radii } from '../theme';
+
+const FILAS_PERMISO = [
+    { clave: 'ubicacion', titulo: 'Ubicación (GPS)', icono: 'location-outline' },
+    { clave: 'camara', titulo: 'Cámara', icono: 'camera-outline' },
+];
 
 const { width } = Dimensions.get('window');
 const PANEL_WIDTH = width * 0.8;
@@ -13,6 +20,7 @@ const PANEL_WIDTH = width * 0.8;
 export default function SettingsPanel({ visible, onClose, onLogout }) {
     const { theme, isDark, toggleTheme, typography } = useTheme();
     const { user } = useAuth();
+    const { permisos, pedir } = usePermisos(visible);
     // Start from -PANEL_WIDTH to slide from the left
     const slideAnim = useRef(new Animated.Value(-PANEL_WIDTH)).current;
     const [shouldRender, setShouldRender] = useState(visible);
@@ -85,7 +93,7 @@ export default function SettingsPanel({ visible, onClose, onLogout }) {
 
                     <View style={[styles.divider, { backgroundColor: theme.colors.border }]} />
 
-                    <View style={styles.menuContent}>
+                    <ScrollView style={styles.menuContent} showsVerticalScrollIndicator={false}>
                         <View style={[styles.menuItem, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}>
                             <View style={styles.menuLabel}>
                                 <Ionicons name={isDark ? "moon" : "sunny"} size={22} color={theme.colors.icon} />
@@ -106,7 +114,39 @@ export default function SettingsPanel({ visible, onClose, onLogout }) {
                                 <Text style={[styles.menuText, { color: theme.colors.text, fontFamily: typography.medium }]}>Notificaciones</Text>
                             </View>
                         </Pressable>
-                    </View>
+
+                        <Text style={[styles.sectionTitle, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>Permisos</Text>
+                        {FILAS_PERMISO.map(({ clave, titulo, icono }) => {
+                            const { estado, canAskAgain } = permisos[clave];
+                            const esWeb = Platform.OS === 'web';
+                            const bloqueado = estado === 'denied' && !canAskAgain;
+                            const colorEstado = estado === 'granted' ? theme.colors.success
+                                : estado === 'denied' ? theme.colors.danger : theme.colors.textSoft;
+                            return (
+                                <View key={clave} style={[styles.permisoItem, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}>
+                                    <View style={styles.permisoFila}>
+                                        <View style={styles.permisoTitulo}>
+                                            <Ionicons name={icono} size={22} color={theme.colors.icon} />
+                                            <View style={styles.permisoTextos}>
+                                                <Text style={[styles.menuText, { color: theme.colors.text, fontFamily: typography.medium }]}>{titulo}</Text>
+                                                <Text style={[styles.permisoEstado, { color: colorEstado, fontFamily: typography.regular }]}>{ETIQUETAS_ESTADO[estado]}</Text>
+                                            </View>
+                                        </View>
+                                        {estado !== 'granted' && !(esWeb && bloqueado) ? (
+                                            <CustomButton
+                                                title={bloqueado ? 'Abrir ajustes' : 'Permitir'}
+                                                size="SM"
+                                                onPress={bloqueado ? abrirAjustes : () => pedir(clave)}
+                                            />
+                                        ) : null}
+                                    </View>
+                                    {esWeb && bloqueado ? (
+                                        <Text style={[styles.permisoAyuda, { color: theme.colors.textSoft, fontFamily: typography.regular }]}>{ayudaBloqueado(clave)}</Text>
+                                    ) : null}
+                                </View>
+                            );
+                        })}
+                    </ScrollView>
 
                     <View style={styles.footer}>
                         <CustomButton
@@ -211,6 +251,38 @@ const styles = StyleSheet.create({
     menuText: {
         fontSize: fontSizes.base,
         marginLeft: 12,
+    },
+    sectionTitle: {
+        fontSize: fontSizes.sm,
+        marginTop: 10,
+        marginBottom: 10,
+    },
+    permisoItem: {
+        padding: 12,
+        borderRadius: radii.xl,
+        borderWidth: 1,
+        marginBottom: 10,
+    },
+    permisoFila: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+    },
+    permisoTitulo: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        flex: 1,
+    },
+    permisoTextos: {
+        flex: 1,
+    },
+    permisoEstado: {
+        fontSize: fontSizes.xs,
+        marginLeft: 12,
+    },
+    permisoAyuda: {
+        fontSize: fontSizes.xs,
+        marginTop: 8,
     },
     footer: {
         paddingBottom: 20,
