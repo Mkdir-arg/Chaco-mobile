@@ -34,3 +34,14 @@ test('en nativo (sin File) el asset pasa intacto', async () => {
   const asset={uri:'file:///foto.jpg',fileSize:9000000};
   assert.equal(await images.achicarAsset(asset),asset);
 });
+
+// Chrome no decodifica HEIC: la conversion es best-effort y el original se conserva.
+test('un HEIC que el navegador no decodifica no da error ni se reemplaza', async () => {
+  const {images}=await setup('web');
+  assert.equal(images.esHeic({name:'IMG_1.HEIC',type:''}),true);
+  assert.equal(images.esHeic({name:'a.jpg',type:'image/heic'}),true);
+  assert.equal(images.esHeic({name:'a.jpg',type:'image/jpeg'}),false);
+  // Chico (bajo el umbral) igual se intenta; sin createImageBitmap en el contexto cae al original.
+  assert.equal(await images.comprimirImagen({name:'IMG_1.heic',type:'image/heic',size:500000}),null);
+  assert.equal(await images.comprimirImagen({name:'chico.jpg',type:'image/jpeg',size:500000}),null);
+});

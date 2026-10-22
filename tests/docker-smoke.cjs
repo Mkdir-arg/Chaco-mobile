@@ -38,6 +38,7 @@ const stop = () => { if(container) {docker(['stop',container]); container=null;}
     assert.match((await fetch(origin + '/sw.js')).headers.get('cache-control'),/no-cache/);
     assert.match((await fetch(origin + bundle)).headers.get('cache-control'),/immutable/);
     assert.match((await fetch(origin + wasm)).headers.get('content-type'),/application\/wasm/);
+    assert.match((await fetch(origin + '/manifest.webmanifest')).headers.get('content-type'),/application\/manifest\+json/);
     // Sin compresion el bundle son 2,2 MB en el primer arranque de cada dispositivo.
     // Los .gz los genera el build: si el find del Dockerfile deja de matchear, esto falla.
     const rawHeaders = (route, encoding) => new Promise((resolve, reject) => {

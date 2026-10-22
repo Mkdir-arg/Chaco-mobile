@@ -13,10 +13,15 @@ export const medidasReducidas = (ancho, alto, maximo = LADO_MAXIMO) => {
 
 export const nombreJpg = (nombre) => `${String(nombre || '').replace(/\.[^.]*$/, '') || 'foto'}.jpg`;
 
-// null cuando no conviene tocarla: no es imagen, ya es chica, el navegador no la sabe
+export const esHeic = (file) => /heic|heif/i.test(String(file?.type || '')) || /[.](heic|heif)$/i.test(String(file?.name || ''));
+
+// null cuando no conviene tocarla: no es imagen, ya es chica (salvo HEIC), el navegador no la sabe
 // decodificar (HEIC en Chrome) o el resultado no pesa menos que el original.
 export const comprimirImagen = async (file) => {
-  if (!String(file?.type || '').startsWith('image/') || file.size <= UMBRAL_BYTES) return null;
+  // El HEIC se intenta convertir aunque sea chico (best-effort: Chrome no lo decodifica
+  // y queda el original, que el backend acepta).
+  const heic = esHeic(file);
+  if (!heic && (!String(file?.type || '').startsWith('image/') || file.size <= UMBRAL_BYTES)) return null;
   let bitmap;
   try {
     bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
@@ -30,7 +35,7 @@ export const comprimirImagen = async (file) => {
     canvas.height = alto;
     canvas.getContext('2d').drawImage(bitmap, 0, 0, ancho, alto);
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', CALIDAD));
-    if (!blob || blob.size >= file.size) return null;
+    if (!blob || (!heic && blob.size >= file.size)) return null;
     const reducida = new File([blob], nombreJpg(file.name), { type: 'image/jpeg', lastModified: file.lastModified });
     return { file: reducida, ancho, alto };
   } finally {
