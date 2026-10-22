@@ -299,6 +299,7 @@ test('P12: la lista lee localidad con respaldo subsegmento y EN_REVISION tiene s
   const recordsSets = [
     {id: 1, titulo: 'Uno', estado: 'EN_CURSO', localidad: 'Resistencia', fecha_asignada: '2020-01-01T00:00:00-03:00', fecha_hasta: '2099-12-31T23:59:59-03:00'},
     {id: 2, titulo: 'Dos', estado: 'EN_REVISION', subsegmento: 'Barrio Norte', fecha_asignada: '2020-01-01T00:00:00-03:00', fecha_hasta: '2021-01-01T00:00:00-03:00'},
+    {id: 3, titulo: 'Tres', estado: 'EN_CURSO', segmento: 'Segmento 4', localidad: 'Fontana', zona: 'Zona Sur', fecha_asignada: '2020-01-01T00:00:00-03:00', fecha_hasta: '2099-12-31T23:59:59-03:00'},
   ];
   const runtime = await setup();
   const Screen = loadScreen('src/screens/RelevamientosScreen.js', {
@@ -315,6 +316,8 @@ test('P12: la lista lee localidad con respaldo subsegmento y EN_REVISION tiene s
     const all = ui.labels();
     assert.ok(all.includes('Resistencia'));
     assert.ok(all.includes('Barrio Norte'));
+    // Con segmento y localidad se ven los dos; antes el segmento tapaba la localidad.
+    assert.ok(all.includes('Segmento 4 · Fontana'));
     assert.ok(all.includes('En revisión'));
     await ui.press('En revisión', 'Pressable');
     const filtered = ui.labels().join('|');

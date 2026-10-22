@@ -361,7 +361,7 @@ function RelevamientoRow({ item, now, index, total, formatDate, onOpenRelevamien
             <View style={styles.rowGrid}>
                 <MetaCell
                     label="Segmento"
-                    value={valueOrDash(item.segmento || item.localidad || item.subsegmento)}
+                    value={valueOrDash([item.segmento, item.localidad].filter(Boolean).join(' · ') || item.subsegmento)}
                     icon="layers-outline"
                     typography={typography}
                 />

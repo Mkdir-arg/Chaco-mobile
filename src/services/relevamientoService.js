@@ -32,6 +32,7 @@ const ERROR_REMOTE_SCHEMA = 'ERROR_REMOTE_SCHEMA';
 const ERROR_RELEVAMIENTO_PAUSADO = 'RELEVAMIENTO_PAUSADO';
 const ERROR_SIN_ACCESO = 'SIN_ACCESO';
 const ERROR_CLIENT_UUID_EN_USO = 'CLIENT_UUID_EN_USO';
+const ERROR_RELEVAMIENTO_NO_DISPONIBLE = 'RELEVAMIENTO_NO_DISPONIBLE';
 const PAUSED_RETRY_MS = 5 * 60 * 1000;
 // El alta entra hasta `fecha_hasta` + 24 h. Mientras dure, una carga que no pudo
 // enviarse por falla del servidor o de la red no pasa a FAILED_PERMANENT.
@@ -906,10 +907,13 @@ const mergeBecasFormularios = (remoteRecords = [], localRecords = []) => {
   return [...localRecords.filter((local) => !remoteRecords.some((remote) => matches(local, remote))), ...merged];
 };
 
-const pendingRelevamientoIds = async (ownerId) => {
+// `incluirDescartadas`: para no podar la caché de un relevamiento que sale del listado
+// mientras tenga descartadas; sin ella no se ven ni se pueden restaurar.
+const pendingRelevamientoIds = async (ownerId, { incluirDescartadas = false } = {}) => {
   const db = await getSqliteDb();
+  const statuses = ['PENDING', 'IN_FLIGHT', 'FAILED_PERMANENT', ...(incluirDescartadas ? ['DISCARDED'] : [])];
   const rows = await db.getAllAsync(`SELECT payload_json FROM ${SQLITE_OUTBOX_TABLE}
-    WHERE status IN ('PENDING', 'IN_FLIGHT', 'FAILED_PERMANENT')`);
+    WHERE status IN (${statuses.map((status) => `'${status}'`).join(', ')})`);
   return new Set(rows.map((row) => ({ payload: safeParse(row.payload_json, {}) }))
     .filter((item) => belongsToOwner(item, ownerId)).map((item) => String(item.payload.relevamiento_id)));
 };
@@ -961,7 +965,7 @@ const pruneRemoteCacheForCurrentOwner = async (remoteRecords = []) => {
   const currentRemoteIds = new Set(remoteRecords.map((record) => String(record?.id || '')).filter(Boolean));
   const localRecords = await readLocalRecords();
   const db = await getSqliteDb();
-  const pendingIds = await pendingRelevamientoIds(ownerId);
+  const pendingIds = await pendingRelevamientoIds(ownerId, { incluirDescartadas: true });
   const staleCacheIds = localRecords
     .filter((record) => (
       isRemoteCacheRecord(record)
@@ -1534,6 +1538,25 @@ const isGraceActive = async (relevamientoId) => {
   }
 };
 
+// Back viejo: sin `code`, la pausa y un `capturado_en` adelantado por el reloj del
+// teléfono llegan con el mismo 400 que un fuera de período genuino. Si la caché dice
+// pausado, o la captura cae dentro del período en caché, es transitorio.
+const FUERA_DE_PERIODO_SIN_CODE = /^la captura se realiz[oó] fuera del per[ií]odo asignado\.?$/i;
+const esFueraDePeriodoTransitorio = async (operation, error) => {
+  if (!FUERA_DE_PERIODO_SIN_CODE.test(String(error?.payload?.detail || '').trim())) return false;
+  try {
+    const cached = (await readCachedRemoteRecord(operation?.payload?.relevamiento_id))?.payload;
+    if (!cached) return false;
+    if (cached.pausado === true) return true;
+    const capturado = Date.parse(operation?.payload?.capturado_en || '');
+    const desde = Date.parse(cached.fecha_asignada || '');
+    const hasta = Date.parse(cached.fecha_hasta || '');
+    return [capturado, desde, hasta].every(Number.isFinite) && desde <= capturado && capturado <= hasta;
+  } catch {
+    return false;
+  }
+};
+
 // El servidor ya tiene ese client_uuid en otra carga: se genera uno nuevo y se reintenta
 // enseguida, sin consumir reintentos.
 const regenerateClientUuid = async (operation) => {
@@ -1754,20 +1777,28 @@ const relevamientoService = {
           errors.push({ local_id: operation.local_id, message, code: ERROR_SIN_ACCESO });
           break;
         }
-        const graceExpired = isGraceExpired(error);
         // Una pausa es transitoria. La captura ya está persistida en SQLite y
         // debe permanecer en la cola hasta que el backoffice la reanude. Se lee el
         // `code` primero; `pausado` y el texto quedan de respaldo para el back viejo.
         const paused = apiCode === 'PAUSADO' || error?.payload?.pausado === true
           || (status === 409 && /pausad/i.test(String(error?.message || '')));
+        // El 400 de fuera de período del back viejo (ver esFueraDePeriodoTransitorio)
+        // espera como una pausa, pero solo hasta que vence la gracia.
+        const oldBackPause = !paused && status === 400 && !apiCode && operation.type === 'insert_relevamiento'
+          && !operation.payload?.remote_formulario_id && await esFueraDePeriodoTransitorio(operation, error);
+        const oldBackPauseExpired = oldBackPause && !await isGraceActive(operation?.payload?.relevamiento_id);
+        const graceExpired = isGraceExpired(error) || oldBackPauseExpired;
+        const pausedUntilGrace = paused || (oldBackPause && !oldBackPauseExpired);
         // La pausa gana: un back viejo la contestaba con 400.
-        const invalidSubmission = status === 400 && operation.type === 'insert_relevamiento' && !paused
+        const invalidSubmission = status === 400 && operation.type === 'insert_relevamiento' && !paused && !oldBackPause
           && !operation.payload?.remote_formulario_id && error?.code !== REJECTED_ATTACHMENTS;
         const unexpectedServerPage = error?.unexpectedHtml === true || error?.cause?.unexpectedHtml === true;
+        // 404: el relevamiento ya no es del usuario o no existe. Queda fallida y exportable.
+        const notFound = status === 404 && !unexpectedServerPage;
         // 429: el servidor pide esperar; respeta Retry-After y, sin él, 5 minutos.
         const rateLimited = status === 429 || causeStatus === 429;
         const retryAfterMs = error?.retryAfter ?? error?.cause?.retryAfter ?? null;
-        const waits = paused || unexpectedServerPage || rateLimited;
+        const waits = pausedUntilGrace || unexpectedServerPage || rateLimited;
         const retriable = waits || isNetworkError(error) || isNetworkError(error?.cause) || (status >= 500 && status <= 599);
         let retryCount = waits ? (operation?.retry_count || 0) : (operation?.retry_count || 0) + 1;
         // Las pausas y el 429 no consumen el máximo de reintentos: pueden durar horas o días.
@@ -1783,10 +1814,13 @@ const relevamientoService = {
         }
         const nextRetry = canRetry ? new Date(Date.now() + retryDelayMs).toISOString() : null;
         const errorCode = graceExpired ? GRACE_EXPIRED : invalidSubmission ? INVALID_SUBMISSION
-          : paused ? ERROR_RELEVAMIENTO_PAUSADO : (error?.code || apiCode || null);
+          : pausedUntilGrace ? ERROR_RELEVAMIENTO_PAUSADO : notFound ? ERROR_RELEVAMIENTO_NO_DISPONIBLE
+          : (error?.code || apiCode || null);
         const message = errorCode === ERROR_MISSING_LOCAL_FILE
           ? 'Adjunto no disponible, volve a adjuntarlo'
           : graceExpired ? 'El relevamiento cerró hace más de 24 horas. Avisá al coordinador para recuperar esta captura.'
+          : oldBackPause ? 'El relevamiento no acepta cargas por ahora (pausado o reloj del teléfono adelantado). Se reintenta sola.'
+          : notFound ? 'Relevamiento reasignado o inexistente'
           : (error?.message || 'Error desconocido');
         const localSyncEstado = errorCode === ERROR_ATTACHMENTS_UPLOAD ? 'PARCIAL' : 'PENDIENTE';
 

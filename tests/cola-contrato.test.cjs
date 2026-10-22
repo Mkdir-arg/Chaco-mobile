@@ -40,7 +40,16 @@ test('409 con code PAUSADO (sin pausado) queda en la cola sin consumir reintento
   assert.equal(row(r).last_error_code, 'RELEVAMIENTO_PAUSADO'); assert.equal(proximo(r), 5 * MIN);
 });
 
-test('400 con pausado:true (back viejo) es pausa y no ALTA_INVALIDA', async () => {
+// Sin «pausad» en el texto: solo el code dice que es una pausa.
+test('409 con code PAUSADO y un detail que no dice «pausado» sigue siendo pausa', async () => {
+  const r = await setup(); r.setNow(T0); await enqueue(r);
+  r.setFetch(async () => response(409, {detail: 'El coordinador detuvo la carga.', code: 'PAUSADO'}));
+  await r.service.syncPendingOperations();
+  assert.equal(row(r).status, 'PENDING'); assert.equal(row(r).retry_count, 0);
+  assert.equal(row(r).last_error_code, 'RELEVAMIENTO_PAUSADO'); assert.equal(proximo(r), 5 * MIN);
+});
+
+test('400 con pausado:true y sin code es pausa y no ALTA_INVALIDA', async () => {
   const r = await setup(); r.setNow(T0); await enqueue(r);
   r.setFetch(async () => response(400, {detail: 'Relevamiento pausado', pausado: true}));
   await r.service.syncPendingOperations();
@@ -53,6 +62,92 @@ test('back viejo: 409 con el texto de gracia y sin code sigue siendo GRACIA_VENC
   r.setFetch(async () => response(409, {detail: 'El relevamiento cerró hace más de 24 horas y ya no acepta cargas.'}));
   await r.service.syncPendingOperations();
   assert.equal(row(r).status, 'FAILED_PERMANENT'); assert.equal(row(r).last_error_code, 'GRACIA_VENCIDA');
+});
+
+// Back viejo (PRD, campo.py evaluar_captura): la pausa y la captura del futuro llegan con
+// el mismo 400 que un fuera de período genuino, sin `pausado` ni `code`. Cuerpo real:
+const FUERA_DE_PERIODO_VIEJO = {detail: 'La captura se realizó fuera del período asignado.'};
+const cache = (r, cambios) => {
+  const actual = JSON.parse(r.sql.prepare("SELECT payload_json FROM local_relevamientos WHERE local_id='remote_django_becas_1'").get().payload_json);
+  r.sql.prepare("UPDATE local_relevamientos SET payload_json=? WHERE local_id='remote_django_becas_1'").run(JSON.stringify({...actual, ...cambios}));
+};
+
+test('back viejo: 400 de fuera de período con la captura dentro del período espera como una pausa', async () => {
+  const r = await setup(); r.setNow(T0); await enqueue(r);
+  r.setFetch(async () => response(400, FUERA_DE_PERIODO_VIEJO));
+  await r.service.syncPendingOperations();
+  assert.equal(row(r).status, 'PENDING'); assert.equal(row(r).retry_count, 0);
+  assert.equal(row(r).last_error_code, 'RELEVAMIENTO_PAUSADO'); assert.equal(proximo(r), 5 * MIN);
+  assert.match(row(r).last_error, /se reintenta sola/i);
+  await pasadas(r, 12, 6 * MIN);
+  assert.equal(row(r).status, 'PENDING'); assert.equal(row(r).retry_count, 0);
+  // Reanudado (o el reloj del back alcanzó al del teléfono): entra.
+  r.setFetch(async () => response(201, {id: 99}));
+  r.setNow(T0 + 2 * 60 * MIN); await r.service.syncPendingOperations();
+  assert.equal(row(r).status, 'SYNCED');
+});
+
+test('back viejo: 400 de fuera de período con la captura fuera del período es ALTA_INVALIDA', async () => {
+  const r = await setup(); r.setNow(T0); await enqueue(r);
+  r.setPeriod('2026-10-09T00:00:00-03:00', '2099-12-31T23:59:59-03:00');
+  r.setFetch(async () => response(400, FUERA_DE_PERIODO_VIEJO));
+  await r.service.syncPendingOperations();
+  assert.equal(row(r).status, 'FAILED_PERMANENT'); assert.equal(row(r).last_error_code, 'ALTA_INVALIDA');
+});
+
+test('back viejo: dentro del período espera hasta la gracia; vencida, requiere atención', async () => {
+  const r = await setup(); r.setNow(T0); await enqueue(r);
+  // Gracia hasta 2026-10-10 15:00Z; T0 es 12:00Z.
+  r.setPeriod('2026-10-01T00:00:00-03:00', '2026-10-09T12:00:00-03:00');
+  r.setFetch(async () => response(400, FUERA_DE_PERIODO_VIEJO));
+  await r.service.syncPendingOperations();
+  assert.equal(row(r).status, 'PENDING'); assert.equal(row(r).last_error_code, 'RELEVAMIENTO_PAUSADO');
+  r.setNow(T0 + 4 * 60 * MIN); await r.service.syncPendingOperations();
+  assert.equal(row(r).status, 'FAILED_PERMANENT'); assert.equal(row(r).last_error_code, 'GRACIA_VENCIDA');
+  assert.match(row(r).last_error, /más de 24 horas/);
+  // «Reintentar fallidas» no la devuelve a la cola: queda para que decida el coordinador.
+  await r.service.retryFailedOperations();
+  assert.equal(row(r).status, 'FAILED_PERMANENT');
+});
+
+test('back viejo: con pausado en caché espera aunque la captura caiga fuera del período', async () => {
+  const r = await setup(); r.setNow(T0); await enqueue(r);
+  r.setPeriod('2026-10-09T00:00:00-03:00', '2099-12-31T23:59:59-03:00'); cache(r, {pausado: true});
+  r.setFetch(async () => response(400, FUERA_DE_PERIODO_VIEJO));
+  await r.service.syncPendingOperations();
+  assert.equal(row(r).status, 'PENDING'); assert.equal(row(r).last_error_code, 'RELEVAMIENTO_PAUSADO');
+});
+
+test('el mismo texto con code (back nuevo) o sin el relevamiento en caché sigue siendo ALTA_INVALIDA', async () => {
+  const conCode = await setup(); conCode.setNow(T0); await enqueue(conCode);
+  conCode.setFetch(async () => response(400, {...FUERA_DE_PERIODO_VIEJO, code: 'FUERA_DE_PERIODO'}));
+  await conCode.service.syncPendingOperations();
+  assert.equal(row(conCode).status, 'FAILED_PERMANENT'); assert.equal(row(conCode).last_error_code, 'ALTA_INVALIDA');
+  const sinCache = await setup(); sinCache.setNow(T0); await enqueue(sinCache, {relevamiento_id: 77});
+  sinCache.setFetch(async () => response(400, FUERA_DE_PERIODO_VIEJO));
+  await sinCache.service.syncPendingOperations();
+  assert.equal(row(sinCache).status, 'FAILED_PERMANENT'); assert.equal(row(sinCache).last_error_code, 'ALTA_INVALIDA');
+});
+
+test('el code y pausado del back no aparecen en el texto del error', async () => {
+  const r = await setup(); r.setNow(T0); await enqueue(r);
+  r.setFetch(async () => response(400, {dni: ['Ya existe un caso con este DNI.'], code: 'VALIDACION'}));
+  await r.service.syncPendingOperations();
+  assert.equal(row(r).last_error_code, 'ALTA_INVALIDA');
+  assert.equal(row(r).last_error, 'dni: Ya existe un caso con este DNI.');
+  const {apiErrorMessage} = r.load('./formularioSync');
+  assert.equal(apiErrorMessage({campo: ['Inválido'], code: 'X', pausado: false}), 'campo: Inválido');
+  assert.equal(apiErrorMessage({code: 'X'}, 'Error de sincronización'), 'Error de sincronización');
+});
+
+test('404: «Relevamiento reasignado o inexistente», la carga se conserva y se puede exportar', async () => {
+  const r = await setup(); r.setNow(T0); await enqueue(r);
+  r.setFetch(async () => response(404, {detail: 'No encontrado.'}));
+  await r.service.syncPendingOperations();
+  assert.equal(row(r).status, 'FAILED_PERMANENT'); assert.equal(row(r).last_error_code, 'RELEVAMIENTO_NO_DISPONIBLE');
+  assert.equal(row(r).last_error, 'Relevamiento reasignado o inexistente');
+  const exportado = JSON.parse(await r.service.exportFailedOperation('case1'));
+  assert.equal(exportado.operation.payload.datos_identificacion.dni, '12345678');
 });
 
 test('400 de finalizar con code RELEVAMIENTO_NO_EN_CURSO queda fallida con ese code', async () => {
@@ -207,6 +302,19 @@ test('restaurar una captura descartada la devuelve a la cola y la sincroniza', a
   assert.equal(result.restored, 'case1'); assert.equal(row(r).status, 'SYNCED'); assert.equal(row(r).retry_count, 0);
   assert.equal(local(r).sync_estado, 'SINCRONIZADO');
   await assert.rejects(r.service.restoreDiscardedOperation('case1'), /descartada/);
+});
+
+test('un relevamiento que sale del listado con descartadas conserva su caché y se pueden restaurar', async () => {
+  const r = await setup(); await enqueue(r);
+  r.sql.prepare("UPDATE outbox_relevamientos SET status='DISCARDED'").run();
+  r.setFetch(async () => response(200, {results: []}));
+  const result = await r.service.getRelevamientos();
+  assert.ok(r.sql.prepare("SELECT 1 FROM local_relevamientos WHERE local_id='remote_django_becas_1'").get());
+  const retenido = result.records.find(item => String(item.id) === '1');
+  assert.ok(retenido);
+  // Una descartada no es un envío pendiente.
+  assert.equal(retenido.has_pending_operations, false);
+  assert.equal((await r.service.getDiscardedOperations(1)).length, 1);
 });
 
 test('restaurar respeta al dueño de la captura', async () => {
