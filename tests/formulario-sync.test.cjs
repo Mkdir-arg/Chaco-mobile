@@ -212,3 +212,16 @@ test('un inicio descartado no retiene indefinidamente las operaciones siguientes
   assert.equal(row(r).status, 'SYNCED');
   assert.equal(calls, 1);
 });
+
+test('ALTA_INVALIDA por DNI del apoderado: corregido con un DNI válido reenvía con el mismo client_uuid', async () => {
+  const r = await setup();
+  const original = await enqueue(r, {definicion_formulario: {acepta_respuestas: true, items: []}, apoderado_dni: '343333333', respuestas: {'pg-9': '343333333'}});
+  r.setFetch(async () => response(400, {apoderado_dni: 'Ingresá un DNI válido de 7 u 8 dígitos, sin puntos.'}));
+  await r.service.syncPendingOperations(); assert.equal(row(r).last_error_code, 'ALTA_INVALIDA');
+  assert.ok(row(r).updated_at);
+  let body; r.setFetch(async (url, options) => {body = JSON.parse(options.body); return response(201, {id: 99});});
+  await r.service.correctFailedFormulario('case1', {...original, apoderado_dni: '34333333', respuestas: {'pg-9': '34333333'}});
+  assert.equal(body.apoderado_dni, '34333333'); assert.equal(body.respuestas['pg-9'], '34333333');
+  assert.equal(body.client_uuid, original.client_uuid);
+  assert.equal(row(r).status, 'SYNCED');
+});
