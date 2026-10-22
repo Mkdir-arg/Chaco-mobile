@@ -12,7 +12,11 @@ export const apiErrorMessage = (payload, fallback = 'Error de sincronización') 
   };
   if (payload?.detail) return flatten(payload.detail).join('\n');
   if (payload?.error) return flatten(payload.error).join('\n');
-  return flatten(payload).join('\n') || fallback;
+  // `code` y `pausado` son para la app, no para el texto que ve el usuario.
+  const visible = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? Object.fromEntries(Object.entries(payload).filter(([key]) => !['code', 'pausado'].includes(key)))
+    : payload;
+  return flatten(visible).join('\n') || fallback;
 };
 
 export const isGraceExpired = (error) => {

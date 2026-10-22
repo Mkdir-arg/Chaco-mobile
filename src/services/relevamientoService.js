@@ -1,12 +1,14 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
+import * as Crypto from 'expo-crypto';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as SQLite from 'expo-sqlite';
 import { serializeSqliteAccess } from './sqliteAccess';
 import { persistWebAttachment, readWebBlob } from './webAttachments';
-import { usaConstructor, camposDelDiseno } from './definicionFormulario';
+import { usaConstructor, camposDelDiseno, cupoDisponibleConfiable } from './definicionFormulario';
 import { Platform } from 'react-native';
 import { becasRequest, becasUploadFile, getBecasToken, getStoredBecasUser } from './becasApi';
+import { ahoraCorregido } from './reloj';
 import { isDateTimeActive } from '../utils/dates';
 import { GRACE_EXPIRED, INVALID_SUBMISSION, REJECTED_ATTACHMENTS, isGraceExpired, validateAttachmentMetadata } from './formularioSync';
 
@@ -28,7 +30,15 @@ const ERROR_MISSING_LOCAL_FILE = 'ERROR_MISSING_LOCAL_FILE';
 const ERROR_ATTACHMENTS_UPLOAD = 'ERROR_ATTACHMENTS_UPLOAD';
 const ERROR_REMOTE_SCHEMA = 'ERROR_REMOTE_SCHEMA';
 const ERROR_RELEVAMIENTO_PAUSADO = 'RELEVAMIENTO_PAUSADO';
+const ERROR_SIN_ACCESO = 'SIN_ACCESO';
+const ERROR_CLIENT_UUID_EN_USO = 'CLIENT_UUID_EN_USO';
+const ERROR_RELEVAMIENTO_NO_DISPONIBLE = 'RELEVAMIENTO_NO_DISPONIBLE';
 const PAUSED_RETRY_MS = 5 * 60 * 1000;
+// El alta entra hasta `fecha_hasta` + 24 h. Mientras dure, una carga que no pudo
+// enviarse por falla del servidor o de la red no pasa a FAILED_PERMANENT.
+const GRACE_MS = 24 * 60 * 60 * 1000;
+const UUID_REGENERADO_FLAG_KEY = 'client_uuid_baja_entropia_regenerado_v1';
+const ESTADOS_RELEVAMIENTO = ['ASIGNADO', 'EN_CURSO', 'FINALIZANDO', 'FINALIZADO', 'EN_REVISION', 'TERMINADO'];
 
 let syncInFlightPromise = null;
 let sqliteDbPromise = null;
@@ -37,11 +47,25 @@ let sqliteInitPromise = null;
 const nowIso = () => new Date().toISOString();
 const createLocalId = () => `local_rel_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 const createRemoteCacheId = (backend, id) => `remote_${String(backend || 'api')}_${String(id)}`;
-const createClientUuid = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-  const r = Math.random() * 16 | 0;
-  const v = c === 'x' ? r : ((r & 0x3) | 0x8);
-  return v.toString(16);
-});
+// Hora corregida con el header `Date` del servidor: el reloj del teléfono puede estar corrido.
+const nowCorrectedIso = () => ahoraCorregido().toISOString();
+// UUID criptográfico (expo-crypto; en web usa window.crypto). El Math.random queda solo
+// como último respaldo: con él dos cargas distintas podrían chocar en el servidor.
+const createClientUuid = () => {
+  for (const randomUUID of [() => Crypto.randomUUID?.(), () => globalThis.crypto?.randomUUID?.()]) {
+    try {
+      const uuid = randomUUID();
+      if (uuid) return uuid;
+    } catch {
+      // Se prueba el siguiente generador.
+    }
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : ((r & 0x3) | 0x8);
+    return v.toString(16);
+  });
+};
 const deriveClientUuidFromSeed = (seed = '') => {
   const base = String(seed || createLocalId());
   let hex = '';
@@ -108,8 +132,9 @@ const mapDjangoRelevamiento = (row = {}) => ({
   formularios_count: row.formularios_count || 0,
   personas_count: row.formularios_count || 0,
   cupo_maximo: Number(row.cupo_maximo || 0),
-  cupo_disponible: Number(row.cupo_disponible || 0),
-  cupo_completo: Boolean(row.cupo_completo),
+  // null = el servidor no lo informó (back viejo): la pantalla cae al cálculo local.
+  cupo_disponible: row.cupo_disponible == null ? null : Number(row.cupo_disponible),
+  cupo_completo: row.cupo_completo == null ? null : Boolean(row.cupo_completo),
   pausado: Boolean(row.pausado),
   pausa_motivo: row.pausa_motivo || '',
 });
@@ -366,6 +391,43 @@ const migrateAsyncStorageToSqliteIfNeeded = async (db) => {
   ]);
 };
 
+// Una sola vez: la migración AsyncStorage→SQLite derivaba el client_uuid del local_id
+// (baja entropía: dos teléfonos podían generar el mismo). Si la carga nunca se intentó
+// enviar se reemplaza por un uuid criptográfico. Si ya hubo un intento NO se toca: pudo
+// haber llegado al servidor y de ese caso se ocupa CLIENT_UUID_EN_USO.
+export const regenerarUuidsMigradosNuncaEnviados = async (db) => {
+  if (await getMetaValue(db, UUID_REGENERADO_FLAG_KEY) === '1') return 0;
+  const ops = await db.getAllAsync(
+    `SELECT local_id, payload_json, retry_count, last_error FROM ${SQLITE_OUTBOX_TABLE}
+     WHERE type = 'insert_relevamiento' AND status IN ('PENDING', 'FAILED_PERMANENT')`
+  );
+  const pendientes = [];
+  for (const op of ops) {
+    const payload = safeParse(op.payload_json, {});
+    if (payload.remote_formulario_id) continue;
+    if (Number(op.retry_count || 0) !== 0 || op.last_error) continue;
+    const uuid = normalizeUuid(payload.client_uuid || payload.client_uid);
+    if (!uuid || uuid !== normalizeUuid(deriveClientUuidFromSeed(op.local_id))) continue;
+    const local = await db.getFirstAsync(`SELECT payload_json FROM ${SQLITE_LOCAL_TABLE} WHERE local_id = ?`, op.local_id);
+    pendientes.push({ localId: op.local_id, payload, localPayload: local ? safeParse(local.payload_json, {}) : null });
+  }
+  await runSqliteTx(db, async (tx) => {
+    for (const { localId, payload, localPayload } of pendientes) {
+      const clientUuid = normalizeUuid(createClientUuid());
+      const stamp = nowIso();
+      await tx.runAsync(`UPDATE ${SQLITE_OUTBOX_TABLE} SET payload_json = ?, updated_at = ? WHERE local_id = ?`,
+        JSON.stringify({ ...payload, client_uuid: clientUuid, client_uid: clientUuid }), stamp, localId);
+      if (localPayload) {
+        await tx.runAsync(`UPDATE ${SQLITE_LOCAL_TABLE} SET client_uuid = ?, payload_json = ?, updated_at = ? WHERE local_id = ?`,
+          clientUuid, JSON.stringify({ ...localPayload, client_uuid: clientUuid, client_uid: clientUuid }), stamp, localId);
+      }
+    }
+  });
+  await setMetaValue(db, UUID_REGENERADO_FLAG_KEY, '1');
+  console.log('[SYNC][UUID_REGENERADO]', { cargas: pendientes.length });
+  return pendientes.length;
+};
+
 const ensureSqliteReady = async () => {
   if (sqliteInitPromise) {
     await sqliteInitPromise;
@@ -428,6 +490,12 @@ const ensureSqliteReady = async () => {
     await ensureSqliteColumn(db, SQLITE_OUTBOX_TABLE, 'ack_at', 'TEXT');
     await ensureSqliteColumn(db, SQLITE_OUTBOX_TABLE, 'server_id', 'TEXT');
     await migrateAsyncStorageToSqliteIfNeeded(db);
+    try {
+      await regenerarUuidsMigradosNuncaEnviados(db);
+    } catch (error) {
+      // Sin flag, se reintenta en el próximo arranque; no debe impedir abrir la cola.
+      console.warn('[SYNC][UUID_REGENERADO][ERROR]', error?.message);
+    }
     await recoverStaleInFlightOperations(db);
   })();
 
@@ -463,6 +531,8 @@ const createSyncError = (code, message, details = {}) => {
 };
 
 const isNetworkError = (error) => {
+  // becasApi marca `network` en cualquier rechazo del fetch (Safari/iOS no usa los mismos textos).
+  if (error?.network === true || error?.cause?.network === true) return true;
   const message = String(error?.message || '').toLowerCase();
   return (
     message.includes('network request failed') ||
@@ -837,10 +907,13 @@ const mergeBecasFormularios = (remoteRecords = [], localRecords = []) => {
   return [...localRecords.filter((local) => !remoteRecords.some((remote) => matches(local, remote))), ...merged];
 };
 
-const pendingRelevamientoIds = async (ownerId) => {
+// `incluirDescartadas`: para no podar la caché de un relevamiento que sale del listado
+// mientras tenga descartadas; sin ella no se ven ni se pueden restaurar.
+const pendingRelevamientoIds = async (ownerId, { incluirDescartadas = false } = {}) => {
   const db = await getSqliteDb();
+  const statuses = ['PENDING', 'IN_FLIGHT', 'FAILED_PERMANENT', ...(incluirDescartadas ? ['DISCARDED'] : [])];
   const rows = await db.getAllAsync(`SELECT payload_json FROM ${SQLITE_OUTBOX_TABLE}
-    WHERE status IN ('PENDING', 'IN_FLIGHT', 'FAILED_PERMANENT')`);
+    WHERE status IN (${statuses.map((status) => `'${status}'`).join(', ')})`);
   return new Set(rows.map((row) => ({ payload: safeParse(row.payload_json, {}) }))
     .filter((item) => belongsToOwner(item, ownerId)).map((item) => String(item.payload.relevamiento_id)));
 };
@@ -892,7 +965,7 @@ const pruneRemoteCacheForCurrentOwner = async (remoteRecords = []) => {
   const currentRemoteIds = new Set(remoteRecords.map((record) => String(record?.id || '')).filter(Boolean));
   const localRecords = await readLocalRecords();
   const db = await getSqliteDb();
-  const pendingIds = await pendingRelevamientoIds(ownerId);
+  const pendingIds = await pendingRelevamientoIds(ownerId, { incluirDescartadas: true });
   const staleCacheIds = localRecords
     .filter((record) => (
       isRemoteCacheRecord(record)
@@ -1020,8 +1093,9 @@ const syncRemoteBecasFormulario = async (operation) => {
       uploadedKeys.add(attachment.key);
     } catch (error) {
       const status = Number(error?.statusCode || error?.status || 0);
-      // Sesión, pausa y cupo conservan su manejo de la cola completa.
-      if (status === 401 || error?.payload?.pausado || error?.payload?.code === 'CUPO_RELEVAMIENTO_COMPLETO') throw error;
+      // Sesión, acceso, pausa y cupo conservan su manejo de la cola completa.
+      if (status === 401 || status === 403 || error?.payload?.pausado || error?.payload?.code === 'PAUSADO'
+        || error?.payload?.code === 'CUPO_RELEVAMIENTO_COMPLETO') throw error;
       if (status >= 400 && status < 500 && status !== 429) {
         attachmentResults[attachment.key] = {
           status: status === 409 && error?.payload?.code === 'CASO_RESUELTO' ? 'DISCARDED' : 'REJECTED',
@@ -1033,7 +1107,7 @@ const syncRemoteBecasFormulario = async (operation) => {
       } else {
         transientError = transientError || createSyncError(ERROR_ATTACHMENTS_UPLOAD,
           `No se pudo subir ${attachment.label || attachment.fileName}: ${error.message}`,
-          { status, cause: error });
+          { status, cause: error, retryAfter: error?.retryAfter ?? null });
       }
     }
     payload = { ...payload, uploaded_attachment_keys: [...uploadedKeys], attachment_results: attachmentResults };
@@ -1050,6 +1124,33 @@ const syncRemoteBecasFormulario = async (operation) => {
     latitud: payload.gps_lat || '',
     longitud: payload.gps_lng || '',
   };
+};
+
+// El 200 de iniciar/finalizar/reabrir trae el estado real; si falta o no se conoce,
+// vale el que se daba por hecho hasta ahora.
+const estadoDeRespuesta = (row, fallback) => {
+  const estado = String(row?.estado || '').toUpperCase();
+  return ESTADOS_RELEVAMIENTO.includes(estado) ? estado : fallback;
+};
+
+// FINALIZANDO es un estado LOCAL (finalizar en cola, sin confirmar). El back no lo
+// escribe: si llega de él y no queda ninguna operación de finalizar para ese
+// relevamiento, las pantallas lo reciben como FINALIZADO.
+export const normalizarEstadoRelevamiento = (record, finalizarPendientes = new Set()) => {
+  if (!record || record.estado !== 'FINALIZANDO' || finalizarPendientes.has(String(record.id))) return record;
+  return { ...record, estado: 'FINALIZADO', ...(record.sync_estado === 'FINALIZANDO' ? { sync_estado: 'SINCRONIZADO' } : {}) };
+};
+
+const normalizarEstadosFinalizando = async (records = []) => {
+  if (!records.some((record) => record?.estado === 'FINALIZANDO')) return records;
+  await ensureSqliteReady();
+  const db = await getSqliteDb();
+  const rows = await db.getAllAsync(`SELECT payload_json FROM ${SQLITE_OUTBOX_TABLE}
+    WHERE type = 'finalizar_relevamiento' AND status IN ('PENDING', 'IN_FLIGHT', 'FAILED_PERMANENT')`);
+  const ownerId = await getCurrentOwnerId();
+  const pendientes = new Set(rows.map((row) => ({ payload: safeParse(row.payload_json, {}) }))
+    .filter((item) => belongsToOwner(item, ownerId)).map((item) => String(item.payload.relevamiento_id)));
+  return records.map((record) => normalizarEstadoRelevamiento(record, pendientes));
 };
 
 const updateCachedRelevamientoState = async (relevamientoId, estado, remoteRow = {}) => {
@@ -1077,9 +1178,11 @@ const syncRelevamientoAction = async (operation) => {
   const action = actions[operation?.type];
   const row = await becasRequest(`/api/becas/relevamientos/${relevamientoId}/${action}/`, {
     method: 'POST',
-    body: { capturado_en: operation?.payload?.capturado_en || operation?.created_at || nowIso() },
+    body: { capturado_en: operation?.payload?.capturado_en || operation?.created_at || nowCorrectedIso() },
   });
-  const estado = action === 'finalizar' ? 'FINALIZADO' : 'EN_CURSO';
+  let estado = estadoDeRespuesta(row, action === 'finalizar' ? 'FINALIZADO' : 'EN_CURSO');
+  // La operación se confirma acá mismo: ya no queda nada "sin confirmar".
+  if (action === 'finalizar' && estado === 'FINALIZANDO') estado = 'FINALIZADO';
   await updateCachedRelevamientoState(relevamientoId, estado, row);
   return row;
 };
@@ -1123,7 +1226,7 @@ const enqueueRelevamientoAction = async (relevamientoId, type) => {
   const payload = {
     backend: 'django_becas',
     relevamiento_id: relevamientoId,
-    capturado_en: stamp,
+    capturado_en: nowCorrectedIso(),
     _owner_user_id: ownerId,
   };
   await db.runAsync(
@@ -1404,6 +1507,81 @@ const markOperationPermanentErrorAtomic = async (localId, {
   });
 };
 
+// Cargas locales de ese relevamiento que el servidor todavía no conoce: el cupo que
+// informa el back no las cuenta. `excludeLocalId` deja afuera la que se está editando.
+export const countUnsentFormularios = async (relevamientoId, excludeLocalId = null) => {
+  await ensureSqliteReady();
+  const db = await getSqliteDb();
+  const rows = await db.getAllAsync(
+    `SELECT local_id, payload_json FROM ${SQLITE_OUTBOX_TABLE}
+     WHERE type = 'insert_relevamiento' AND status IN ('PENDING', 'IN_FLIGHT', 'FAILED_PERMANENT')`
+  );
+  const ownerId = await getCurrentOwnerId();
+  return rows.filter((row) => {
+    const item = { payload: safeParse(row.payload_json, {}) };
+    return belongsToOwner(item, ownerId)
+      && !item.payload.remote_formulario_id
+      && row.local_id !== excludeLocalId
+      && String(item.payload.relevamiento_id || item.payload.relevamientoId || '') === String(relevamientoId);
+  }).length;
+};
+
+// Falla del servidor o de la red: dentro de la gracia la carga no se pierde aunque se
+// agoten los reintentos. Sin la fecha en la caché no hay con qué decir que venció.
+const isGraceActive = async (relevamientoId) => {
+  try {
+    const cached = await readCachedRemoteRecord(relevamientoId);
+    const hasta = Date.parse(cached?.payload?.fecha_hasta || '');
+    return !Number.isFinite(hasta) || ahoraCorregido().getTime() <= hasta + GRACE_MS;
+  } catch {
+    return true;
+  }
+};
+
+// Back viejo: sin `code`, la pausa y un `capturado_en` adelantado por el reloj del
+// teléfono llegan con el mismo 400 que un fuera de período genuino. Si la caché dice
+// pausado, o la captura cae dentro del período en caché, es transitorio.
+const FUERA_DE_PERIODO_SIN_CODE = /^la captura se realiz[oó] fuera del per[ií]odo asignado\.?$/i;
+const esFueraDePeriodoTransitorio = async (operation, error) => {
+  if (!FUERA_DE_PERIODO_SIN_CODE.test(String(error?.payload?.detail || '').trim())) return false;
+  try {
+    const cached = (await readCachedRemoteRecord(operation?.payload?.relevamiento_id))?.payload;
+    if (!cached) return false;
+    if (cached.pausado === true) return true;
+    const capturado = Date.parse(operation?.payload?.capturado_en || '');
+    const desde = Date.parse(cached.fecha_asignada || '');
+    const hasta = Date.parse(cached.fecha_hasta || '');
+    return [capturado, desde, hasta].every(Number.isFinite) && desde <= capturado && capturado <= hasta;
+  } catch {
+    return false;
+  }
+};
+
+// El servidor ya tiene ese client_uuid en otra carga: se genera uno nuevo y se reintenta
+// enseguida, sin consumir reintentos.
+const regenerateClientUuid = async (operation) => {
+  const db = await getSqliteDb();
+  const clientUuid = normalizeUuid(createClientUuid());
+  const payload = { ...operation.payload, client_uuid: clientUuid, client_uid: clientUuid, uuid_regenerado: true };
+  await runSqliteTx(db, async (tx) => {
+    const stamp = nowIso();
+    await tx.runAsync(
+      `UPDATE ${SQLITE_OUTBOX_TABLE}
+       SET payload_json = ?, status = 'PENDING', started_at = NULL, next_retry_at = NULL,
+           last_error = NULL, last_error_code = NULL, updated_at = ?
+       WHERE local_id = ?`,
+      JSON.stringify(payload), stamp, operation.local_id
+    );
+    await tx.runAsync(
+      `UPDATE ${SQLITE_LOCAL_TABLE}
+       SET client_uuid = ?, payload_json = ?, sync_estado = 'PENDIENTE', sync_error = NULL, sync_error_code = NULL, updated_at = ?
+       WHERE local_id = ?`,
+      clientUuid, JSON.stringify(payload), stamp, operation.local_id
+    );
+  });
+  return payload;
+};
+
 const fetchRemoteRecords = async () => {
   const payload = await becasRequest('/api/becas/relevamientos/');
   const rows = Array.isArray(payload?.results) ? payload.results : (Array.isArray(payload) ? payload : []);
@@ -1426,16 +1604,28 @@ const relevamientoService = {
       throw new Error('Solo se pueden cargar casos dentro de la fecha y hora asignadas.');
     }
     const cupoMaximo = Number(payload?._cupo_maximo || 0);
-    if (cupoMaximo > 0 && !payload.local_id) {
-      const existentes = (await getLocalBecasFormularios(payload?.relevamiento_id))
-        .filter((item) => item.estado !== 'DESCARTADO' || item.remote_formulario_id);
-      if (existentes.length >= cupoMaximo) {
+    if (!payload.local_id) {
+      // Con el cupo que informa el servidor se descuentan las cargas locales que todavía
+      // no llegaron; sin esos datos (back viejo) vale el cálculo de siempre.
+      let cupoAgotado = payload._cupo_completo === true;
+      const disponible = cupoDisponibleConfiable({ cupo_disponible: payload._cupo_disponible, cupo_completo: payload._cupo_completo });
+      if (!cupoAgotado && cupoMaximo > 0 && disponible != null) {
+        cupoAgotado = disponible - await countUnsentFormularios(payload?.relevamiento_id) <= 0;
+      }
+      // Piso: el `cupo_disponible` del detalle se lee una sola vez y queda viejo cuando las
+      // cargas locales se sincronizan; el conteo de siempre nunca deja cargar de más.
+      if (!cupoAgotado && cupoMaximo > 0) {
+        const existentes = (await getLocalBecasFormularios(payload?.relevamiento_id))
+          .filter((item) => item.estado !== 'DESCARTADO' || item.remote_formulario_id);
+        cupoAgotado = existentes.length >= cupoMaximo;
+      }
+      if (cupoAgotado) {
         const error = new Error('Se alcanzó el cupo del relevamiento. No se pueden cargar nuevas personas.');
         error.code = 'CUPO_RELEVAMIENTO_COMPLETO';
         throw error;
       }
     }
-    const capturadoEn = payload?.capturado_en || payload?.created_at || nowIso();
+    const capturadoEn = payload?.capturado_en || payload?.created_at || nowCorrectedIso();
     if (payload.local_id) throw new Error('Usá corregirCasoFallido para corregir una captura existente.');
     const payloadWithFiles = await persistFormularioAttachments(payload);
     const localRecord = await upsertLocalRecordAndEnqueue({
@@ -1545,9 +1735,22 @@ const relevamientoService = {
         await markOperationSyncedAtomic(operation.local_id, remoteRow);
         synced += 1;
       } catch (error) {
-        failed += 1;
         const status = Number(error?.statusCode || error?.status || 0);
-        if (status === 401 || Number(error?.cause?.status) === 401) {
+        const causeStatus = Number(error?.cause?.status || 0);
+        const apiCode = error?.payload?.code || error?.cause?.payload?.code || null;
+        if (status === 409 && apiCode === ERROR_CLIENT_UUID_EN_USO && operation.type === 'insert_relevamiento'
+          && !operation.payload?.remote_formulario_id && !operation.payload?.uuid_regenerado) {
+          try {
+            const payload = await regenerateClientUuid(operation);
+            // Reintento inmediato: se vuelve a procesar al final de esta misma pasada.
+            queue.push({ ...operation, payload, next_retry_at: null });
+            continue;
+          } catch (regenerateError) {
+            console.warn('[SYNC][UUID_EN_USO][ERROR]', regenerateError?.message);
+          }
+        }
+        failed += 1;
+        if (status === 401 || causeStatus === 401) {
           await markOperationRetryAtomic(operation.local_id, {
             retryCount: operation?.retry_count || 0,
             nextRetryAt: null,
@@ -1558,26 +1761,66 @@ const relevamientoService = {
           errors.push({ local_id: operation.local_id, message: 'Sesión vencida', code: 'AUTH_REQUIRED' });
           break;
         }
-        const graceExpired = isGraceExpired(error);
-        const invalidSubmission = status === 400 && operation.type === 'insert_relevamiento'
-          && !operation.payload?.remote_formulario_id && error?.code !== REJECTED_ATTACHMENTS;
+        // El usuario no tiene la capacidad de campo: igual que el 401 corta la pasada y no
+        // consume reintentos, pero el token sigue vigente y el sync corre cada pocos
+        // segundos; sin next_retry_at le pegaría al servidor sin parar.
+        // Un 403 con la página HTML del WAF no es del usuario: sigue el camino de `unexpectedHtml`.
+        if ((status === 403 || causeStatus === 403) && !error?.unexpectedHtml && !error?.cause?.unexpectedHtml) {
+          const message = 'Tu usuario no tiene acceso a la app de campo. Avisá al coordinador.';
+          await markOperationRetryAtomic(operation.local_id, {
+            retryCount: operation?.retry_count || 0,
+            nextRetryAt: new Date(Date.now() + PAUSED_RETRY_MS).toISOString(),
+            message,
+            errorCode: ERROR_SIN_ACCESO,
+            localSyncEstado: error?.code === ERROR_ATTACHMENTS_UPLOAD ? 'PARCIAL' : 'PENDIENTE',
+          });
+          errors.push({ local_id: operation.local_id, message, code: ERROR_SIN_ACCESO });
+          break;
+        }
         // Una pausa es transitoria. La captura ya está persistida en SQLite y
-        // debe permanecer en la cola hasta que el backoffice la reanude.
-        const unexpectedServerPage = error?.unexpectedHtml === true || error?.cause?.unexpectedHtml === true;
-        const paused = error?.payload?.pausado === true
+        // debe permanecer en la cola hasta que el backoffice la reanude. Se lee el
+        // `code` primero; `pausado` y el texto quedan de respaldo para el back viejo.
+        const paused = apiCode === 'PAUSADO' || error?.payload?.pausado === true
           || (status === 409 && /pausad/i.test(String(error?.message || '')));
-        const retriable = paused || unexpectedServerPage || isNetworkError(error) || isNetworkError(error?.cause) || (status >= 500 && status <= 599);
-        const retryCount = (paused || unexpectedServerPage) ? (operation?.retry_count || 0) : (operation?.retry_count || 0) + 1;
-        // Las pausas no consumen el máximo de reintentos: pueden durar horas o días.
-        const canRetry = paused || unexpectedServerPage || (retriable && retryCount <= MAX_RETRY_COUNT);
-        const nextRetry = canRetry
-          ? new Date(Date.now() + ((paused || unexpectedServerPage) ? PAUSED_RETRY_MS : calculateBackoffMs(retryCount))).toISOString()
-          : null;
+        // El 400 de fuera de período del back viejo (ver esFueraDePeriodoTransitorio)
+        // espera como una pausa, pero solo hasta que vence la gracia.
+        const oldBackPause = !paused && status === 400 && !apiCode && operation.type === 'insert_relevamiento'
+          && !operation.payload?.remote_formulario_id && await esFueraDePeriodoTransitorio(operation, error);
+        const oldBackPauseExpired = oldBackPause && !await isGraceActive(operation?.payload?.relevamiento_id);
+        const graceExpired = isGraceExpired(error) || oldBackPauseExpired;
+        const pausedUntilGrace = paused || (oldBackPause && !oldBackPauseExpired);
+        // La pausa gana: un back viejo la contestaba con 400.
+        const invalidSubmission = status === 400 && operation.type === 'insert_relevamiento' && !paused && !oldBackPause
+          && !operation.payload?.remote_formulario_id && error?.code !== REJECTED_ATTACHMENTS;
+        const unexpectedServerPage = error?.unexpectedHtml === true || error?.cause?.unexpectedHtml === true;
+        // 404: el relevamiento ya no es del usuario o no existe. Queda fallida y exportable.
+        const notFound = status === 404 && !unexpectedServerPage;
+        // 429: el servidor pide esperar; respeta Retry-After y, sin él, 5 minutos.
+        const rateLimited = status === 429 || causeStatus === 429;
+        const retryAfterMs = error?.retryAfter ?? error?.cause?.retryAfter ?? null;
+        const waits = pausedUntilGrace || unexpectedServerPage || rateLimited;
+        const retriable = waits || isNetworkError(error) || isNetworkError(error?.cause) || (status >= 500 && status <= 599);
+        let retryCount = waits ? (operation?.retry_count || 0) : (operation?.retry_count || 0) + 1;
+        // Las pausas y el 429 no consumen el máximo de reintentos: pueden durar horas o días.
+        let canRetry = waits || (retriable && retryCount <= MAX_RETRY_COUNT);
+        let retryDelayMs = rateLimited ? (retryAfterMs ?? PAUSED_RETRY_MS)
+          : waits ? PAUSED_RETRY_MS : calculateBackoffMs(retryCount);
+        // Agotados los reintentos, dentro de la gracia la carga sigue en la cola (cada 5 min,
+        // con el contador topeado); pasada la gracia se comporta como siempre.
+        if (!canRetry && retriable && await isGraceActive(operation?.payload?.relevamiento_id)) {
+          canRetry = true;
+          retryCount = MAX_RETRY_COUNT;
+          retryDelayMs = PAUSED_RETRY_MS;
+        }
+        const nextRetry = canRetry ? new Date(Date.now() + retryDelayMs).toISOString() : null;
         const errorCode = graceExpired ? GRACE_EXPIRED : invalidSubmission ? INVALID_SUBMISSION
-          : paused ? ERROR_RELEVAMIENTO_PAUSADO : (error?.code || error?.payload?.code || null);
+          : pausedUntilGrace ? ERROR_RELEVAMIENTO_PAUSADO : notFound ? ERROR_RELEVAMIENTO_NO_DISPONIBLE
+          : (error?.code || apiCode || null);
         const message = errorCode === ERROR_MISSING_LOCAL_FILE
           ? 'Adjunto no disponible, volve a adjuntarlo'
           : graceExpired ? 'El relevamiento cerró hace más de 24 horas. Avisá al coordinador para recuperar esta captura.'
+          : oldBackPause ? 'El relevamiento no acepta cargas por ahora (pausado o reloj del teléfono adelantado). Se reintenta sola.'
+          : notFound ? 'Relevamiento reasignado o inexistente'
           : (error?.message || 'Error desconocido');
         const localSyncEstado = errorCode === ERROR_ATTACHMENTS_UPLOAD ? 'PARCIAL' : 'PENDIENTE';
 
@@ -1651,6 +1894,88 @@ const relevamientoService = {
     const ownerId = await getCurrentOwnerId();
     return rows.map(mapOutboxRow).filter((op) => belongsToOwner(op, ownerId)
       && (relevamientoId == null || String(op.payload.relevamiento_id) === String(relevamientoId)));
+  },
+
+  async getDiscardedOperations(relevamientoId) {
+    await ensureSqliteReady();
+    const db = await getSqliteDb();
+    const rows = await db.getAllAsync(`SELECT * FROM ${SQLITE_OUTBOX_TABLE} WHERE status = 'DISCARDED' AND type = 'insert_relevamiento' ORDER BY created_at`);
+    const ownerId = await getCurrentOwnerId();
+    return rows.map(mapOutboxRow).filter((op) => belongsToOwner(op, ownerId)
+      && (relevamientoId == null || String(op.payload.relevamiento_id) === String(relevamientoId)));
+  },
+
+  // Deshace un descarte: la captura vuelve a la cola como nueva (sin reintentos ni errores).
+  async restoreDiscardedOperation(localId) {
+    await ensureSqliteReady();
+    if (syncInFlightPromise) await syncInFlightPromise;
+    const operation = (await this.getDiscardedOperations()).find((item) => item.local_id === localId);
+    if (!operation) throw new Error('La operación ya no está descartada o no pertenece al usuario actual.');
+    const db = await getSqliteDb();
+    await runSqliteTx(db, async (tx) => {
+      const stamp = nowIso();
+      await tx.runAsync(`UPDATE ${SQLITE_OUTBOX_TABLE} SET status = 'PENDING', retry_count = 0,
+        next_retry_at = NULL, started_at = NULL, last_error = NULL, last_error_code = NULL, updated_at = ?
+        WHERE local_id = ? AND status = 'DISCARDED'`, stamp, localId);
+      await tx.runAsync(`UPDATE ${SQLITE_LOCAL_TABLE} SET sync_estado = 'PENDIENTE', synced = 0,
+        sync_error = NULL, sync_error_code = NULL, updated_at = ? WHERE local_id = ?`, stamp, localId);
+    });
+    return { restored: localId, syncResult: await this.syncPendingOperations() };
+  },
+
+  // Reemplaza un adjunto que el servidor rechazó, sin tocar el caso ya creado: el back
+  // reemplaza el adjunto por clave. Conserva remote_formulario_id y los demás adjuntos.
+  async replaceRejectedAttachment(localId, attachmentKey, asset = {}) {
+    await ensureSqliteReady();
+    if (syncInFlightPromise) await syncInFlightPromise;
+    const operation = await this.getFailedOperation(localId);
+    const payload = operation.payload;
+    const attachments = payload.adjuntos_formulario || [];
+    const index = attachments.findIndex((item) => item.key === attachmentKey);
+    if (operation.type !== 'insert_relevamiento' || index < 0
+      || payload.attachment_results?.[attachmentKey]?.status !== 'REJECTED') {
+      throw new Error('Solo se puede reemplazar un adjunto rechazado por el servidor.');
+    }
+    const fileName = asset.fileName || String(asset.uri || '').split('/').pop() || attachments[index].fileName;
+    await validateFormularioAttachment({ ...asset, fileName });
+    const persisted = await persistLocalFileIfNeeded({
+      uri: asset.uri,
+      fileName,
+      mimeType: asset.mimeType || inferMimeType(fileName),
+      size: asset.size || null,
+    });
+    const attachmentResults = { ...(payload.attachment_results || {}) };
+    delete attachmentResults[attachmentKey];
+    const nextPayload = {
+      ...payload,
+      adjuntos_formulario: attachments.map((item, i) => (i === index ? {
+        ...item,
+        uri: persisted.uri,
+        fileName: sanitizeFileName(fileName),
+        mimeType: persisted.mimeType,
+        size: persisted.size,
+      } : item)),
+      attachment_results: attachmentResults,
+      uploaded_attachment_keys: (payload.uploaded_attachment_keys || []).filter((key) => key !== attachmentKey),
+    };
+    const db = await getSqliteDb();
+    await runSqliteTx(db, async (tx) => {
+      const stamp = nowIso();
+      const updated = await tx.runAsync(`UPDATE ${SQLITE_OUTBOX_TABLE} SET payload_json = ?, status = 'PENDING', retry_count = 0,
+        next_retry_at = NULL, started_at = NULL, last_error = NULL, last_error_code = NULL, updated_at = ?
+        WHERE local_id = ? AND status = 'FAILED_PERMANENT'`, JSON.stringify(nextPayload), stamp, localId);
+      // Si ya no está fallida (otro camino la tomó) no se toca la tabla local.
+      if (Number(updated?.changes || 0) !== 1) throw new Error('La operación ya no está fallida.');
+      // El caso ya existe en el servidor: hasta que termine de subir queda como parcial.
+      await tx.runAsync(`UPDATE ${SQLITE_LOCAL_TABLE} SET payload_json = ?, sync_estado = ?, synced = 0,
+        sync_error = NULL, sync_error_code = NULL, updated_at = ? WHERE local_id = ?`,
+      JSON.stringify(nextPayload), payload.remote_formulario_id ? 'PARCIAL' : 'PENDIENTE', stamp, localId);
+    });
+    return { success: true, syncResult: await this.syncPendingOperations() };
+  },
+
+  async countUnsentFormularios(relevamientoId, excludeLocalId = null) {
+    return countUnsentFormularios(relevamientoId, excludeLocalId);
   },
 
   async getFailedOperation(localId) {
@@ -1728,6 +2053,14 @@ const relevamientoService = {
     await runSqliteTx(db, async (tx) => {
       for (const operation of operations) {
         if (needsDecision.includes(operation.last_error_code)) continue;
+        // Un reintento manual da derecho a una nueva regeneración del identificador.
+        if (operation.last_error_code === ERROR_CLIENT_UUID_EN_USO && operation.payload.uuid_regenerado) {
+          const payloadJson = JSON.stringify({ ...operation.payload, uuid_regenerado: false });
+          for (const table of [SQLITE_OUTBOX_TABLE, SQLITE_LOCAL_TABLE]) {
+            await tx.runAsync(`UPDATE ${table} SET payload_json = ?, updated_at = ? WHERE local_id = ?`,
+              payloadJson, nowIso(), operation.local_id);
+          }
+        }
         await tx.runAsync(`UPDATE ${SQLITE_OUTBOX_TABLE} SET status = 'PENDING', retry_count = 0,
           next_retry_at = NULL, started_at = NULL, last_error = NULL, last_error_code = NULL, updated_at = ?
           WHERE local_id = ? AND status = 'FAILED_PERMANENT'`, nowIso(), operation.local_id);
@@ -1746,7 +2079,12 @@ const relevamientoService = {
     ] };
   },
 
-  async getRelevamientos({ refreshFromRemote = true } = {}) {
+  async getRelevamientos(options) {
+    const result = await this.leerRelevamientos(options);
+    return result?.records ? { ...result, records: await normalizarEstadosFinalizando(result.records) } : result;
+  },
+
+  async leerRelevamientos({ refreshFromRemote = true } = {}) {
     const ownerId = await getCurrentOwnerId();
     if (refreshFromRemote) {
       const connectivity = await getConnectivitySnapshot();
@@ -1827,16 +2165,27 @@ const relevamientoService = {
     }
   },
 
-  async dniYaRelevado(relevamientoId, dni, excludeLocalId = null) {
+  // Bloquea si hay una carga local sin sincronizar o un caso ENVIADO/APROBADO (o de
+  // estado desconocido) con ese DNI; con solo RECHAZADO o BAJA avisa pero deja cargar.
+  async evaluarDniDuplicado(relevamientoId, dni, excludeLocalId = null) {
     const normalizedDni = String(dni || '').replace(/\D/g, '');
-    if (!relevamientoId || !normalizedDni) return false;
+    const libre = { bloquear: false, avisar: false, estado: null };
+    if (!relevamientoId || !normalizedDni) return libre;
     const result = await this.getBecasFormularios(relevamientoId);
-    return (result.records || []).some((formulario) => {
+    const coincidencias = (result.records || []).filter((formulario) => {
       if (excludeLocalId && formulario.local_id === excludeLocalId) return false;
       if (formulario.estado === 'DESCARTADO') return false;
       const formularioDni = formulario?.ciudadano_dni || formulario?.datos_identificacion?.dni || '';
       return String(formularioDni).replace(/\D/g, '') === normalizedDni;
     });
+    const liberan = ['RECHAZADO', 'BAJA'];
+    const bloqueante = coincidencias.find((formulario) => !liberan.includes(String(formulario.estado || '').toUpperCase()));
+    if (bloqueante) return { bloquear: true, avisar: false, estado: bloqueante.estado || null };
+    return coincidencias.length ? { bloquear: false, avisar: true, estado: coincidencias[0].estado } : libre;
+  },
+
+  async dniYaRelevado(relevamientoId, dni, excludeLocalId = null) {
+    return (await this.evaluarDniDuplicado(relevamientoId, dni, excludeLocalId)).bloquear;
   },
 
   async iniciarRelevamiento(relevamientoId) {
@@ -1855,8 +2204,9 @@ const relevamientoService = {
       const row = await becasRequest(`/api/becas/relevamientos/${relevamientoId}/iniciar/`, {
         method: 'POST',
       });
-      const detail = await updateCachedRelevamientoState(relevamientoId, 'EN_CURSO', row);
-      return { success: true, estado: 'EN_CURSO', detail };
+      const estado = estadoDeRespuesta(row, 'EN_CURSO');
+      const detail = await updateCachedRelevamientoState(relevamientoId, estado, row);
+      return { success: true, estado, detail };
     } catch (error) {
       return { success: false, error: error?.message || 'No se pudo iniciar el relevamiento.' };
     }
@@ -1889,14 +2239,22 @@ const relevamientoService = {
       const row = await becasRequest(`/api/becas/relevamientos/${relevamientoId}/reabrir/`, {
         method: 'POST',
       });
-      const detail = await updateCachedRelevamientoState(relevamientoId, 'EN_CURSO', row);
-      return { success: true, estado: 'EN_CURSO', detail };
+      const estado = estadoDeRespuesta(row, 'EN_CURSO');
+      const detail = await updateCachedRelevamientoState(relevamientoId, estado, row);
+      return { success: true, estado, detail };
     } catch (error) {
       return { success: false, error: error?.message || 'No se pudo reabrir el relevamiento.' };
     }
   },
 
   async getRelevamientoDetail(id) {
+    const result = await this.leerRelevamientoDetail(id);
+    if (!result?.detail?.estado) return result;
+    const [detail] = await normalizarEstadosFinalizando([result.detail]);
+    return { ...result, detail };
+  },
+
+  async leerRelevamientoDetail(id) {
     if (!id) return { success: false, error: 'ID invalido' };
 
     if (isLocalId(id)) {

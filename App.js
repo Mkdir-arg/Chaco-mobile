@@ -20,6 +20,10 @@ import SkeletonLoader from './src/components/SkeletonLoader';
 import RelevamientosScreen from './src/screens/RelevamientosScreen';
 import RelevamientoDetailScreen from './src/screens/RelevamientoDetailScreen';
 import relevamientoService from './src/services/relevamientoService';
+import { requiereActualizacionGuardada, versionActual } from './src/services/versionApp';
+import { getStoredBecasUser } from './src/services/becasApi';
+import { evaluarBloqueoVersion } from './src/navigation/bloqueoVersion';
+import ActualizarAppScreen from './src/components/ActualizarAppScreen';
 
 let hasBootstrappedOnce = false;
 const NEW_RELEVAMIENTO_STATES = ['ASIGNADO'];
@@ -43,6 +47,7 @@ function AppContent() {
   const [activeTab, setActiveTab] = useState('Inicio');
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [selectedRelevamientoId, setSelectedRelevamientoId] = useState(null);
+  const [bloqueoVersion, setBloqueoVersion] = useState(null);
 
   const [syncStatus, setSyncStatus] = useState('synced');
   const [syncPendingCount, setSyncPendingCount] = useState(0);
@@ -116,6 +121,16 @@ function AppContent() {
       sub?.remove?.();
     };
   }, []);
+
+  // Tras el login y en cada arranque con sesión: si el back pide una versión mínima mayor
+  // a la instalada, se bloquea con «Actualizá la app». Sin dato o con error, entra normal.
+  useEffect(() => {
+    let vigente = true;
+    if (!isAuthenticated) { setBloqueoVersion(null); return undefined; }
+    evaluarBloqueoVersion({ requiereActualizacionGuardada, versionActual, getStoredUser: getStoredBecasUser })
+      .then((bloqueo) => { if (vigente) setBloqueoVersion(bloqueo); });
+    return () => { vigente = false; };
+  }, [isAuthenticated, user?.id]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -261,6 +276,16 @@ function AppContent() {
 
       {!isAuthenticated ? (
         <LoginScreen />
+      ) : bloqueoVersion ? (
+        <ActualizarAppScreen
+          actual={bloqueoVersion.actual}
+          minima={bloqueoVersion.minima}
+          onLogout={() => {
+            logout();
+            setActiveTab('Inicio');
+            setSelectedRelevamientoId(null);
+          }}
+        />
       ) : (
         <View style={{ flex: 1 }}>
           {selectedRelevamientoId ? (
