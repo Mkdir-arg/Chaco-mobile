@@ -95,6 +95,16 @@ test('back viejo: 400 de fuera de período con la captura fuera del período es 
   assert.equal(row(r).status, 'FAILED_PERMANENT'); assert.equal(row(r).last_error_code, 'ALTA_INVALIDA');
 });
 
+test('back viejo: captura posterior al cierre, con la gracia vigente, sigue siendo ALTA_INVALIDA', async () => {
+  // Cerró el 2026-10-08 a las 10:00 (-03) y la captura es de las 12:00: la gracia sigue,
+  // pero está fuera del período, así que no debe esperar en la cola.
+  const r = await setup(); r.setNow('2026-10-08T16:00:00Z'); await enqueue(r);
+  r.setPeriod('2026-10-01T00:00:00-03:00', '2026-10-08T10:00:00-03:00');
+  r.setFetch(async () => response(400, FUERA_DE_PERIODO_VIEJO));
+  await r.service.syncPendingOperations();
+  assert.equal(row(r).status, 'FAILED_PERMANENT'); assert.equal(row(r).last_error_code, 'ALTA_INVALIDA');
+});
+
 test('back viejo: dentro del período espera hasta la gracia; vencida, requiere atención', async () => {
   const r = await setup(); r.setNow(T0); await enqueue(r);
   // Gracia hasta 2026-10-10 15:00Z; T0 es 12:00Z.
@@ -304,17 +314,35 @@ test('restaurar una captura descartada la devuelve a la cola y la sincroniza', a
   await assert.rejects(r.service.restoreDiscardedOperation('case1'), /descartada/);
 });
 
-test('un relevamiento que sale del listado con descartadas conserva su caché y se pueden restaurar', async () => {
+test('un relevamiento vencido que sale del listado con descartadas conserva su caché y sigue visible', async () => {
   const r = await setup(); await enqueue(r);
+  r.setPeriod('2020-01-01T00:00:00-03:00', '2020-01-02T00:00:00-03:00');
   r.sql.prepare("UPDATE outbox_relevamientos SET status='DISCARDED'").run();
   r.setFetch(async () => response(200, {results: []}));
   const result = await r.service.getRelevamientos();
   assert.ok(r.sql.prepare("SELECT 1 FROM local_relevamientos WHERE local_id='remote_django_becas_1'").get());
   const retenido = result.records.find(item => String(item.id) === '1');
   assert.ok(retenido);
-  // Una descartada no es un envío pendiente.
+  // Una descartada no es un envío pendiente, pero deja el relevamiento en la lista.
   assert.equal(retenido.has_pending_operations, false);
+  assert.equal(retenido.has_discarded_operations, true);
+  assert.equal(r.dates.isAssignmentVisible(retenido), true);
   assert.equal((await r.service.getDiscardedOperations(1)).length, 1);
+});
+
+test('un relevamiento vencido que el back sigue listando se ve solo mientras tenga descartadas', async () => {
+  const r = await setup(); await enqueue(r);
+  r.setPeriod('2020-01-01T00:00:00-03:00', '2020-01-02T00:00:00-03:00');
+  r.sql.prepare("UPDATE outbox_relevamientos SET status='DISCARDED'").run();
+  const remoto = {id: 1, nombre: 'Uno', estado: 'finalizado', fecha_asignada: '2020-01-01T00:00:00-03:00', fecha_hasta: '2020-01-02T00:00:00-03:00'};
+  r.setFetch(async url => response(200, /\/relevamientos\/(\?|$)/.test(String(url)) ? {results: [remoto]} : remoto));
+  const conDescartadas = (await r.service.getRelevamientos()).records.find(item => String(item.id) === '1');
+  assert.equal(conDescartadas.has_discarded_operations, true);
+  assert.equal(r.dates.isAssignmentVisible(conDescartadas), true);
+  r.sql.prepare('DELETE FROM outbox_relevamientos').run();
+  const sinDescartadas = (await r.service.getRelevamientos()).records.find(item => String(item.id) === '1');
+  assert.equal(sinDescartadas.has_discarded_operations, false);
+  assert.equal(r.dates.isAssignmentVisible(sinDescartadas), false);
 });
 
 test('restaurar respeta al dueño de la captura', async () => {

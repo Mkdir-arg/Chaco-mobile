@@ -79,7 +79,9 @@ export const closingSoonLabel = (start, end, now = new Date()) => {
   return `Cierra a las ${hour}:${minute}`;
 };
 
-export const isAssignmentVisible = (item, now = new Date()) => Boolean(item.has_pending_operations)
+// Con envíos pendientes o altas descartadas sigue visible aunque esté vencido: si no, no se
+// llega a reintentarlos ni a «Restaurar».
+export const isAssignmentVisible = (item, now = new Date()) => Boolean(item.has_pending_operations || item.has_discarded_operations)
   || isDateTimeCurrentOrFuture(item.fecha_hasta || item.fecha_asignada || item.created_at, now);
 
 // Actualizar justo al abrir/cerrar o entrar en la ventana de aviso, y al menos cada minuto.
