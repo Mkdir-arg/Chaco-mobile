@@ -2,7 +2,7 @@
   "expo": {
     "name": "DATAÑACH",
     "slug": "nodo",
-    "version": "1.1.1",
+    "version": "1.1.2",
     "newArchEnabled": true,
     "orientation": "portrait",
     "icon": "./assets/brand/app-icon-chaco-symbol.png",

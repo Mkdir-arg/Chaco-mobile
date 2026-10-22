@@ -2082,6 +2082,20 @@ const relevamientoService = {
           sync_error = NULL, sync_error_code = NULL, updated_at = ? WHERE local_id = ?`, nowIso(), operation.local_id);
       }
     });
+    // Sincronizacion manual: el PM fuerza la subida, asi que el backoff (red, 5xx, 409, 429)
+    // no frena a las cargas PENDING del usuario. Un solo intento por toque; si vuelven a
+    // fallar, quedan en espera como siempre. Las IN_FLIGHT no se tocan.
+    const ownerId = await getCurrentOwnerId();
+    const enEspera = await db.getAllAsync(
+      `SELECT * FROM ${SQLITE_OUTBOX_TABLE} WHERE status = 'PENDING' AND next_retry_at IS NOT NULL`
+    );
+    for (const row of enEspera) {
+      if (!belongsToOwner(mapOutboxRow(row), ownerId)) continue;
+      await db.runAsync(
+        `UPDATE ${SQLITE_OUTBOX_TABLE} SET next_retry_at = NULL, updated_at = ?
+         WHERE local_id = ? AND status = 'PENDING'`, nowIso(), row.local_id
+      );
+    }
     const result = await this.syncPendingOperations();
     const unresolved = await this.getFailedOperations();
     const reported = new Set((result.errors || []).map((item) => item.local_id));

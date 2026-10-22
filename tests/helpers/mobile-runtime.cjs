@@ -24,7 +24,7 @@ async function setup(platform = 'android') {
   let fetchHandler = async () => response(401, {detail: 'Invalid token.'});
   let locationHandler = async () => ({coords: {latitude: -27.45, longitude: -58.98}});
   let currentTime = null;
-  let appVersion = '1.1.1';
+  let appVersion = '1.1.2';
   let fileInfoHandler = async () => ({exists: true, size: 100});
   class ClockDate extends Date {
     constructor(...args) { super(...(args.length ? args : currentTime == null ? [] : [currentTime])); }

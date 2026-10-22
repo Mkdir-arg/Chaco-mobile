@@ -522,7 +522,7 @@ test('requiereActualizacionGuardada compara la versión mínima guardada con la 
   const r = await setup(); const version = r.load('./versionApp');
   assert.equal(await version.requiereActualizacionGuardada(), false);
   await login(r, {modulos: ['becas'], app: {version_minima: '9.0.0'}});
-  assert.equal(version.versionActual(), '1.1.1');
+  assert.equal(version.versionActual(), '1.1.2');
   assert.equal(await version.requiereActualizacionGuardada(), true);
   r.setAppVersion('9.0.0'); assert.equal(await version.requiereActualizacionGuardada(), false);
   r.setAppVersion('10.0.1'); assert.equal(await version.requiereActualizacionGuardada(), false);
@@ -536,7 +536,7 @@ test('compararVersiones tolera partes faltantes y sufijos; una versión mínima 
   assert.equal(version.compararVersiones('1.2.3-beta.1', '1.2.3'), 0);
   assert.equal(version.compararVersiones('v1.2.4+7', '1.2.3'), 1);
   for (const invalida of [null, undefined, '', 'basura']) assert.equal(version.requiereActualizacion(invalida), false);
-  assert.equal(version.requiereActualizacion('1.1.2'), true); assert.equal(version.requiereActualizacion('1.1.1'), false);
+  assert.equal(version.requiereActualizacion('1.1.3'), true); assert.equal(version.requiereActualizacion('1.1.2'), false);
 });
 
 // Revisión: errores de red de Safari/iOS, cupo viejo, 403 del WAF, descartadas y reemplazo.
@@ -611,4 +611,48 @@ test('reemplazar un adjunto de una operación que ya no está fallida falla sin 
     r.sql.prepare("UPDATE outbox_relevamientos SET status='PENDING'").run(); return op; };
   await assert.rejects(r.service.replaceRejectedAttachment('case1', 'one', {uri: 'file:///n.jpg', fileName: 'n.jpg', mimeType: 'image/jpeg', size: 100}), /ya no está fallida/);
   assert.equal(local(r).payload_json, antes); assert.equal(row(r).status, 'PENDING');
+});
+
+// Sincronización manual: forzar la subida salta el backoff; la automática lo respeta.
+const enEspera = (r, id = 'case1', minutos = 5) => r.sql.prepare('UPDATE outbox_relevamientos SET next_retry_at=? WHERE local_id=?')
+  .run(new Date(T0 + minutos * MIN).toISOString(), id);
+const contador = (r) => { const c = {n: 0}; r.setFetch(async () => { c.n++; return response(200, {id: 55}); }); return c; };
+
+test('manual: una carga en backoff no sale con la automática y sí con retryFailedOperations', async () => {
+  const r = await setup(); r.setNow(T0); await enqueue(r); enEspera(r);
+  const c = contador(r);
+  await r.service.syncPendingOperations();
+  assert.equal(c.n, 0); assert.equal(row(r).status, 'PENDING');
+  const result = await r.service.retryFailedOperations();
+  assert.equal(c.n, 1); assert.equal(result.synced, 1);
+  assert.notEqual(row(r)?.status, 'PENDING');
+});
+
+test('manual: si el back vuelve a pausar, la carga queda otra vez en espera tras un solo intento', async () => {
+  const r = await setup(); r.setNow(T0); await enqueue(r); enEspera(r);
+  let calls = 0; r.setFetch(async () => { calls++; return response(409, {detail: 'pausado', code: 'PAUSADO'}); });
+  await r.service.retryFailedOperations();
+  assert.equal(calls, 1); assert.equal(row(r).status, 'PENDING'); assert.equal(proximo(r), 5 * MIN);
+});
+
+test('manual: una carga de otro usuario en backoff no se toca', async () => {
+  const r = await setup(); r.setNow(T0);
+  await enqueue(r, {_owner_user_id: '999'}, 'insert_relevamiento', 'ajena'); enEspera(r, 'ajena');
+  const antes = row(r, 'ajena').next_retry_at;
+  const c = contador(r);
+  await r.service.retryFailedOperations();
+  assert.equal(c.n, 0); assert.equal(row(r, 'ajena').next_retry_at, antes);
+});
+
+test('manual: una carga IN_FLIGHT no se toca y una needsDecision no se reenvía', async () => {
+  const r = await setup(); r.setNow(T0);
+  await enqueue(r, {}, 'insert_relevamiento', 'vuelo'); enEspera(r, 'vuelo');
+  r.sql.prepare("UPDATE outbox_relevamientos SET status='IN_FLIGHT', started_at=? WHERE local_id='vuelo'").run(new Date(T0).toISOString());
+  await enqueue(r, {}, 'insert_relevamiento', 'invalida');
+  r.sql.prepare("UPDATE outbox_relevamientos SET status='FAILED_PERMANENT', last_error_code='ALTA_INVALIDA', last_error='x' WHERE local_id='invalida'").run();
+  const c = contador(r);
+  await r.service.retryFailedOperations();
+  assert.equal(row(r, 'invalida').status, 'FAILED_PERMANENT'); assert.equal(row(r, 'invalida').last_error_code, 'ALTA_INVALIDA');
+  assert.ok(row(r, 'vuelo').next_retry_at);
+  assert.equal(c.n, 0);
 });
