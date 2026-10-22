@@ -24,7 +24,8 @@ async function setup(platform = 'android') {
   let fetchHandler = async () => response(401, {detail: 'Invalid token.'});
   let locationHandler = async () => ({coords: {latitude: -27.45, longitude: -58.98}});
   let currentTime = null;
-  let appVersion = '1.1.2';
+  let appVersion = '1.1.3';
+  let navigatorValue;
   let fileInfoHandler = async () => ({exists: true, size: 100});
   class ClockDate extends Date {
     constructor(...args) { super(...(args.length ? args : currentTime == null ? [] : [currentTime])); }
@@ -39,6 +40,7 @@ async function setup(platform = 'android') {
     fetch: (...args) => !/^(file:|blob:|data:)/.test(String(args[0])) ? fetchHandler(...args)
       : platform === 'web' ? Promise.reject(new TypeError('Refused to connect: violates Content Security Policy'))
       : Promise.resolve({ok: true, blob: async () => new Blob(['image'], {type: 'image/jpeg'})}),
+    get navigator() { return navigatorValue; },
     atob, btoa, Blob, FormData: class {constructor() {this.fields = [];} append(...args) {this.fields.push(args);}},
   });
   const mocks = {
@@ -85,7 +87,7 @@ async function setup(platform = 'android') {
     .run(JSON.stringify({...campaign, fecha_asignada: start, fecha_hasta: end}));
   return {definition: load('./definicionFormulario'), attachments: load('./webAttachments'), images: load('./webImages'), location: load('./ubicacion'), conditions: load('./condiciones'), identity: load('./identityLookup'), api, service, dates: load('../utils/dates'), values, sql, setPeriod,
     setNow: value => {currentTime = new Date(value).getTime();}, setOnline: value => {online = value;}, setFetch: handler => {fetchHandler = handler;}, setLocation: handler => {locationHandler = handler;},
-    setAppVersion: value => {appVersion = value;}, setFileInfo: handler => {fileInfoHandler = handler;}, load};
+    setNavigator: value => {navigatorValue = value;}, setAppVersion: value => {appVersion = value;}, setFileInfo: handler => {fileInfoHandler = handler;}, load};
 }
 // `headers` permite simular `Date` o `Retry-After`; sin él solo responde content-type,
 // como antes (cualquier otro header devuelve null, igual que fetch).
