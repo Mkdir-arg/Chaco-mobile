@@ -18,7 +18,9 @@ jobs:
     name: Expo Doctor
     # Playwright 1.56 supports Ubuntu 24.04; keep the runner compatible with the lockfile.
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Normalmente tarda ~4 min. Con el espejo de apt lento, instalar Chromium llegó a 7 min
+    # y el job se cortó a los 10 con todos los pasos en verde.
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4

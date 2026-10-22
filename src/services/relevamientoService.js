@@ -907,21 +907,30 @@ const mergeBecasFormularios = (remoteRecords = [], localRecords = []) => {
   return [...localRecords.filter((local) => !remoteRecords.some((remote) => matches(local, remote))), ...merged];
 };
 
-// `incluirDescartadas`: para no podar la caché de un relevamiento que sale del listado
-// mientras tenga descartadas; sin ella no se ven ni se pueden restaurar.
-const pendingRelevamientoIds = async (ownerId, { incluirDescartadas = false } = {}) => {
+const relevamientoIdsInOutbox = async (ownerId, where) => {
   const db = await getSqliteDb();
-  const statuses = ['PENDING', 'IN_FLIGHT', 'FAILED_PERMANENT', ...(incluirDescartadas ? ['DISCARDED'] : [])];
-  const rows = await db.getAllAsync(`SELECT payload_json FROM ${SQLITE_OUTBOX_TABLE}
-    WHERE status IN (${statuses.map((status) => `'${status}'`).join(', ')})`);
+  const rows = await db.getAllAsync(`SELECT payload_json FROM ${SQLITE_OUTBOX_TABLE} WHERE ${where}`);
   return new Set(rows.map((row) => ({ payload: safeParse(row.payload_json, {}) }))
     .filter((item) => belongsToOwner(item, ownerId)).map((item) => String(item.payload.relevamiento_id)));
 };
+
+// `incluirDescartadas`: para no podar la caché de un relevamiento que sale del listado
+// mientras tenga descartadas; sin ella no se ven ni se pueden restaurar.
+const pendingRelevamientoIds = async (ownerId, { incluirDescartadas = false } = {}) => {
+  const statuses = ['PENDING', 'IN_FLIGHT', 'FAILED_PERMANENT', ...(incluirDescartadas ? ['DISCARDED'] : [])];
+  return relevamientoIdsInOutbox(ownerId, `status IN (${statuses.map((status) => `'${status}'`).join(', ')})`);
+};
+
+// Las mismas altas que lista getDiscardedOperations: con ellas el relevamiento sigue en la
+// lista aunque esté vencido, para poder llegar a «Restaurar».
+const discardedRelevamientoIds = (ownerId) => relevamientoIdsInOutbox(ownerId,
+  "status = 'DISCARDED' AND type = 'insert_relevamiento'");
 
 const mapCachedRecordsForList = async () => {
   const localRecords = await readLocalRecords();
   const ownerId = await getCurrentOwnerId();
   const pendingIds = await pendingRelevamientoIds(ownerId);
+  const discardedIds = await discardedRelevamientoIds(ownerId);
   return localRecords
     .filter((record) => (
       belongsToOwner(record, ownerId)
@@ -931,7 +940,11 @@ const mapCachedRecordsForList = async () => {
       )
     ))
     .map(mapLocalRecordForList)
-    .map((item) => ({ ...item, has_pending_operations: pendingIds.has(String(item.id)) }));
+    .map((item) => ({
+      ...item,
+      has_pending_operations: pendingIds.has(String(item.id)),
+      has_discarded_operations: discardedIds.has(String(item.id)),
+    }));
 };
 
 const warmRemoteDetailCache = async (records = []) => {
@@ -2116,8 +2129,13 @@ const relevamientoService = {
           .map(mapLocalRecordForList);
         const retained = await mapCachedRecordsForList();
         const pendingIds = new Set(retained.filter((item) => item.has_pending_operations).map((item) => String(item.id)));
+        const discardedIds = new Set(retained.filter((item) => item.has_discarded_operations).map((item) => String(item.id)));
         return { success: true, records: uniqueBy([...pendingLocal, ...remote, ...retained], (item) => String(item.id))
-          .map((item) => ({ ...item, has_pending_operations: pendingIds.has(String(item.id)) })) };
+          .map((item) => ({
+            ...item,
+            has_pending_operations: pendingIds.has(String(item.id)),
+            has_discarded_operations: discardedIds.has(String(item.id)),
+          })) };
       } catch (error) {
         const fallback = await mapCachedRecordsForList();
         return {
