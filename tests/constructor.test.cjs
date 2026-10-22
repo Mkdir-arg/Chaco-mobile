@@ -206,3 +206,30 @@ test('hidden source behaves as empty in chained conditions; any/all modes are pr
   assert.equal(Object.hasOwn(result.efectivas, 'cp-hidden'), false);
   assert.ok(result.campos.some(f => f.clave === 'cp-next'));
 });
+
+
+test('integer validation works offline for optional answers, zero, negatives and pasted text', async () => {
+  const runtime = await setup();
+  runtime.setOnline(false);
+  const api = runtime.definition;
+  for (const tipo of ['INT', 'NUMERO']) {
+    const f = {clave: 'cp-num', etiqueta: 'Cantidad', tipo};
+    for (const value of ['', 0, '-12', ' 23 ']) assert.equal(api.errorDelCampo(f, value), '');
+    for (const value of ['abc', '12.5', '12,5', '1e3', '3 personas']) {
+      assert.match(api.errorDelCampo(f, value), /número entero/);
+      assert.match(api.problemasDelDiseno([f], {'cp-num': value})[0], /Cantidad: Ingresá/);
+    }
+    assert.match(api.errorDelCampo({...f, requerido: true}, ''), /obligatorio/);
+  }
+  assert.equal(api.errorDelCampo({tipo: 'STRING'}, '123 letras'), '');
+});
+
+
+test('linked email is validated before sync while plain text remains unrestricted', async () => {
+  const r = await setup();
+  r.setOnline(false);
+  const f = {tipo: 'STRING', vinculo: 'email'};
+  for (const value of ['mal', 'a@', 'a b@example.com', 'a@example']) assert.match(r.definition.errorDelCampo(f, value), /correo electrónico válido/);
+  for (const value of ['', 'qa@example.com', 'qa+test@sub.example.com']) assert.equal(r.definition.errorDelCampo(f, value), '');
+  assert.equal(r.definition.errorDelCampo({tipo: 'STRING'}, 'cualquier texto'), '');
+});

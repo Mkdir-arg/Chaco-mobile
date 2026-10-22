@@ -21,10 +21,11 @@ import * as WebBrowser from 'expo-web-browser';
 import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
 import Banner from '../components/Banner';
+import WebDateInput from '../components/WebDateInput';
 import CameraModal from '../components/CameraModal';
 import CustomButton from '../components/CustomButton';
 import useAssignmentClock from '../hooks/useAssignmentClock';
-import { usaConstructor, gruposDelDiseno, camposDelDiseno, evaluarDiseno, faltantesDelDiseno, vinculoDelCampo, valorDelCampo, esIdentidad, datosDelDiseno } from '../services/definicionFormulario';
+import { usaConstructor, gruposDelDiseno, camposDelDiseno, evaluarDiseno, problemasDelDiseno, errorDelCampo, esCampoEmail, vinculoDelCampo, valorDelCampo, esIdentidad, datosDelDiseno } from '../services/definicionFormulario';
 import relevamientoService, { validateFormularioAttachment } from '../services/relevamientoService';
 import { becasRequest } from '../services/becasApi';
 import { designColors, fontSizes, radii } from '../theme';
@@ -1109,12 +1110,27 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
       const attachment = (payload.adjuntos_formulario || []).find((item) => item.key === (field.clave || `${scope}:${fieldId}`));
       values[field.id] = attachment || (payload.respuestas?.[field.clave] ?? payload.data?.[scope]?.[fieldId] ?? '');
     });
-    setDniForm({ ...emptyDniForm, dni_numero: identity.dni || '', dni_sexo: identity.sexo || '',
-      apellido: identity.apellido || '', nombres: identity.nombre || '', fecha_nacimiento: identity.fecha_nacimiento || '' });
+    const recovered = {
+      identidad: { ...emptyDniForm, dni_numero: identity.dni || '', dni_sexo: identity.sexo || '',
+        apellido: identity.apellido || '', nombres: identity.nombre || identity.nombres || '', fecha_nacimiento: identity.fecha_nacimiento || '' },
+      contacto: { celular: payload.celular || '', email_contacto: payload.email_contacto || '' },
+      apoderado: { nombre: payload.apoderado_nombre || '', apellido: payload.apoderado_apellido || '',
+        dni: payload.apoderado_dni || '', sexo: payload.apoderado_genero || '', fecha_nacimiento: payload.apoderado_fecha_nacimiento || '' },
+      valores: values,
+    };
+    // Los campos vinculados se leen de sus formularios, no de dynamicValues.
+    const definition = payload.definicion_formulario || detail?.definicion_formulario || {};
+    if (usaConstructor(definition)) camposDelDiseno(definition).forEach(field => {
+      const bound = vinculoDelCampo(field);
+      const answer = values[field.id];
+      if (bound && !String(recovered[bound.form][bound.key] ?? '').trim() && answer !== '') {
+        recovered[bound.form][bound.key] = answer;
+      }
+    });
+    setDniForm(recovered.identidad);
     setDynamicValues(values);
-    setContactForm({ celular: payload.celular || '', email_contacto: payload.email_contacto || '' });
-    setApoderadoForm({ nombre: payload.apoderado_nombre || '', apellido: payload.apoderado_apellido || '',
-      dni: payload.apoderado_dni || '', sexo: payload.apoderado_genero || '', fecha_nacimiento: payload.apoderado_fecha_nacimiento || '' });
+    setContactForm(recovered.contacto);
+    setApoderadoForm(recovered.apoderado);
     setIdentificationOrigin(identity.origen || 'manual');
     setRenaperStatus(payload.data?.meta?.renaper_estado || 'PENDIENTE');
     setRenaperResult(payload.data?.meta?.renaper_resultado || null);
@@ -1122,6 +1138,25 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     capturedDefinitionRef.current = payload.definicion_formulario || { version: payload.version_capturada };
     capturedAtRef.current = payload.capturado_en || payload.created_at;
     setEditingOperation(operation);
+    // Reabrir la sección rechazada sin volver a consultar ni borrar la identidad.
+    const error = String(operation.last_error || '');
+    let step = 2;
+    let lastStep = 7;
+    if (usaConstructor(definition)) {
+      const restored = evaluarDiseno(definition, recovered, capturedAtRef.current);
+      const group = restored.grupos.find(group => group.items.some(field => {
+        const bound = vinculoDelCampo(field);
+        return (field.clave && error.includes(field.clave))
+          || (bound?.form === 'contacto' && error.includes(bound.key))
+          || (field.etiqueta && error.includes(field.etiqueta));
+      }));
+      step = group?.stepId || restored.grupos[0]?.stepId || gruposDelDiseno(definition).length + 2;
+      lastStep = gruposDelDiseno(definition).length + 2;
+    } else if (/email_contacto|celular/.test(error) && (definition.globales || []).length) {
+      step = 3;
+    }
+    setCurrentStep(step);
+    setMaxVisitedStep(lastStep);
     setFormMode(true);
   };
 
@@ -1274,7 +1309,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
       return;
     }
     if (await dniYaFueRelevado(dniForm.dni_numero)) return;
-    const missing = usesConstructor ? faltantesDelDiseno(design.campos, design.efectivas) : [];
+    const missing = usesConstructor ? problemasDelDiseno(design.campos, design.efectivas) : [];
     if (!usesConstructor && isMinorDate(dniForm.fecha_nacimiento)) {
       if (!String(apoderadoForm.nombre || '').trim()) missing.push('Nombre del apoderado');
       if (!String(apoderadoForm.apellido || '').trim()) missing.push('Apellido del apoderado');
@@ -1283,17 +1318,11 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
       if (!String(apoderadoForm.fecha_nacimiento || '').trim()) missing.push('Fecha de nacimiento del apoderado');
     }
     (usesConstructor ? [] : formularioFields).forEach((field) => {
-      const tipo = String(field.tipo || '').toUpperCase();
-      if (!field.requerido) return;
-      const value = dynamicValues[field.id];
-      if (tipo === 'ARCHIVO') {
-        if (!value?.uri && !value?.dataUri) missing.push(field.etiqueta || field.texto || 'Imagen requerida');
-      } else if (!String(value || '').trim()) {
-        missing.push(field.etiqueta || field.texto || 'Campo requerido');
-      }
+      const error = errorDelCampo(field, dynamicValues[field.id]);
+      if (error) missing.push(`${field.etiqueta || field.texto || 'Campo'}: ${error}`);
     });
     if (missing.length) {
-      Alert.alert('Faltan datos', `Completa antes de enviar:\n- ${missing.join('\n- ')}`);
+      Alert.alert('Revisá los datos', `Corregí antes de enviar:\n- ${missing.join('\n- ')}`);
       return;
     }
 
@@ -1393,8 +1422,8 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     }
     if (usesConstructor) {
       const group = design.grupos.find(item => item.stepId === currentStep);
-      const missing = group ? faltantesDelDiseno(group.items.filter(item => item.tipo !== 'texto'), design.efectivas) : [];
-      if (missing.length) { Alert.alert('Faltan datos', 'Completá antes de continuar: ' + missing.join(', ')); return; }
+      const missing = group ? problemasDelDiseno(group.items.filter(item => item.tipo !== 'texto'), design.efectivas) : [];
+      if (missing.length) { Alert.alert('Revisá los datos', 'Corregí antes de continuar: ' + missing.join(', ')); return; }
     }
     if (!usesConstructor && currentStep === 2) {
       const missing = getMissingPersonFields();
@@ -1606,11 +1635,13 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
 
     if (Platform.OS === 'web') {
       return (
-        <TextInput
-          value={value}
-          onChangeText={onSelect}
-          placeholder="DD/MM/AAAA"
-          style={[styles.textInput, { color: theme.colors.text, borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}
+        <WebDateInput
+          value={isoValue || ''}
+          onSelect={onSelect}
+          label={label}
+          required={required}
+          maximumDate={maximumDate}
+          style={styles.textInput}
         />
       );
     }
@@ -1659,6 +1690,9 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
         style={[styles.textInput, { color: theme.colors.text, borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]} />
     ) : null;
     const tipo = String(field.tipo || '').toUpperCase();
+    const isInteger = ['INT', 'NUMERO'].includes(tipo);
+    const isEmail = esCampoEmail(field);
+    const fieldError = String(value ?? '').trim() ? errorDelCampo(field, value) : '';
     const isObservationField = /observaci[oó]n|observaciones/i.test(String(field.etiqueta || field.texto || ''));
 
     if (['SELECTOR', 'SELECT', 'CHOICE'].includes(tipo)) {
@@ -1796,16 +1830,26 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
         <TextInput
           value={String(value ?? '')}
           onChangeText={setValue}
-          multiline={tipo === 'TEXTAREA' || isObservationField}
-          keyboardType={tipo === 'INT' || tipo === 'NUMERO' ? 'numeric' : 'default'}
+          multiline={!isInteger && !isEmail && (tipo === 'TEXTAREA' || isObservationField)}
+          keyboardType={isEmail ? 'email-address' : isInteger ? 'numeric' : 'default'}
+          inputMode={isEmail ? 'email' : isInteger ? 'numeric' : 'text'}
+          autoCapitalize={isEmail ? 'none' : 'sentences'}
+          autoCorrect={!isEmail}
+          accessibilityLabel={field.etiqueta || field.texto}
+          accessibilityHint={isEmail ? 'Ingresá un correo electrónico, por ejemplo nombre@dominio.com.' : isInteger ? 'Ingresá un número entero, sin letras ni decimales.' : 'Ingresá texto.'}
+          aria-invalid={Boolean(fieldError)}
           style={[
             styles.textInput,
-            (tipo === 'TEXTAREA' || isObservationField) && styles.textArea,
-            { color: theme.colors.text, borderColor: theme.colors.border, backgroundColor: theme.colors.surface },
+            !isInteger && !isEmail && (tipo === 'TEXTAREA' || isObservationField) && styles.textArea,
+            { color: theme.colors.text, borderColor: fieldError ? theme.colors.danger : theme.colors.border, backgroundColor: theme.colors.surface },
           ]}
           placeholderTextColor={theme.colors.textSoft}
-          placeholder="Completar"
+          placeholder={isEmail ? 'nombre@dominio.com' : isInteger ? 'Ej.: 12' : 'Ingresá texto'}
         />
+        <Text accessibilityRole={fieldError ? 'alert' : undefined}
+          style={{ color: fieldError ? theme.colors.danger : theme.colors.textSoft, fontFamily: typography.medium, fontSize: fontSizes.xs }}>
+          {fieldError || (isEmail ? 'Correo electrónico. Ej.: nombre@dominio.com' : isInteger ? 'Número entero, sin letras ni decimales.' : 'Texto.')}
+        </Text>
       </View>
     );
   };

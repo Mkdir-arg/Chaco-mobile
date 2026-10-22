@@ -25,7 +25,7 @@ const FormInput = forwardRef(({style, onFocus, onBlur, selectionColor, editable 
   return <TextInput {...props} ref={ref} editable={editable} readOnly={readOnly}
     selectionColor={selectionColor ?? theme.colors.primary}
     underlineColorAndroid="transparent"
-    style={[style, Platform.OS === 'web' && {outlineStyle: 'none'},
+    style={[style, Platform.OS === 'web' && {outlineStyle: 'none', fontSize: Math.max(16, Number(inputStyle.fontSize) || 16)},
       focus && {borderColor: theme.colors.primary}]}
     onFocus={event => {
       if (canEdit) {setFocused(true); setContainerFocused?.(true);}
