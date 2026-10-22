@@ -656,3 +656,27 @@ test('manual: una carga IN_FLIGHT no se toca y una needsDecision no se reenvía'
   assert.ok(row(r, 'vuelo').next_retry_at);
   assert.equal(c.n, 0);
 });
+
+test('manual: si el back vuelve a pausar, waiting cuenta la carga y da el motivo de pausa', async () => {
+  const r = await setup(); r.setNow(T0); await enqueue(r); enEspera(r);
+  r.setFetch(async () => response(409, {detail: 'pausado', code: 'PAUSADO'}));
+  const result = await r.service.retryFailedOperations();
+  assert.equal(result.waiting, 1); assert.equal(result.waitingReason, 'el relevamiento está pausado');
+});
+
+test('manual: 429 da el motivo de espera del servidor', async () => {
+  const r = await setup(); r.setNow(T0); await enqueue(r); enEspera(r);
+  r.setFetch(async () => response(429, {detail: 'Demasiadas solicitudes'}));
+  const result = await r.service.retryFailedOperations();
+  assert.equal(result.waiting, 1); assert.equal(result.waitingReason, 'el servidor pidió esperar');
+});
+
+test('manual: con la cola vacía waiting es 0 y sin motivo; la carga de otro usuario no cuenta', async () => {
+  const r = await setup(); r.setNow(T0);
+  let result = await r.service.retryFailedOperations();
+  assert.equal(result.waiting, 0); assert.equal(result.waitingReason, null);
+  await enqueue(r, {_owner_user_id: '999'}, 'insert_relevamiento', 'ajena'); enEspera(r, 'ajena');
+  r.sql.prepare("UPDATE outbox_relevamientos SET last_error='x', last_error_code='RELEVAMIENTO_PAUSADO' WHERE local_id='ajena'").run();
+  result = await r.service.retryFailedOperations();
+  assert.equal(result.waiting, 0); assert.equal(result.waitingReason, null);
+});

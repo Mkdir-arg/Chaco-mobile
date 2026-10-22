@@ -242,13 +242,22 @@ function AppContent() {
       const failed = relevamientoResult?.failed || 0;
       const firstRelevamientoError = relevamientoResult?.errors?.[0]?.message;
 
+      const waiting = relevamientoResult?.waiting || 0;
+      const waitingReason = relevamientoResult?.waitingReason;
+      const lineaEspera = waiting > 0 ? `\nEn espera: ${waiting}${waitingReason ? ` (${waitingReason})` : ''}` : '';
+
       if (failed > 0) {
         Alert.alert(
           'Sincronizacion parcial',
-          `Sincronizados: ${synced}\nFallidos: ${failed}${firstRelevamientoError ? `\nDetalle: ${firstRelevamientoError}` : ''}`
+          `Sincronizados: ${synced}\nFallidos: ${failed}${firstRelevamientoError ? `\nDetalle: ${firstRelevamientoError}` : ''}${lineaEspera}`
         );
       } else if (synced > 0) {
-        Alert.alert('Sincronizacion completa', `Sincronizados: ${synced}`);
+        Alert.alert('Sincronizacion completa', `Sincronizados: ${synced}${lineaEspera}`);
+      } else if (waiting > 0 && !relevamientoResult?.offline) {
+        Alert.alert(
+          'Sincronizacion',
+          `Quedan ${waiting} en espera${waitingReason ? `: ${waitingReason}` : ''}. Se reintentan solas cada 5 minutos.`
+        );
       } else if (relevamientoResult?.offline) {
         Alert.alert('Sin conexion', 'Adjuntos pendientes. Se reintentara automaticamente al recuperar internet.');
       } else {

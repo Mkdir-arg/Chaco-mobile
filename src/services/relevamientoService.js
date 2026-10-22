@@ -31,6 +31,7 @@ const ERROR_ATTACHMENTS_UPLOAD = 'ERROR_ATTACHMENTS_UPLOAD';
 const ERROR_REMOTE_SCHEMA = 'ERROR_REMOTE_SCHEMA';
 const ERROR_RELEVAMIENTO_PAUSADO = 'RELEVAMIENTO_PAUSADO';
 const ERROR_SIN_ACCESO = 'SIN_ACCESO';
+const ERROR_RATE_LIMITED = 'RATE_LIMITED';
 const ERROR_CLIENT_UUID_EN_USO = 'CLIENT_UUID_EN_USO';
 const ERROR_RELEVAMIENTO_NO_DISPONIBLE = 'RELEVAMIENTO_NO_DISPONIBLE';
 const PAUSED_RETRY_MS = 5 * 60 * 1000;
@@ -1829,6 +1830,7 @@ const relevamientoService = {
         const nextRetry = canRetry ? new Date(Date.now() + retryDelayMs).toISOString() : null;
         const errorCode = graceExpired ? GRACE_EXPIRED : invalidSubmission ? INVALID_SUBMISSION
           : pausedUntilGrace ? ERROR_RELEVAMIENTO_PAUSADO : notFound ? ERROR_RELEVAMIENTO_NO_DISPONIBLE
+          : rateLimited && !(error?.code || apiCode) ? ERROR_RATE_LIMITED
           : (error?.code || apiCode || null);
         const message = errorCode === ERROR_MISSING_LOCAL_FILE
           ? 'Adjunto no disponible, volve a adjuntarlo'
@@ -2099,7 +2101,20 @@ const relevamientoService = {
     const result = await this.syncPendingOperations();
     const unresolved = await this.getFailedOperations();
     const reported = new Set((result.errors || []).map((item) => item.local_id));
-    return { ...result, failed: Math.max(result.failed, unresolved.length), errors: [
+    // Cargas que siguen en la cola tras el intento forzado, con el motivo mas frecuente.
+    const quedan = (await db.getAllAsync(`SELECT * FROM ${SQLITE_OUTBOX_TABLE} WHERE status = 'PENDING'`))
+      .map(mapOutboxRow).filter((op) => belongsToOwner(op, ownerId));
+    const motivos = {};
+    for (const op of quedan) {
+      const clave = op.last_error_code === ERROR_RELEVAMIENTO_PAUSADO ? 'pausado'
+        : op.last_error_code === ERROR_RATE_LIMITED ? 'limite'
+        : op.last_error ? 'red' : null;
+      if (clave) motivos[clave] = (motivos[clave] || 0) + 1;
+    }
+    const principal = Object.keys(motivos).sort((x, y) => motivos[y] - motivos[x])[0];
+    const waitingReason = { pausado: 'el relevamiento está pausado', limite: 'el servidor pidió esperar',
+      red: 'el servidor no respondió' }[principal] || null;
+    return { ...result, waiting: quedan.length, waitingReason, failed: Math.max(result.failed, unresolved.length), errors: [
       ...(result.errors || []),
       ...unresolved.filter((item) => !reported.has(item.local_id)).map((item) => ({
         local_id: item.local_id, message: item.last_error, code: item.last_error_code,
