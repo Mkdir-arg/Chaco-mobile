@@ -4,6 +4,7 @@ import { Platform } from 'react-native';
 import { API_CONFIG } from '../config/apiConfig';
 import { apiErrorMessage } from './formularioSync';
 import { readWebBlob } from './webAttachments';
+import { ahoraCorregido, registrarHoraServidor } from './reloj';
 
 // En el navegador no mandamos cookies. Si el usuario tiene sesion abierta en el
 // backoffice del mismo dominio, el navegador adjunta su `sessionid`, DRF autentica con
@@ -114,6 +115,15 @@ const isUnexpectedHtmlResponse = (response, payload) => {
   return contentType.includes('text/html') || detail.startsWith('<!doctype html') || detail.startsWith('<html');
 };
 
+// `Retry-After` llega en segundos o como fecha HTTP. Se devuelve en milisegundos desde
+// ahora (hora corregida), o null si falta o no se entiende.
+const parseRetryAfter = (response) => {
+  const raw = String(response?.headers?.get?.('Retry-After') || '').trim();
+  if (!raw) return null;
+  const ms = /^\d+$/.test(raw) ? Number(raw) * 1000 : Date.parse(raw) - ahoraCorregido().getTime();
+  return Number.isFinite(ms) ? Math.min(Math.max(ms, 1000), 60 * 60 * 1000) : null;
+};
+
 const buildResponseError = (response, payload, fallback) => {
   const unexpectedHtml = isUnexpectedHtmlResponse(response, payload);
   const error = new Error(unexpectedHtml
@@ -122,6 +132,7 @@ const buildResponseError = (response, payload, fallback) => {
   error.status = response.status;
   error.payload = unexpectedHtml ? null : payload;
   error.unexpectedHtml = unexpectedHtml;
+  error.retryAfter = parseRetryAfter(response);
   return error;
 };
 
@@ -155,9 +166,18 @@ export const loginBecas = async ({ username, password }) => {
     credentials: CREDENCIALES,
     body: JSON.stringify({ username, password }),
   });
+  registrarHoraServidor(response.headers?.get?.('Date'));
   const payload = await parseResponse(response);
   if (!response.ok) {
     throw new Error(payload?.detail || payload?.non_field_errors?.[0] || 'No se pudo iniciar sesion.');
+  }
+
+  // Un back viejo no manda `modulos`: se deja pasar. Si manda la lista y no incluye
+  // Becas, el usuario no tiene nada que hacer en esta app y no se guarda la sesión.
+  if (Array.isArray(payload.modulos) && !payload.modulos.includes('becas')) {
+    const error = new Error('Tu usuario no tiene acceso a Becas en la app.');
+    error.code = 'SIN_MODULO_BECAS';
+    throw error;
   }
 
   const user = {
@@ -166,6 +186,8 @@ export const loginBecas = async ({ username, password }) => {
     nombre: payload.username,
     grupos: [],
     es_admin: false,
+    modulos: Array.isArray(payload.modulos) ? payload.modulos : null,
+    version_minima: payload.app?.version_minima || null,
   };
   await Promise.all([
     storage.setItem(TOKEN_KEY, payload.token),
@@ -173,6 +195,17 @@ export const loginBecas = async ({ username, password }) => {
     storage.setItem(USER_DATA_KEY, JSON.stringify(user)),
   ]);
   return user;
+};
+
+// Safari/iOS rechaza el fetch con TypeError('Load failed') o «The Internet connection
+// appears to be offline.», y un 502/504 sin CORS también llega como TypeError: se marca
+// `network` para que la cola lo trate como falla de red y no como rechazo permanente.
+const fetchConRedMarcada = async (url, init) => {
+  try {
+    return await fetch(url, init);
+  } catch (e) {
+    throw Object.assign(new Error(`Network request failed: ${e?.message || e}`), { network: true, cause: e });
+  }
 };
 
 // Sube un archivo real (multipart) a un endpoint de la API de Becas — a diferencia
@@ -191,7 +224,7 @@ export const becasUploadFile = async (path, { fileUri, fileField = 'archivo', fi
     formData.append(fileField, { uri: fileUri, name, type: mimeType });
   }
 
-  const response = await fetch(buildUrl(path), {
+  const response = await fetchConRedMarcada(buildUrl(path), {
     method: 'POST',
     credentials: CREDENCIALES,
     headers: {
@@ -200,6 +233,7 @@ export const becasUploadFile = async (path, { fileUri, fileField = 'archivo', fi
     },
     body: formData,
   });
+  registrarHoraServidor(response.headers?.get?.('Date'));
   const payload = await parseResponse(response);
   if (!response.ok) {
     if (response.status === 401) await invalidateRejectedSession(token);
@@ -217,7 +251,7 @@ export const becasRequest = async (path, options = {}) => {
     ...(options.headers || {}),
   };
 
-  const response = await fetch(buildUrl(path), {
+  const response = await fetchConRedMarcada(buildUrl(path), {
     ...options,
     credentials: CREDENCIALES,
     headers,
@@ -225,6 +259,7 @@ export const becasRequest = async (path, options = {}) => {
       ? JSON.stringify(options.body)
       : options.body,
   });
+  registrarHoraServidor(response.headers?.get?.('Date'));
   const payload = await parseResponse(response);
   if (!response.ok) {
     if (response.status === 401) await invalidateRejectedSession(token);

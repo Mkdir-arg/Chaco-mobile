@@ -1,7 +1,48 @@
 import { aplicar, estaVacio } from './condiciones';
 import { dateKey } from '../utils/dates';
 
-export const usaConstructor = definition => Array.isArray(definition?.items);
+// Solo con items cargados: un back que manda `items: []` (diseño sin armar) cae al
+// camino legacy (globales/requisitos) en vez de dejar el formulario vacío.
+export const usaConstructor = definition => Array.isArray(definition?.items) && definition.items.length > 0;
+
+// Contrato de cupo: el back manda `cupo_completo`/`cupo_disponible` (null si es viejo).
+// `sinEnviar` son las cargas locales que todavía no descontaron del cupo del back.
+// Un detalle guardado por la versión anterior trae `cupo_disponible: 0` y
+// `cupo_completo: false` aunque el back no mandara esas claves; el back nuevo, sin
+// disponible, manda `cupo_completo: true`. Un disponible <= 0 sin eso no es confiable.
+export const cupoDisponibleConfiable = (detail) => {
+  const disponible = detail?.cupo_disponible;
+  if (typeof disponible !== 'number' || !Number.isFinite(disponible)) return null;
+  return disponible <= 0 && detail?.cupo_completo !== true ? null : disponible;
+};
+
+export const cupoCompleto = (detail, formulariosCount = 0, sinEnviar = 0) => {
+  const cupoMaximo = Number(detail?.cupo_maximo || 0);
+  const disponible = cupoDisponibleConfiable(detail);
+  return detail?.cupo_completo === true
+    || (cupoMaximo > 0 && disponible != null && disponible - sinEnviar <= 0)
+    // Piso: el disponible del detalle se lee una vez y queda viejo al sincronizar las
+    // cargas locales; el cálculo de siempre nunca deja cargar de más.
+    || (cupoMaximo > 0 && formulariosCount >= cupoMaximo);
+};
+
+// Reabrir solo desde FINALIZADO y con la ventana todavía abierta (hora corregida).
+export const puedeReabrir = (detail, ahora = new Date()) => {
+  if (String(detail?.estado || '').toUpperCase() !== 'FINALIZADO') return false;
+  const hasta = detail?.fecha_hasta ? new Date(detail.fecha_hasta) : null;
+  return !!hasta && !Number.isNaN(hasta.getTime()) && hasta.getTime() > ahora.getTime();
+};
+
+// DNI duplicado: `avisar` deja seguir con este aviso (RECHAZADO o BAJA).
+export const avisoDuplicado = estado => 'Este DNI tiene un caso '
+  + (String(estado || '').toUpperCase() === 'BAJA' ? 'dado de baja' : 'rechazado')
+  + ' en este relevamiento. Podés seguir; el back lo marca para revisión.';
+
+// personas/consultar solo acepta F/M: con X se va directo a carga manual.
+export const consultaPadronPermitida = sexo => ['F', 'M'].includes(String(sexo || '').toUpperCase());
+
+export const sinGpsObservado = (definition, payload) => definition?.requiere_gps === true
+  && !(String(payload?.gps_lat ?? '').trim() && String(payload?.gps_lng ?? '').trim());
 const enApp = item => item?.activo !== false && (!item?.canal || ['app', 'ambos'].includes(item.canal));
 export const esIdentidad = field => field.origen === 'legajo'
   && ['dni', 'nombre', 'apellido', 'fecha_nacimiento', 'genero'].includes(field.vinculo);
@@ -58,11 +99,9 @@ export const evaluarDiseno = (definition, state, capturedAt) => {
     field.tipo === 'DATE' ? fechaRespuesta(valorDelCampo(field, state)) : valorDelCampo(field, state)]));
   const flat = groups.flatMap(group => [{ ...group, tipo: 'grupo', padre: null },
     ...group.items.map(item => ({ ...item, tipo: item.tipo === 'texto' ? 'texto' : 'campo', padre: group.clave }))]);
-  // The server removes rules whose source is not served on this channel.
-  const keys = new Set(flat.filter(item => item.tipo === 'campo').map(item => item.clave));
-  flat.forEach(item => {
-    if (item.condicion) item.condicion = { ...item.condicion, reglas: (item.condicion.reglas || []).filter(rule => keys.has(rule.fuente)) };
-  });
+  // A source missing from the definition evaluates as empty, exactly like
+  // condiciones.py. Sources outside the channel are the server's job (BEC-04):
+  // serializar nulls the whole condition before it reaches the app.
   const day = dateKey(capturedAt || new Date());
   const result = aplicar(flat, answers, new Date(day + 'T12:00:00'));
   const visibleGroups = groups.filter(group => result.visibles.has(group.clave))

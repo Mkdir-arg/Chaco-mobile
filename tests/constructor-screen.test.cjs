@@ -49,7 +49,7 @@ async function mount(items, options = {}) {
     '../hooks/useCameraPermissions': {__esModule:true, default: () => [{granted: true}, async () => ({granted: true})]},
     'expo-media-library': {}, '../services/imagePicker': {}, 'expo-constants': {},
     '@react-native-async-storage/async-storage': {__esModule: true, default: {getItem: async () => null}},
-    '../services/ubicacion': {posicionActual: async () => { throw new Error('sin GPS en tests'); }},
+    '../services/reloj': {ahoraCorregido: () => new Date()}, '../services/documentPicker': {}, '../services/ubicacion': {posicionActual: async () => { throw new Error('sin GPS en tests'); }},
     'expo-location': {getForegroundPermissionsAsync: async () => ({status: 'denied'}), requestForegroundPermissionsAsync: async () => ({status: 'denied'})},
     'react-native-safe-area-context': {useSafeAreaInsets: () => ({top: 0, bottom: 0})},
     'react-native-svg': {__esModule: true, default: 'Svg', Path: 'Path'},

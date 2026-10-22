@@ -25,7 +25,9 @@ import WebDateInput from '../components/WebDateInput';
 import CameraModal from '../components/CameraModal';
 import CustomButton from '../components/CustomButton';
 import useAssignmentClock from '../hooks/useAssignmentClock';
-import { usaConstructor, gruposDelDiseno, camposDelDiseno, evaluarDiseno, problemasDelDiseno, errorDelCampo, esCampoEmail, vinculoDelCampo, valorDelCampo, esIdentidad, datosDelDiseno } from '../services/definicionFormulario';
+import { usaConstructor, gruposDelDiseno, camposDelDiseno, evaluarDiseno, problemasDelDiseno, errorDelCampo, esCampoEmail, vinculoDelCampo, valorDelCampo, esIdentidad, datosDelDiseno, cupoCompleto as calcularCupoCompleto, puedeReabrir, avisoDuplicado, consultaPadronPermitida, sinGpsObservado } from '../services/definicionFormulario';
+import { ahoraCorregido } from '../services/reloj';
+import * as DocumentPicker from '../services/documentPicker';
 import relevamientoService, { validateFormularioAttachment } from '../services/relevamientoService';
 import { becasRequest } from '../services/becasApi';
 import { designColors, fontSizes, radii } from '../theme';
@@ -104,6 +106,9 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
   const [formMode, setFormMode] = useState(false);
   const [startingCase, setStartingCase] = useState(false);
   const [failedOperations, setFailedOperations] = useState([]);
+  const [discardedOperations, setDiscardedOperations] = useState([]);
+  const [discardedOpen, setDiscardedOpen] = useState(false);
+  const [sinEnviarCount, setSinEnviarCount] = useState(0);
   const [editingOperation, setEditingOperation] = useState(null);
   const [queueActionId, setQueueActionId] = useState('');
   const capturedDefinitionRef = useRef(null);
@@ -120,6 +125,20 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     });
     return () => cancelAnimationFrame(frame);
   }, [currentStep, formMode]);
+
+  // Cargas sin enviar (para el cupo) y descartadas restaurables; con un servicio
+  // viejo sin estas funciones quedan en 0 / vacío (comportamiento de antes).
+  const refreshQueueExtras = async (id, isMounted = () => true) => {
+    try {
+      const sinEnviar = typeof relevamientoService.countUnsentFormularios === 'function'
+        ? Number(await relevamientoService.countUnsentFormularios(id)) || 0 : 0;
+      const descartadas = typeof relevamientoService.getDiscardedOperations === 'function'
+        ? await relevamientoService.getDiscardedOperations(id) : [];
+      if (!isMounted()) return;
+      setSinEnviarCount(sinEnviar);
+      setDiscardedOperations(Array.isArray(descartadas) ? descartadas : []);
+    } catch { /* sin datos extra: se muestra como antes */ }
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -163,6 +182,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
           if (!mounted) return;
           setFormularios(formsResult.records || []);
           setFailedOperations(await relevamientoService.getFailedOperations(relevamientoId));
+          await refreshQueueExtras(relevamientoId, () => mounted);
         }
       }
       setLoading(false);
@@ -190,6 +210,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
       if (mounted) {
         setFailedOperations(operations);
         setFormularios(cases.records || []);
+        await refreshQueueExtras(detail.id, () => mounted);
       }
     };
     refresh().catch(() => {});
@@ -581,7 +602,18 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
   };
 
   const dniYaFueRelevado = async (dni) => {
-    const duplicado = await relevamientoService.dniYaRelevado(detail?.id, cleanDigits(dni), editingOperation?.local_id);
+    // Contrato nuevo: bloquear (mismo caso vivo) / avisar (RECHAZADO o BAJA, deja seguir).
+    // Con un servicio sin evaluarDniDuplicado se mantiene la regla de antes.
+    let duplicado;
+    if (typeof relevamientoService.evaluarDniDuplicado === 'function') {
+      const evaluacion = await relevamientoService.evaluarDniDuplicado(detail?.id, cleanDigits(dni), editingOperation?.local_id);
+      if (!evaluacion?.bloquear && evaluacion?.avisar) {
+        showToast({ type: 'warning', message: avisoDuplicado(evaluacion.estado) });
+      }
+      duplicado = !!evaluacion?.bloquear;
+    } else {
+      duplicado = await relevamientoService.dniYaRelevado(detail?.id, cleanDigits(dni), editingOperation?.local_id);
+    }
     if (duplicado) {
       Alert.alert('DNI ya relevado', 'Este DNI ya fue relevado en este relevamiento.');
     }
@@ -987,7 +1019,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
   const resetPersonForm = (definition = detail?.definicion_formulario || {}) => {
     setEditingOperation(null);
     capturedDefinitionRef.current = definition;
-    capturedAtRef.current = new Date().toISOString();
+    capturedAtRef.current = ahoraCorregido().toISOString();
     setOptionSearch({});
     setCurrentStep(1);
     setMaxVisitedStep(1);
@@ -1096,6 +1128,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     const formsResult = await relevamientoService.getBecasFormularios(detail.id);
     setFormularios(formsResult.records || []);
     setFailedOperations(await relevamientoService.getFailedOperations(detail.id));
+    await refreshQueueExtras(detail.id);
   };
 
   const correctFailedCase = (operation) => {
@@ -1200,6 +1233,57 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
       ]);
   };
 
+  const restoreDiscardedCase = async (operation) => {
+    setQueueActionId(operation.local_id);
+    try {
+      const result = await relevamientoService.restoreDiscardedOperation(operation.local_id);
+      await refreshFormularios();
+      showToast({ type: result?.restored === false ? 'warning' : 'success',
+        message: result?.restored === false ? 'No se pudo restaurar el envío.' : 'Envío restaurado. Se reintentará el envío.' });
+    } catch (error) {
+      Alert.alert('Restaurar envío', error?.message || 'No se pudo restaurar el envío.');
+    } finally {
+      setQueueActionId('');
+    }
+  };
+
+  // Vuelve a adjuntar un archivo rechazado por el back y lo reemplaza en la cola.
+  const replaceRejectedFile = async (operation, key, asset) => {
+    setQueueActionId(operation.local_id);
+    try {
+      const fileName = asset.fileName || asset.name || String(asset.uri).split('/').pop() || 'adjunto';
+      const mimeType = asset.mimeType || mimeTypeFromName(fileName);
+      const size = asset.fileSize || asset.size || null;
+      await validateFormularioAttachment({ ...asset, fileName, mimeType, size });
+      const result = await relevamientoService.replaceRejectedAttachment(operation.local_id, key, { uri: asset.uri, fileName, mimeType, size });
+      await refreshFormularios();
+      showToast({ type: result?.success === false ? 'error' : 'success',
+        message: result?.success === false ? 'No se pudo reemplazar el adjunto.' : 'Adjunto reemplazado. Se reintentará el envío.' });
+    } catch (error) {
+      Alert.alert('Volver a adjuntar', error?.message || 'No se pudo reemplazar el adjunto.');
+    } finally {
+      setQueueActionId('');
+    }
+  };
+
+  const pickReplacementAttachment = (operation, key) => {
+    const fromPicker = async (launch) => {
+      try {
+        const result = await launch();
+        const asset = result?.canceled ? null : result?.assets?.[0];
+        if (asset?.uri) await replaceRejectedFile(operation, key, asset);
+      } catch (error) {
+        Alert.alert('Volver a adjuntar', error?.message || 'No se pudo adjuntar el archivo.');
+      }
+    };
+    Alert.alert('Volver a adjuntar', 'Elegí de dónde tomar el archivo.', [
+      { text: 'Cámara', onPress: () => fromPicker(() => ImagePicker.launchCameraAsync({ mediaTypes: ['images'], allowsEditing: false, quality: 1 })) },
+      { text: 'Galería', onPress: () => fromPicker(() => ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: false, allowsMultipleSelection: false, quality: 1 })) },
+      { text: 'Archivo', onPress: () => fromPicker(() => DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true, multiple: false })) },
+      { text: 'Cancelar', style: 'cancel' },
+    ]);
+  };
+
   const applyRelevamientoState = (nextDetail, estado) => {
     setDetail((current) => ({ ...current, ...(nextDetail || {}), estado }));
   };
@@ -1210,7 +1294,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     try {
       const result = await relevamientoService.iniciarRelevamiento(detail.id);
       if (!result.success) throw new Error(result.error || 'No se pudo iniciar el relevamiento.');
-      applyRelevamientoState(result.detail, 'EN_CURSO');
+      applyRelevamientoState(result.detail, result.estado || result.detail?.estado || 'EN_CURSO');
       Alert.alert(
         'Relevamiento iniciado',
         result.pending
@@ -1241,7 +1325,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     try {
       const result = await relevamientoService.finalizarRelevamiento(detail.id);
       if (!result.success) throw new Error(result.error || 'No se pudo finalizar el relevamiento.');
-      applyRelevamientoState(result.detail, result.estado || 'FINALIZANDO');
+      applyRelevamientoState(result.detail, result.estado || result.detail?.estado || 'FINALIZANDO');
       if (result.pending) {
         Alert.alert(
           'Pendiente de sincronizacion',
@@ -1274,7 +1358,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     try {
       const result = await relevamientoService.reabrirRelevamiento(detail.id);
       if (!result.success) throw new Error(result.error || 'No se pudo reabrir el relevamiento.');
-      applyRelevamientoState(result.detail, 'EN_CURSO');
+      applyRelevamientoState(result.detail, result.estado || result.detail?.estado || 'EN_CURSO');
       Alert.alert('Relevamiento reabierto', 'Ya puedes agregar nuevas personas. Los formularios enviados no se modificaron.');
     } catch (stateError) {
       Alert.alert('Reabrir relevamiento', stateError?.message || 'No se pudo reabrir el relevamiento.');
@@ -1373,12 +1457,18 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
         gps_lat: gpsCoords.gps_lat || null,
         gps_lng: gpsCoords.gps_lng || null,
         _cupo_maximo: Number(detail?.cupo_maximo || 0),
+        _cupo_disponible: detail?.cupo_disponible ?? null,
+        _cupo_completo: detail?.cupo_completo ?? null,
         data,
         ...(usesConstructor ? datosDelDiseno(definicionPreguntas, design) : {}),
-        capturado_en: editingOperation?.payload?.capturado_en || capturedAtRef.current || new Date().toISOString(),
+        capturado_en: editingOperation?.payload?.capturado_en || capturedAtRef.current || ahoraCorregido().toISOString(),
         campos_definicion: capturedFields,
         finalizar: false,
       };
+      // El GPS faltante no bloquea: la carga se guarda y el back la deja observada.
+      if (sinGpsObservado(payload.definicion_formulario, payload)) {
+        showToast({ type: 'warning', message: 'Este relevamiento pide ubicación y no se pudo obtener. La carga se guarda igual y queda observada.' });
+      }
       const result = editingOperation
         ? await relevamientoService.correctFailedFormulario(editingOperation.local_id, payload)
         : await relevamientoService.saveBecasFormulario(payload);
@@ -1458,10 +1548,10 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
       });
       return;
     }
-    if (!['F', 'M'].includes(normalizeSex(dniForm.dni_sexo))) {
+    if (!['F', 'M', 'X'].includes(normalizeSex(dniForm.dni_sexo))) {
       showToast({
         type: 'error',
-        message: 'Seleccioná sexo F o M.',
+        message: 'Seleccioná sexo F, M o X.',
       });
       return;
     }
@@ -1485,6 +1575,18 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
         source: 'scan',
       });
       setRenaperError('');
+      goToAssignedStep(2);
+      return;
+    }
+
+    // personas/consultar solo acepta F/M: con X no se consulta y se pasa a carga manual.
+    if (!consultaPadronPermitida(normalizeSex(dniForm.dni_sexo))) {
+      setDniForm((prev) => clearPersonIdentityFields(prev));
+      setIdentificationOrigin('manual');
+      setRenaperStatus('PENDIENTE');
+      setRenaperResult(null);
+      setRenaperError('Con sexo X no se consulta la base. Completá los datos a mano; la carga queda pendiente de validación.');
+      showToast({ type: 'info', message: 'Con sexo X no se consulta la base. Completá los datos a mano; la carga queda pendiente de validación.' });
       goToAssignedStep(2);
       return;
     }
@@ -2197,7 +2299,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
           <View style={styles.formGroup}>
             <Text style={[styles.inputLabel, { color: theme.colors.text, fontFamily: typography.semibold }]}>Sexo DNI *</Text>
             <View style={[styles.sexSegmented, { backgroundColor: theme.colors.surfaceAlt, borderColor: theme.colors.border }]}>
-              {['F', 'M'].map((option) => {
+              {['F', 'M', 'X'].map((option) => {
                 const selected = dniForm.dni_sexo === option;
                 return (
                   <Pressable
@@ -2666,7 +2768,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     const formulariosCount = formularios.length ? formularios.filter((item) => item.estado !== 'DESCARTADO' || item.remote_formulario_id).length
       : Number(detail?.formularios_count || detail?.personas_count || 0);
     const cupoMaximo = Number(detail?.cupo_maximo || 0);
-    const cupoCompleto = cupoMaximo > 0 && formulariosCount >= cupoMaximo;
+    const cupoCompleto = calcularCupoCompleto(detail, formulariosCount, sinEnviarCount);
     const relevamientoEstado = String(detail?.estado || '').toUpperCase();
     const isWithinAssignedPeriod = isDateTimeActive(detail?.fecha_asignada, detail?.fecha_hasta, now);
     const isPaused = Boolean(detail?.pausado);
@@ -2763,7 +2865,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
                 </View>
               ) : null}
 
-              {relevamientoEstado === 'FINALIZADO' ? (
+              {puedeReabrir(detail, ahoraCorregido()) ? (
                 <TouchableOpacity
                   disabled={changingRelevamientoState}
                   onPress={confirmarReapertura}
@@ -2838,7 +2940,17 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
                         {operation.payload?.datos_identificacion?.dni ? `Caso DNI ${operation.payload.datos_identificacion.dni}` : 'Operación del relevamiento'}
                       </Text>
                       <Text accessibilityRole="alert" style={[styles.personMeta, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{operation.last_error}</Text>
+                      {Object.entries(operation.payload?.attachment_results || {}).map(([key, result]) => (
+                        <Text key={key} style={[styles.personMeta, { color: theme.colors.textSoft }]}>
+                          {result?.status === 'DISCARDED' ? 'Adjunto descartado' : 'Adjunto rechazado'}: {result?.message}
+                        </Text>
+                      ))}
                       <View style={styles.queueActions}>
+                        {Object.entries(operation.payload?.attachment_results || {})
+                          .filter(([, result]) => result?.status === 'REJECTED')
+                          .map(([key]) => (
+                            <CustomButton key={key} title="Volver a adjuntar" iconLeft="attach-outline" variant="secondary" onPress={() => pickReplacementAttachment(operation, key)} disabled={!!queueActionId} />
+                          ))}
                         {operation.last_error_code === 'ALTA_INVALIDA' && !operation.payload.remote_formulario_id ? (
                           <CustomButton title="Corregir" iconLeft="create-outline" variant="secondary" onPress={() => correctFailedCase(operation)} disabled={!!queueActionId} />
                         ) : null}
@@ -2847,6 +2959,31 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
                       </View>
                     </View>
                   ))}
+                </View>
+              ) : null}
+
+              {discardedOperations.length > 0 ? (
+                <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+                  <TouchableOpacity onPress={() => setDiscardedOpen((open) => !open)} style={styles.peopleHeaderRow}>
+                    <Text style={[styles.cardTitle, { color: theme.colors.text, fontFamily: typography.bold }]}>Descartadas ({discardedOperations.length})</Text>
+                    <Ionicons name={discardedOpen ? 'chevron-up' : 'chevron-down'} size={18} color={theme.colors.icon} />
+                  </TouchableOpacity>
+                  {discardedOpen ? discardedOperations.map((operation) => {
+                    const datos = operation.payload?.datos_identificacion || {};
+                    const nombre = `${datos.apellido || ''} ${datos.nombre || ''}`.trim();
+                    return (
+                      <View key={operation.local_id} style={styles.formGroup}>
+                        <Text style={[styles.personName, { color: theme.colors.text, fontFamily: typography.bold }]}>
+                          {nombre || (datos.dni ? `Caso DNI ${datos.dni}` : 'Operación del relevamiento')}
+                        </Text>
+                        {datos.dni ? <Text style={[styles.personMeta, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>DNI {datos.dni}</Text> : null}
+                        {operation.last_error ? <Text style={[styles.personMeta, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{operation.last_error}</Text> : null}
+                        <View style={styles.queueActions}>
+                          <CustomButton title="Restaurar" iconLeft="refresh-outline" variant="secondary" onPress={() => restoreDiscardedCase(operation)} disabled={!!queueActionId} />
+                        </View>
+                      </View>
+                    );
+                  }) : null}
                 </View>
               ) : null}
 

@@ -19,7 +19,7 @@ test('constructor order overrides catalogue orden and the former fixed scope ste
   assert.equal(evaluated.grupos.map(g => g.clave).join(','), 'g-global,g-segmento');
   assert.equal(evaluated.campos.map(f => f.clave).join(','), 'cp-otro,pg-1,rn-2');
   assert.equal(api.usaConstructor({globales: []}), false);
-  assert.equal(api.usaConstructor({items: []}), true);
+  assert.equal(api.usaConstructor({items: []}), false); // P9: items vacio cae al camino legacy
 });
 
 test('ordered texts, overridden labels and group subtitles are preserved', async () => {
@@ -87,14 +87,17 @@ test('hidden required attachment is neither required nor included in answers', a
   assert.equal(api.faltantesDelDiseno(result.campos, result.efectivas).length, 0);
 });
 
-test('link-only fields and empty groups disappear; unavailable condition sources are ignored', async () => {
+// Parity with condiciones.py: the server already nulls conditions on sources outside the
+// channel when it serves the definition (BEC-04); whatever still arrives is evaluated as is.
+test('link-only fields and empty groups disappear; a source missing from the definition evaluates as empty', async () => {
   const {definition: api} = await setup();
   const d = definition([group('g-link', [field('pg-1', {canal: 'link', obligatorio: true})]),
-    group('g-app', [field('cp-app', {condicion: {reglas: [{fuente: 'pg-1', op: 'es', valor: 'Sí'}]}})])]);
-  const result = api.evaluarDiseno(d, state(), capturedAt);
+    group('g-app', [field('cp-vacio', {condicion: {reglas: [{fuente: 'pg-1', op: 'vacio'}]}}),
+      field('cp-completo', {condicion: {reglas: [{fuente: 'pg-1', op: 'completo'}]}})])]);
+  const result = api.evaluarDiseno(d, state({'pg-1': 'Sí'}), capturedAt);
   assert.equal(result.grupos.length, 1);
   assert.equal(result.grupos[0].clave, 'g-app');
-  assert.equal(result.campos[0].clave, 'cp-app');
+  assert.equal(result.campos.map(f => f.clave).join(','), 'cp-vacio');
 });
 
 test('required numeric zero is valid, empty multiple choice and impossible dates are not', async () => {

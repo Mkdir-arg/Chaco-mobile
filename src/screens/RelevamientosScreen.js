@@ -36,6 +36,7 @@ const FILTER_OPTIONS = [
     { key: 'ASIGNADOS', label: 'Asignados' },
     { key: 'EN_CURSO', label: 'En curso' },
     { key: 'FINALIZADOS', label: 'Finalizados' },
+    { key: 'EN_REVISION', label: 'En revisión' },
     { key: 'SIN_SYNC', label: 'Sin sync' },
 ];
 
@@ -113,7 +114,7 @@ export default function RelevamientosScreen({ onOpenRelevamiento }) {
 
     const relevamientosDesdeHoy = useMemo(() => {
         return relevamientos
-            .filter((item) => isAssignmentVisible(item, now))
+            .filter((item) => isAssignmentVisible(item, now) || normalizeEstado(item.estado) === 'EN_REVISION')
             .sort((a, b) => (
                 new Date(a.fecha_asignada || a.created_at) - new Date(b.fecha_asignada || b.created_at)
             ));
@@ -129,6 +130,10 @@ export default function RelevamientosScreen({ onOpenRelevamiento }) {
         }
         if (statusFilter === 'FINALIZADOS') {
             return relevamientosDesdeHoy.filter((item) => DONE_STATES.includes(normalizeEstado(item.estado)));
+        }
+        // EN_REVISION tiene su propio filtro: no se mezcla con En curso ni con Finalizados.
+        if (statusFilter === 'EN_REVISION') {
+            return relevamientosDesdeHoy.filter((item) => normalizeEstado(item.estado) === 'EN_REVISION');
         }
         if (statusFilter === 'SIN_SYNC') {
             return relevamientosDesdeHoy.filter((item) => normalizeEstado(item.sync_estado) !== 'SINCRONIZADO');
@@ -327,7 +332,7 @@ function StatCard({ stat, typography }) {
 
 function RelevamientoRow({ item, now, index, total, formatDate, onOpenRelevamiento, typography }) {
     const isDone = DONE_STATES.includes(normalizeEstado(item.estado));
-    const closing = !item.pausado && !isDone ? closingSoonLabel(item.fecha_asignada, item.fecha_hasta, now) : '';
+    const closing = !item.pausado && !isDone && normalizeEstado(item.estado) !== 'EN_REVISION' ? closingSoonLabel(item.fecha_asignada, item.fecha_hasta, now) : '';
     const relevados = item.relevados ?? item.relevados_count ?? item.formularios_count ?? item.personas_count ?? 0;
 
     return (
@@ -356,7 +361,7 @@ function RelevamientoRow({ item, now, index, total, formatDate, onOpenRelevamien
             <View style={styles.rowGrid}>
                 <MetaCell
                     label="Segmento"
-                    value={valueOrDash(item.segmento || item.subsegmento)}
+                    value={valueOrDash(item.segmento || item.localidad || item.subsegmento)}
                     icon="layers-outline"
                     typography={typography}
                 />

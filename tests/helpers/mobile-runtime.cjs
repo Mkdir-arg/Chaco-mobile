@@ -24,8 +24,8 @@ async function setup(platform = 'android') {
   let fetchHandler = async () => response(401, {detail: 'Invalid token.'});
   let locationHandler = async () => ({coords: {latitude: -27.45, longitude: -58.98}});
   let currentTime = null;
-  let manipulateHandler = async (uri, actions, options) => ({uri: `file:///test/manip-${Date.now()}.jpg`, width: 2048, height: 1536, actions, options});
   let appVersion = '1.1.0';
+  let fileInfoHandler = async () => ({exists: true, size: 100});
   class ClockDate extends Date {
     constructor(...args) { super(...(args.length ? args : currentTime == null ? [] : [currentTime])); }
     static now() { return currentTime == null ? Date.now() : currentTime; }
@@ -47,11 +47,10 @@ async function setup(platform = 'android') {
     'react-native': {Platform: {OS: platform}},
     '../config/apiConfig': {API_CONFIG: {djangoBaseUrl: 'https://example.test'}},
     '@react-native-community/netinfo': {default: {fetch: async () => ({isConnected: online, isInternetReachable: online})}},
-    'expo-file-system/legacy': {documentDirectory: 'file:///test/', getInfoAsync: async () => ({exists: true, size: 100}), copyAsync: async () => {}, makeDirectoryAsync: async () => {}, EncodingType: {Base64: 'base64'}, readAsStringAsync: async () => 'aW1hZ2U='},
+    'expo-file-system/legacy': {documentDirectory: 'file:///test/', getInfoAsync: (...args) => fileInfoHandler(...args), copyAsync: async () => {}, makeDirectoryAsync: async () => {}, EncodingType: {Base64: 'base64'}, readAsStringAsync: async () => 'aW1hZ2U='},
     'expo-sqlite': {openDatabaseAsync: async () => db},
     'expo-location': {getCurrentPositionAsync: (...args) => locationHandler(...args)},
     'expo-crypto': {randomUUID: () => require('node:crypto').randomUUID()},
-    'expo-image-manipulator': {manipulateAsync: (...args) => manipulateHandler(...args), SaveFormat: {JPEG: 'jpeg', PNG: 'png'}},
     'expo-constants': {default: {get expoConfig() { return {version: appVersion}; }}},
   };
   const modules = new Map();
@@ -86,7 +85,7 @@ async function setup(platform = 'android') {
     .run(JSON.stringify({...campaign, fecha_asignada: start, fecha_hasta: end}));
   return {definition: load('./definicionFormulario'), attachments: load('./webAttachments'), images: load('./webImages'), location: load('./ubicacion'), conditions: load('./condiciones'), identity: load('./identityLookup'), api, service, dates: load('../utils/dates'), values, sql, setPeriod,
     setNow: value => {currentTime = new Date(value).getTime();}, setOnline: value => {online = value;}, setFetch: handler => {fetchHandler = handler;}, setLocation: handler => {locationHandler = handler;},
-    setManipulator: handler => {manipulateHandler = handler;}, setAppVersion: value => {appVersion = value;}, load};
+    setAppVersion: value => {appVersion = value;}, setFileInfo: handler => {fileInfoHandler = handler;}, load};
 }
 // `headers` permite simular `Date` o `Retry-After`; sin él solo responde content-type,
 // como antes (cualquier otro header devuelve null, igual que fetch).
