@@ -24,6 +24,8 @@ async function setup(platform = 'android') {
   let fetchHandler = async () => response(401, {detail: 'Invalid token.'});
   let locationHandler = async () => ({coords: {latitude: -27.45, longitude: -58.98}});
   let currentTime = null;
+  let manipulateHandler = async (uri, actions, options) => ({uri: `file:///test/manip-${Date.now()}.jpg`, width: 2048, height: 1536, actions, options});
+  let appVersion = '1.1.0';
   class ClockDate extends Date {
     constructor(...args) { super(...(args.length ? args : currentTime == null ? [] : [currentTime])); }
     static now() { return currentTime == null ? Date.now() : currentTime; }
@@ -48,6 +50,9 @@ async function setup(platform = 'android') {
     'expo-file-system/legacy': {documentDirectory: 'file:///test/', getInfoAsync: async () => ({exists: true, size: 100}), copyAsync: async () => {}, makeDirectoryAsync: async () => {}, EncodingType: {Base64: 'base64'}, readAsStringAsync: async () => 'aW1hZ2U='},
     'expo-sqlite': {openDatabaseAsync: async () => db},
     'expo-location': {getCurrentPositionAsync: (...args) => locationHandler(...args)},
+    'expo-crypto': {randomUUID: () => require('node:crypto').randomUUID()},
+    'expo-image-manipulator': {manipulateAsync: (...args) => manipulateHandler(...args), SaveFormat: {JPEG: 'jpeg', PNG: 'png'}},
+    'expo-constants': {default: {get expoConfig() { return {version: appVersion}; }}},
   };
   const modules = new Map();
   function load(name) {
@@ -80,10 +85,14 @@ async function setup(platform = 'android') {
   const setPeriod = (start, end) => sql.prepare("UPDATE local_relevamientos SET payload_json=? WHERE local_id='remote_django_becas_1'")
     .run(JSON.stringify({...campaign, fecha_asignada: start, fecha_hasta: end}));
   return {definition: load('./definicionFormulario'), attachments: load('./webAttachments'), images: load('./webImages'), location: load('./ubicacion'), conditions: load('./condiciones'), identity: load('./identityLookup'), api, service, dates: load('../utils/dates'), values, sql, setPeriod,
-    setNow: value => {currentTime = new Date(value).getTime();}, setOnline: value => {online = value;}, setFetch: handler => {fetchHandler = handler;}, setLocation: handler => {locationHandler = handler;}};
+    setNow: value => {currentTime = new Date(value).getTime();}, setOnline: value => {online = value;}, setFetch: handler => {fetchHandler = handler;}, setLocation: handler => {locationHandler = handler;},
+    setManipulator: handler => {manipulateHandler = handler;}, setAppVersion: value => {appVersion = value;}, load};
 }
-function response(status, payload) {
-  return {status, ok: status >= 200 && status < 300, headers: {get: () => 'application/json'}, text: async () => JSON.stringify(payload)};
+// `headers` permite simular `Date` o `Retry-After`; sin él solo responde content-type,
+// como antes (cualquier otro header devuelve null, igual que fetch).
+function response(status, payload, headers = {}) {
+  const all = Object.fromEntries(Object.entries({'content-type': 'application/json', ...headers}).map(([k, v]) => [k.toLowerCase(), v]));
+  return {status, ok: status >= 200 && status < 300, headers: {get: name => all[String(name).toLowerCase()] ?? null}, text: async () => JSON.stringify(payload)};
 }
 
 module.exports = {setup, response};
