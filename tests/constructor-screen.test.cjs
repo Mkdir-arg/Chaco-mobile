@@ -226,3 +226,36 @@ test('correction opens rejected email step and preserves captured identity and o
     assert.equal(payload.capturado_en, operation.payload.capturado_en);
   } finally { await ui.close(); }
 });
+
+
+test('DNI del apoderado: input numérico de 8 caracteres, error inline y bloqueo hasta corregir', async () => {
+  const ui = await mount([group('g-apoderado', 'Apoderado', [field('pg-9', 'DNI del apoderado', {origen: 'persona_vinculada', vinculo: 'dni'})])]);
+  try {
+    await ui.press('AGREGAR PERSONA'); await ui.identify();
+    const input = () => ui.tree.root.findAllByType('TextInput').find(n => n.props.accessibilityLabel === 'DNI del apoderado');
+    assert.equal(input().props.maxLength, 8);
+    assert.equal(input().props.inputMode, 'numeric');
+    await renderer.act(async () => input().props.onChangeText('343.333.333'));
+    assert.equal(input().props.value, '34333333');
+    await renderer.act(async () => input().props.onChangeText('343333333'));
+    assert.equal(input().props.value, '34333333');
+    await renderer.act(async () => input().props.onChangeText('3433'));
+    assert.ok(ui.labels().includes('Ingresá un DNI válido de 7 u 8 dígitos.'));
+    await ui.press('SIGUIENTE');
+    assert.ok(ui.alerts.some(args => args[0] === 'Revisá los datos' && args[1].includes('DNI del apoderado: Ingresá un DNI válido')));
+    await renderer.act(async () => input().props.onChangeText('34.333.333'));
+    await ui.press('SIGUIENTE'); await ui.press('CONFIRMAR CASO');
+    assert.equal(ui.submitted().apoderado_dni, '34333333');
+    assert.equal(ui.submitted().respuestas['pg-9'], '34333333');
+  } finally { await ui.close(); }
+});
+
+test('la tarjeta de envíos fallidos muestra cuándo fue el último intento', async () => {
+  const items = [group('g', 'G', [field('cp-1', 'Algo')])];
+  const operation = {local_id: 'x', last_error_code: 'ALTA_INVALIDA', last_error: 'apoderado_dni: DNI inválido',
+    updated_at: '2026-10-22T21:05:00Z', payload: {definicion_formulario: {items, version: 3, acepta_respuestas: true}}};
+  const ui = await mount(items, {failedOperation: operation});
+  try {
+    assert.ok(ui.labels().some(t => t.startsWith('Último intento: ') && /2026|22/.test(t)), ui.labels().join('|'));
+  } finally { await ui.close(); }
+});

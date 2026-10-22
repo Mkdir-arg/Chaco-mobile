@@ -113,6 +113,9 @@ export const evaluarDiseno = (definition, state, capturedAt) => {
 export const esCampoEmail = field => ['email', 'email_contacto'].includes(field.vinculo)
   || String(field.tipo || '').toUpperCase() === 'EMAIL';
 
+export const esCampoDniApoderado = field => field.origen === 'persona_vinculada' && field.vinculo === 'dni';
+export const soloDigitos = value => String(value ?? '').replace(/\D/g, '');
+
 export const errorDelCampo = (field, value) => {
   const tipo = String(field.tipo || '').toUpperCase();
   if (tipo === 'ARCHIVO') return field.requerido && !value?.uri && !value?.dataUri && !value?.archivo_adjunto
@@ -120,6 +123,9 @@ export const errorDelCampo = (field, value) => {
   if (estaVacio(value)) return field.requerido ? 'Este campo es obligatorio.' : '';
   if (esCampoEmail(field) && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value).trim())) {
     return 'Ingresá un correo electrónico válido, por ejemplo nombre@dominio.com.';
+  }
+  if (esCampoDniApoderado(field) && !/^\d{7,8}$/.test(soloDigitos(value))) {
+    return 'Ingresá un DNI válido de 7 u 8 dígitos.';
   }
   if (['INT', 'NUMERO'].includes(tipo) && !/^-?\d+$/.test(String(value).trim())) {
     return 'Ingresá un número entero, sin letras ni decimales.';
@@ -142,6 +148,15 @@ export const problemasDelDiseno = (fields, answers) => fields.flatMap(field => {
   return error ? [`${field.etiqueta}: ${error}`] : [];
 });
 
+// El back quita lo que no es dígito antes de validar; el DNI viaja ya limpio.
+const respuestasNormalizadas = (fields, answers) => {
+  const out = { ...answers };
+  for (const field of fields) {
+    if (esCampoDniApoderado(field) && Object.hasOwn(out, field.clave)) out[field.clave] = soloDigitos(out[field.clave]);
+  }
+  return out;
+};
+
 export const columnasLegacy = (fields, answers) => {
   const columns = {};
   for (const field of fields) {
@@ -158,6 +173,6 @@ export const columnasLegacy = (fields, answers) => {
 export const datosDelDiseno = (definition, design) => ({
   celular: '', email_contacto: '', apoderado_nombre: '', apoderado_apellido: '',
   apoderado_dni: '', apoderado_genero: '', apoderado_fecha_nacimiento: null,
-  ...columnasLegacy(design.campos, design.efectivas),
-  ...(definition.acepta_respuestas === true ? { respuestas: design.efectivas } : {}),
+  ...columnasLegacy(design.campos, respuestasNormalizadas(design.campos, design.efectivas)),
+  ...(definition.acepta_respuestas === true ? { respuestas: respuestasNormalizadas(design.campos, design.efectivas) } : {}),
 });

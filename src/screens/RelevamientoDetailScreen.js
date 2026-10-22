@@ -25,7 +25,7 @@ import WebDateInput from '../components/WebDateInput';
 import CameraModal from '../components/CameraModal';
 import CustomButton from '../components/CustomButton';
 import useAssignmentClock from '../hooks/useAssignmentClock';
-import { usaConstructor, gruposDelDiseno, camposDelDiseno, evaluarDiseno, problemasDelDiseno, errorDelCampo, esCampoEmail, vinculoDelCampo, valorDelCampo, esIdentidad, datosDelDiseno, cupoCompleto as calcularCupoCompleto, puedeReabrir, avisoDuplicado, consultaPadronPermitida, sinGpsObservado } from '../services/definicionFormulario';
+import { usaConstructor, gruposDelDiseno, camposDelDiseno, evaluarDiseno, problemasDelDiseno, errorDelCampo, esCampoEmail, esCampoDniApoderado, vinculoDelCampo, valorDelCampo, esIdentidad, datosDelDiseno, cupoCompleto as calcularCupoCompleto, puedeReabrir, avisoDuplicado, consultaPadronPermitida, sinGpsObservado } from '../services/definicionFormulario';
 import { ahoraCorregido } from '../services/reloj';
 import * as DocumentPicker from '../services/documentPicker';
 import relevamientoService, { validateFormularioAttachment } from '../services/relevamientoService';
@@ -36,6 +36,9 @@ import { formatDate as formatAppDate, isDateTimeActive, formatDateTimeRange, clo
 const formatDate = (isoDate) => {
   return formatAppDate(isoDate, { includeTime: true });
 };
+
+// Fecha del último intento de envío (updated_at se sella al fallar); vacío si la fila no la trae.
+const ultimoIntento = (operation) => (operation?.updated_at ? formatDate(operation.updated_at) : '');
 
 const relevamientoStatusLabel = (status) => relevamientoBadge(status).label;
 
@@ -1774,7 +1777,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
       const bound = usesConstructor ? vinculoDelCampo(field) : null;
       if (bound?.form === 'identidad') setDniForm(prev => ({ ...prev, [bound.key]: nextValue }));
       else if (bound?.form === 'contacto') setContactForm(prev => ({ ...prev, [bound.key]: nextValue }));
-      else if (bound?.form === 'apoderado') setApoderadoForm(prev => ({ ...prev, [bound.key]: nextValue }));
+      else if (bound?.form === 'apoderado') setApoderadoForm(prev => ({ ...prev, [bound.key]: esCampoDniApoderado(field) ? cleanDigits(nextValue).slice(0, 8) : nextValue }));
       else setDynamicValues(prev => ({ ...prev, [field.id]: nextValue }));
     };
     if (readOnly) return (
@@ -1794,6 +1797,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
     const tipo = String(field.tipo || '').toUpperCase();
     const isInteger = ['INT', 'NUMERO'].includes(tipo);
     const isEmail = esCampoEmail(field);
+    const isDni = esCampoDniApoderado(field);
     const fieldError = String(value ?? '').trim() ? errorDelCampo(field, value) : '';
     const isObservationField = /observaci[oó]n|observaciones/i.test(String(field.etiqueta || field.texto || ''));
 
@@ -1933,8 +1937,9 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
           value={String(value ?? '')}
           onChangeText={setValue}
           multiline={!isInteger && !isEmail && (tipo === 'TEXTAREA' || isObservationField)}
-          keyboardType={isEmail ? 'email-address' : isInteger ? 'numeric' : 'default'}
-          inputMode={isEmail ? 'email' : isInteger ? 'numeric' : 'text'}
+          maxLength={isDni ? 8 : undefined}
+          keyboardType={isEmail ? 'email-address' : isInteger || isDni ? 'numeric' : 'default'}
+          inputMode={isEmail ? 'email' : isInteger || isDni ? 'numeric' : 'text'}
           autoCapitalize={isEmail ? 'none' : 'sentences'}
           autoCorrect={!isEmail}
           accessibilityLabel={field.etiqueta || field.texto}
@@ -2940,6 +2945,9 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
                         {operation.payload?.datos_identificacion?.dni ? `Caso DNI ${operation.payload.datos_identificacion.dni}` : 'Operación del relevamiento'}
                       </Text>
                       <Text accessibilityRole="alert" style={[styles.personMeta, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{operation.last_error}</Text>
+                      {ultimoIntento(operation) ? (
+                        <Text style={[styles.personMeta, { color: theme.colors.textSoft }]}>Último intento: {ultimoIntento(operation)}</Text>
+                      ) : null}
                       {Object.entries(operation.payload?.attachment_results || {}).map(([key, result]) => (
                         <Text key={key} style={[styles.personMeta, { color: theme.colors.textSoft }]}>
                           {result?.status === 'DISCARDED' ? 'Adjunto descartado' : 'Adjunto rechazado'}: {result?.message}

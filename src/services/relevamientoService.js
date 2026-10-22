@@ -280,6 +280,7 @@ const mapOutboxRow = (row = {}) => ({
   next_retry_at: row.next_retry_at || null,
   last_error: row.last_error || null,
   last_error_code: row.last_error_code || null,
+  updated_at: row.updated_at || null,
 });
 
 const migrateAsyncStorageToSqliteIfNeeded = async (db) => {

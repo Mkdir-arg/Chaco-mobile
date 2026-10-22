@@ -236,3 +236,32 @@ test('linked email is validated before sync while plain text remains unrestricte
   for (const value of ['', 'qa@example.com', 'qa+test@sub.example.com']) assert.equal(r.definition.errorDelCampo(f, value), '');
   assert.equal(r.definition.errorDelCampo({tipo: 'STRING'}, 'cualquier texto'), '');
 });
+
+
+test('DNI del apoderado: 7 u 8 dígitos tras quitar lo que no es dígito, vacío y oculto no se validan', async () => {
+  const {definition: api} = await setup();
+  const dni = field('pg-9', {origen: 'persona_vinculada', vinculo: 'dni', texto: 'DNI del apoderado'});
+  const campo = {...dni, etiqueta: dni.texto};
+  assert.match(api.errorDelCampo(campo, '343333333'), /DNI válido de 7 u 8 dígitos/);
+  assert.match(api.problemasDelDiseno([campo], {'pg-9': '343333333'})[0], /DNI del apoderado: Ingresá un DNI válido/);
+  for (const ok of ['34333333', '3433333', '34.333.333', '']) assert.equal(api.errorDelCampo(campo, ok), '');
+  assert.match(api.errorDelCampo(campo, '123456'), /DNI válido/);
+  // Otro vínculo de la persona vinculada no se ve afectado.
+  assert.equal(api.errorDelCampo({...campo, vinculo: 'nombre'}, '343333333'), '');
+  // Oculto por condición: el motor lo saca de efectivas y de los campos evaluados.
+  const d = definition([group('g', [field('pg-1'),
+    {...dni, condicion: {reglas: [{fuente: 'pg-1', op: 'es', valor: 'Sí'}]}}])]);
+  const oculto = api.evaluarDiseno(d, state({'pg-1': 'No'}, {apoderado: {dni: '343333333'}}), capturedAt);
+  assert.deepEqual(api.problemasDelDiseno(oculto.campos, oculto.efectivas), []);
+  const visible = api.evaluarDiseno(d, state({'pg-1': 'Sí'}, {apoderado: {dni: '343333333'}}), capturedAt);
+  assert.equal(api.problemasDelDiseno(visible.campos, visible.efectivas).length, 1);
+});
+
+test('DNI del apoderado viaja solo con dígitos en apoderado_dni y en respuestas', async () => {
+  const {definition: api} = await setup();
+  const d = definition([group('g', [field('pg-9', {origen: 'persona_vinculada', vinculo: 'dni'})])]);
+  const result = api.evaluarDiseno(d, state({}, {apoderado: {dni: '34.333.333'}}), capturedAt);
+  const datos = api.datosDelDiseno(d, result);
+  assert.equal(datos.apoderado_dni, '34333333');
+  assert.equal(datos.respuestas['pg-9'], '34333333');
+});
