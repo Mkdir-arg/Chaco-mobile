@@ -19,6 +19,7 @@ import PwaInstallGuide from '../components/PwaInstallGuide';
 import AuthVisualBackground from '../components/AuthVisualBackground';
 import { designColors, fontSizes, radii } from '../theme';
 import { API_CONFIG } from '../config/apiConfig';
+import { versionActual } from '../services/versionApp';
 
 export default function LoginScreen({ onNavigateToRegister }) {
   const { theme, typography, branding } = useTheme();
@@ -213,7 +214,7 @@ export default function LoginScreen({ onNavigateToRegister }) {
 
             <View style={styles.footerContainer}>
               <Text style={[styles.footerText, { fontFamily: typography.bold, color: theme.colors.textMuted }]}>
-                ICORE 2026
+                {versionActual() ? `ICORE 2026 · v${versionActual()}` : 'ICORE 2026'}
               </Text>
             </View>
         </ScrollView>
