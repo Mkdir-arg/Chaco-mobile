@@ -26,6 +26,7 @@ import { requiereActualizacionGuardada, versionActual } from './src/services/ver
 import { getStoredBecasUser } from './src/services/becasApi';
 import { evaluarBloqueoVersion } from './src/navigation/bloqueoVersion';
 import ActualizarAppScreen from './src/components/ActualizarAppScreen';
+import { resumenSyncManual } from './src/utils/syncManual';
 
 let hasBootstrappedOnce = false;
 const NEW_RELEVAMIENTO_STATES = ['ASIGNADO'];
@@ -265,31 +266,8 @@ function AppContent() {
 
       await refreshSyncStatus();
 
-      const synced = relevamientoResult?.synced || 0;
-      const failed = relevamientoResult?.failed || 0;
-      const firstRelevamientoError = relevamientoResult?.errors?.[0]?.message;
-
-      const waiting = relevamientoResult?.waiting || 0;
-      const waitingReason = relevamientoResult?.waitingReason;
-      const lineaEspera = waiting > 0 ? `\nEn espera: ${waiting}${waitingReason ? ` (${waitingReason})` : ''}` : '';
-
-      if (failed > 0) {
-        Alert.alert(
-          'Sincronizacion parcial',
-          `Sincronizados: ${synced}\nFallidos: ${failed}${firstRelevamientoError ? `\nDetalle: ${firstRelevamientoError}` : ''}${lineaEspera}`
-        );
-      } else if (synced > 0) {
-        Alert.alert('Sincronizacion completa', `Sincronizados: ${synced}${lineaEspera}`);
-      } else if (waiting > 0 && !relevamientoResult?.offline) {
-        Alert.alert(
-          'Sincronizacion',
-          `Quedan ${waiting} en espera${waitingReason ? `: ${waitingReason}` : ''}. Se reintentan solas cada 5 minutos.`
-        );
-      } else if (relevamientoResult?.offline) {
-        Alert.alert('Sin conexion', 'Adjuntos pendientes. Se reintentara automaticamente al recuperar internet.');
-      } else {
-        Alert.alert('Sincronizacion', 'No habia elementos pendientes.');
-      }
+      const { title, message } = resumenSyncManual(relevamientoResult);
+      Alert.alert(title, message);
     } catch (error) {
       setSyncStatus('pending');
       Alert.alert('Sincronizacion', error?.message || 'No se pudo sincronizar.');

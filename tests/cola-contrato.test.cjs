@@ -685,3 +685,37 @@ test('manual: con la cola vacía waiting es 0 y sin motivo; la carga de otro usu
   result = await r.service.retryFailedOperations();
   assert.equal(result.waiting, 0); assert.equal(result.waitingReason, null);
 });
+
+// E1: una carga PENDING detrás de otra operación del mismo relevamiento da su motivo.
+test('manual: un finalizar detrás de un alta que no subió da el motivo de la dependencia', async () => {
+  const r = await setup(); r.setNow(T0);
+  await enqueue(r, {}, 'insert_relevamiento', 'alta');
+  r.sql.prepare("UPDATE outbox_relevamientos SET status='FAILED_PERMANENT', last_error_code='ALTA_INVALIDA', last_error='x' WHERE local_id='alta'").run();
+  await enqueue(r, {client_uuid: '22222222-2222-4222-a222-222222222222'}, 'finalizar_relevamiento', 'fin');
+  const c = contador(r);
+  const result = await r.service.retryFailedOperations();
+  assert.equal(c.n, 0);
+  assert.equal(row(r, 'fin').status, 'PENDING');
+  assert.equal(result.waiting, 1);
+  assert.equal(result.waitingReason, 'esperando que suba primero otra operación del mismo relevamiento');
+});
+
+test('manual: un alta detrás de un iniciar que no subió da el motivo de la dependencia', async () => {
+  const r = await setup(); r.setNow(T0);
+  await enqueue(r, {client_uuid: '33333333-3333-4333-a333-333333333333'}, 'iniciar_relevamiento', 'ini');
+  r.sql.prepare("UPDATE outbox_relevamientos SET status='FAILED_PERMANENT', last_error_code='ALTA_INVALIDA', last_error='x' WHERE local_id='ini'").run();
+  await enqueue(r, {}, 'insert_relevamiento', 'alta');
+  const result = await r.service.retryFailedOperations();
+  assert.equal(row(r, 'alta').status, 'PENDING');
+  assert.equal(result.waiting, 1);
+  assert.equal(result.waitingReason, 'esperando que suba primero otra operación del mismo relevamiento');
+});
+
+test('manual: una carga sin dependencia ni error no inventa un motivo', async () => {
+  const r = await setup(); r.setNow(T0);
+  await enqueue(r, {}, 'insert_relevamiento', 'sola');
+  r.setFetch(async () => response(200, {id: 55}));
+  const result = await r.service.retryFailedOperations();
+  assert.equal(result.waiting, 0);
+  assert.equal(result.waitingReason, null);
+});

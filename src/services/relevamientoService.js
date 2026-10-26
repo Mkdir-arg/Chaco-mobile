@@ -2152,14 +2152,21 @@ const relevamientoService = {
       .map(mapOutboxRow).filter((op) => belongsToOwner(op, ownerId));
     const motivos = {};
     for (const op of quedan) {
+      const relevamientoId = op.payload?.relevamiento_id;
+      // Sin error propio, una carga PENDING que no sale espera a otra operación del mismo
+      // relevamiento (el finalizar al alta, el alta al iniciar): es lo que frena la pasada.
+      const dependencia = !op.last_error && (
+        (op.type === 'finalizar_relevamiento' && await hasPendingFormularioOperations(relevamientoId))
+        || (op.type === 'insert_relevamiento' && await hasBlockingStartOperation(relevamientoId)));
       const clave = op.last_error_code === ERROR_RELEVAMIENTO_PAUSADO ? 'pausado'
         : op.last_error_code === ERROR_RATE_LIMITED ? 'limite'
-        : op.last_error ? 'red' : null;
+        : op.last_error ? 'red' : (dependencia ? 'dependencia' : null);
       if (clave) motivos[clave] = (motivos[clave] || 0) + 1;
     }
     const principal = Object.keys(motivos).sort((x, y) => motivos[y] - motivos[x])[0];
     const waitingReason = { pausado: 'el relevamiento está pausado', limite: 'el servidor pidió esperar',
-      red: 'el servidor no respondió' }[principal] || null;
+      red: 'el servidor no respondió',
+      dependencia: 'esperando que suba primero otra operación del mismo relevamiento' }[principal] || null;
     return { ...result, waiting: quedan.length, waitingReason, failed: Math.max(result.failed, unresolved.length), errors: [
       ...(result.errors || []),
       ...unresolved.filter((item) => !reported.has(item.local_id)).map((item) => ({
