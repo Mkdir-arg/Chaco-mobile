@@ -10,6 +10,7 @@ import { Platform } from 'react-native';
 import { becasRequest, becasUploadFile, getBecasToken, getStoredBecasUser } from './becasApi';
 import { ahoraCorregido } from './reloj';
 import { isDateTimeActive } from '../utils/dates';
+import { crearTablasAvisos } from './avisos';
 import { GRACE_EXPIRED, INVALID_SUBMISSION, REJECTED_ATTACHMENTS, isGraceExpired, validateAttachmentMetadata } from './formularioSync';
 
 const LOCAL_RELEVAMIENTOS_KEY = 'field_relevamientos_records';
@@ -1901,6 +1902,30 @@ const relevamientoService = {
       .map((row) => ({ payload: safeParse(row.payload_json, {}) }))
       .filter((record) => belongsToOwner(record, ownerId))
       .length;
+  },
+
+  // Avisos: misma base que la cola, con sus propias tablas (creación idempotente).
+  async getAvisosDb() {
+    await ensureSqliteReady();
+    const db = await getSqliteDb();
+    await crearTablasAvisos(db);
+    return db;
+  },
+
+  async getOwnerIdActual() {
+    return getCurrentOwnerId();
+  },
+
+  // Cola del usuario de la sesión que interesa a los avisos: cargas pendientes y las que
+  // requieren atención. Solo lectura.
+  async getOperacionesParaAvisos() {
+    await ensureSqliteReady();
+    const db = await getSqliteDb();
+    const rows = await db.getAllAsync(
+      `SELECT * FROM ${SQLITE_OUTBOX_TABLE} WHERE status IN ('PENDING', 'FAILED_PERMANENT') ORDER BY created_at`
+    );
+    const ownerId = await getCurrentOwnerId();
+    return rows.map(mapOutboxRow).filter((op) => belongsToOwner(op, ownerId));
   },
 
   async getFailedOperations(relevamientoId) {

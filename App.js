@@ -15,6 +15,8 @@ import HomeScreen from './src/screens/HomeScreen';
 import Banner from './src/components/Banner';
 import BottomNav from './src/components/BottomNav';
 import SettingsPanel from './src/components/SettingsPanel';
+import AvisosBandeja from './src/components/AvisosBandeja';
+import useAvisos from './src/hooks/useAvisos';
 import PageTransition from './src/components/PageTransition';
 import SkeletonLoader from './src/components/SkeletonLoader';
 import RelevamientosScreen from './src/screens/RelevamientosScreen';
@@ -30,7 +32,7 @@ const NEW_RELEVAMIENTO_STATES = ['ASIGNADO'];
 
 function AppContent() {
   const { theme, isDark } = useTheme();
-  const { showAlert } = useToast();
+  const { showAlert, showToast } = useToast();
   const Alert = { alert: showAlert };
   const { user, isAuthenticated, loading: authLoading, logout } = useAuth();
   const displayName = user?.username || user?.nombre || 'Usuario';
@@ -48,6 +50,19 @@ function AppContent() {
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [selectedRelevamientoId, setSelectedRelevamientoId] = useState(null);
   const [bloqueoVersion, setBloqueoVersion] = useState(null);
+  const [avisosVisible, setAvisosVisible] = useState(false);
+
+  // Avisos dentro de la app: un toast cuando entra uno nuevo con la app abierta.
+  const avisos = useAvisos({
+    activo: isAuthenticated,
+    userId: user?.id,
+    onNuevos: (creados) => showToast({
+      type: 'info',
+      title: creados.length === 1 ? creados[0].titulo : `Tenés ${creados.length} avisos nuevos`,
+      message: creados.length === 1 ? creados[0].texto : 'Abrí Notificaciones para verlos.',
+      duration: 6000,
+    }),
+  });
 
   const [syncStatus, setSyncStatus] = useState('synced');
   const [syncPendingCount, setSyncPendingCount] = useState(0);
@@ -67,6 +82,8 @@ function AppContent() {
     } finally {
       syncInProgressRef.current = false;
       await refreshSyncStatus();
+      // Sin await: los avisos nunca demoran ni cortan la sincronización.
+      avisos.alSincronizar();
     }
   };
 
@@ -79,6 +96,7 @@ function AppContent() {
   const refreshNewRelevamientosCount = async () => {
     try {
       const result = await relevamientoService.getRelevamientos({ refreshFromRemote: true });
+      avisos.alRefrescarRelevamientos(result);
       setAssignedRelevamientos(result.records || []);
       const nextCount = (result.records || []).filter((item) =>
         NEW_RELEVAMIENTO_STATES.includes(String(item.estado || '').toUpperCase())
@@ -227,6 +245,15 @@ function AppContent() {
     }
   };
 
+  const abrirAviso = async (aviso) => {
+    await avisos.leer(aviso);
+    setAvisosVisible(false);
+    if (aviso.relevamiento_id) {
+      const id = String(aviso.relevamiento_id);
+      setSelectedRelevamientoId(/^d+$/.test(id) ? Number(id) : id);
+    }
+  };
+
   const handleManualSync = async () => {
     if (!isAuthenticated) return;
     if (syncInProgressRef.current) return;
@@ -269,6 +296,7 @@ function AppContent() {
     } finally {
       syncInProgressRef.current = false;
       await refreshSyncStatus();
+      avisos.alSincronizar();
     }
   };
 
@@ -331,6 +359,7 @@ function AppContent() {
                 onTabPress={handleTabPress}
                 onOpenSettings={() => setSettingsVisible(true)}
                 pendingCount={newRelevamientosCount}
+                avisosCount={avisos.noLeidos}
               />
             </>
           )}
@@ -341,12 +370,26 @@ function AppContent() {
       <SettingsPanel
         visible={!!settingsVisible}
         onClose={() => setSettingsVisible(false)}
+        avisosNoLeidos={avisos.noLeidos}
+        onOpenAvisos={() => {
+          setSettingsVisible(false);
+          setAvisosVisible(true);
+        }}
         onLogout={() => {
           setSettingsVisible(false);
+          setAvisosVisible(false);
           logout();
           setActiveTab('Inicio');
           setSelectedRelevamientoId(null);
         }}
+      />
+      <AvisosBandeja
+        visible={isAuthenticated && avisosVisible}
+        avisos={avisos.avisos}
+        noLeidos={avisos.noLeidos}
+        onClose={() => setAvisosVisible(false)}
+        onPressAviso={abrirAviso}
+        onMarcarTodo={avisos.leerTodo}
       />
     </View>
   );
