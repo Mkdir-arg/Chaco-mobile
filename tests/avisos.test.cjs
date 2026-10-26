@@ -418,3 +418,38 @@ test('la cola para avisos trae solo las columnas necesarias, sin el payload', as
   assert.equal(op.status, 'PENDING');
   assert.equal(op.local_id, 'grande');
 });
+
+test('retención: la purga no guarda las claves de antigüedad de la cola, que no se repiten, y sí las demás', async () => {
+  const e = await entorno();
+  const hace = dias => Date.parse(AHORA) - dias * DIA;
+  await e.avisos.crearAviso(e.db, '7', {tipo: 'cargas_sin_subir', clave: 'cola:antiguedad:1700000000000', titulo: 'a'}, hace(40));
+  await e.avisos.crearAviso(e.db, '7', {tipo: 'carga_atencion', clave: 'cola:loc-1', titulo: 'b'}, hace(40));
+  await e.avisos.crearAviso(e.db, '7', {tipo: 'caso_rechazado', clave: 'rech:9', titulo: 'c'}, hace(40));
+  await e.avisos.purgarAvisosViejos(e.db, Date.parse(AHORA));
+  assert.equal((await e.avisos.listarAvisos(e.db, '7')).length, 0);
+  const claves = e.t.sql.prepare('SELECT clave FROM avisos_purgados WHERE owner = ?').all('7').map(fila => fila.clave).sort();
+  assert.deepEqual(claves, ['cola:loc-1', 'rech:9']);
+  assert.equal(await e.avisos.crearAviso(e.db, '7', {tipo: 'x', clave: 'cola:loc-1', titulo: 'b'}, Date.parse(AHORA)), false);
+});
+
+test('rechazos: una consulta que no responde a tiempo se aborta, no avisa ni asienta línea de base y la pasada sigue', async () => {
+  const e = await entorno();
+  await e.detectores.detectarRelevamientosNuevos(e.ctx(), [rel(1), rel(2)]);
+  e.responder({[ruta(1)]: [], [ruta(2)]: []});
+  await e.detectores.detectarRechazos(e.ctx(), [rel(1), rel(2)]); // línea de base de los dos
+  e.t.sql.prepare("DELETE FROM avisos_estado WHERE clave = 'base_rechazos:1'").run();
+  let senal;
+  const colgada = e.ctx({timeoutMs: 20, pedir: (rutaPedida, opciones = {}) => {
+    if (rutaPedida !== ruta(1)) return Promise.resolve([rechazado(55)]);
+    senal = opciones.signal;
+    return new Promise(() => {});
+  }});
+  const creados = await e.detectores.detectarRechazos(colgada, [rel(1), rel(2)]);
+  assert.ok(senal && senal.aborted);
+  assert.deepEqual(Array.from(creados, aviso => aviso.clave), ['rech:55']);
+  assert.equal(e.t.sql.prepare("SELECT valor FROM avisos_estado WHERE clave = 'base_rechazos:1'").get(), undefined);
+  assert.equal(e.t.sql.prepare("SELECT COUNT(*) AS n FROM avisos_rechazos_conocidos WHERE relevamiento_id = '1'").get().n, 0);
+  // Con respuesta, esa primera vez es línea de base: lo existente no avisa.
+  e.responder({[ruta(1)]: [rechazado(70)], [ruta(2)]: [rechazado(55)]});
+  assert.equal((await e.detectores.detectarRechazos(e.ctx(), [rel(1), rel(2)])).length, 0);
+});

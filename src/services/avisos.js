@@ -111,11 +111,16 @@ export const marcarTodoLeido = async (db, owner, ahora = ahoraMs()) => {
 
 // Menos datos personales en el teléfono: los avisos con más de 30 días se borran, leídos
 // o no y de todos los dueños (no solo el de la sesión). Queda la clave, sin datos, para que
-// el mismo hecho no reaparezca como aviso nuevo.
+// el mismo hecho no reaparezca como aviso nuevo. Los avisos por antigüedad de la cola
+// (`cola:antiguedad:<ts>`) no guardan clave: el <ts> no se repite, así que no hace falta
+// y la tabla no crece sin límite.
+export const CLAVE_ANTIGUEDAD_COLA = 'cola:antiguedad:';
 export const purgarAvisosViejos = async (db, ahora = ahoraMs()) => {
   const limite = iso(ahora - RETENCION_MS);
   await db.runAsync(
-    'INSERT OR IGNORE INTO avisos_purgados (owner, clave) SELECT owner, clave FROM avisos WHERE creado_en < ?', limite
+    `INSERT OR IGNORE INTO avisos_purgados (owner, clave)
+     SELECT owner, clave FROM avisos WHERE creado_en < ? AND substr(clave, 1, ?) <> ?`,
+    limite, CLAVE_ANTIGUEDAD_COLA.length, CLAVE_ANTIGUEDAD_COLA
   );
   await db.runAsync('DELETE FROM avisos WHERE creado_en < ?', limite);
 };

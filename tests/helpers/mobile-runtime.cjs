@@ -33,7 +33,7 @@ async function setup(platform = 'android') {
   }
   const context = vm.createContext({
     Date: ClockDate,
-    console: { log() {}, warn() {} }, setTimeout, clearTimeout,
+    console: { log() {}, warn() {} }, setTimeout, clearTimeout, AbortController,
     // En web, igual que el navegador bajo la CSP de ECOM (`connect-src` sin blob: ni
     // data:): un fetch a una URL local se rechaza. Antes este mock la aceptaba y los
     // tests pasaban mientras cada adjunto real moria en el navegador.

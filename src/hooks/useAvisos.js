@@ -35,7 +35,7 @@ export default function useAvisos({ activo, userId, onNuevos }) {
     if (!owner || !token) return null;
     // Dueño y token quedan fijos al empezar la pasada: si la sesión cambia a mitad, se aborta.
     const sesionVigente = async () => (await relevamientoService.getOwnerIdActual()) === owner && (await getBecasToken()) === token;
-    const pedir = (ruta) => becasRequest(ruta, { headers: { Authorization: `Token ${token}` } });
+    const pedir = (ruta, opciones = {}) => becasRequest(ruta, { ...opciones, headers: { Authorization: `Token ${token}` } });
     return { db, owner, pedir, hayRed, sesionVigente };
   }, []);
 
@@ -70,18 +70,18 @@ export default function useAvisos({ activo, userId, onNuevos }) {
       const ctx = await contexto();
       if (!ctx) return;
       const records = resultado.records || [];
-      const creados = [...await detectarRelevamientosNuevos(ctx, records)];
+      // Los relevamientos nuevos se publican ya, sin esperar a la pasada de rechazos.
+      await publicar(ctx, await detectarRelevamientosNuevos(ctx, records));
       const ahora = Date.now();
       if (ahora - ultimaRechazosRef.current >= CADA_15_MIN_MS && !rechazosEnCursoRef.current && await hayRed()) {
         rechazosEnCursoRef.current = true;
         ultimaRechazosRef.current = ahora;
-        try {
-          creados.push(...await detectarRechazos(ctx, records));
-        } finally {
-          rechazosEnCursoRef.current = false;
-        }
+        // Su propio ciclo: no se espera, así una pasada lenta o colgada no demora nada más.
+        detectarRechazos(ctx, records)
+          .then((creados) => publicar(ctx, creados))
+          .catch((error) => console.warn('[AVISOS][RECHAZOS]', error?.message))
+          .finally(() => { rechazosEnCursoRef.current = false; });
       }
-      await publicar(ctx, creados);
     } catch (error) {
       console.warn('[AVISOS][RELEVAMIENTOS]', error?.message);
     }

@@ -1608,7 +1608,6 @@ const fetchRemoteRecordsDetallado = async () => {
   const rows = Array.isArray(payload?.results) ? payload.results : (Array.isArray(payload) ? payload : []);
   return { records: rows.map(mapDjangoRelevamiento), bienFormado };
 };
-const fetchRemoteRecords = async () => (await fetchRemoteRecordsDetallado()).records;
 
 const isLocalId = (id) => String(id || '').startsWith('local_rel_');
 
