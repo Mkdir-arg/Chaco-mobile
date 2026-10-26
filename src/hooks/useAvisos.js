@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import NetInfo from '@react-native-community/netinfo';
 import relevamientoService from '../services/relevamientoService';
-import { becasRequest } from '../services/becasApi';
+import { becasRequest, getBecasToken } from '../services/becasApi';
 import {
-  contarNoLeidos, listarAvisos, marcarLeido, marcarTodoLeido, purgarLeidosViejos,
+  contarNoLeidos, listarAvisos, marcarLeido, marcarTodoLeido, purgarAvisosViejos,
 } from '../services/avisos';
-import { detectarCola, detectarRechazos, detectarRelevamientosNuevos } from '../services/detectoresAvisos';
+import { avisarSiVigente, detectarCola, detectarRechazos, detectarRelevamientosNuevos } from '../services/detectoresAvisos';
 
 const CADA_15_MIN_MS = 15 * 60 * 1000;
 
@@ -29,15 +29,21 @@ export default function useAvisos({ activo, userId, onNuevos }) {
   onNuevosRef.current = onNuevos;
 
   const contexto = useCallback(async () => {
-    const [db, owner] = await Promise.all([relevamientoService.getAvisosDb(), relevamientoService.getOwnerIdActual()]);
-    return owner ? { db, owner, pedir: becasRequest, hayRed } : null;
+    const [db, owner, token] = await Promise.all([
+      relevamientoService.getAvisosDb(), relevamientoService.getOwnerIdActual(), getBecasToken(),
+    ]);
+    if (!owner || !token) return null;
+    // Dueño y token quedan fijos al empezar la pasada: si la sesión cambia a mitad, se aborta.
+    const sesionVigente = async () => (await relevamientoService.getOwnerIdActual()) === owner && (await getBecasToken()) === token;
+    const pedir = (ruta) => becasRequest(ruta, { headers: { Authorization: `Token ${token}` } });
+    return { db, owner, pedir, hayRed, sesionVigente };
   }, []);
 
   const recargar = useCallback(async () => {
     try {
       const ctx = await contexto();
       if (!ctx) { setAvisos([]); setNoLeidos(0); return; }
-      await purgarLeidosViejos(ctx.db, ctx.owner);
+      await purgarAvisosViejos(ctx.db);
       setAvisos(await listarAvisos(ctx.db, ctx.owner));
       setNoLeidos(await contarNoLeidos(ctx.db, ctx.owner));
     } catch (error) {
@@ -45,11 +51,12 @@ export default function useAvisos({ activo, userId, onNuevos }) {
     }
   }, [contexto]);
 
-  const publicar = useCallback(async (creados) => {
+  const publicar = useCallback(async (ctx, creados) => {
     if (!creados.length) return;
     await recargar();
     try {
-      onNuevosRef.current?.(creados);
+      // Nunca un toast cuyo dueño no sea el usuario actual.
+      await avisarSiVigente(ctx, creados, (nuevos) => onNuevosRef.current?.(nuevos));
     } catch {
       // El toast es accesorio.
     }
@@ -59,7 +66,7 @@ export default function useAvisos({ activo, userId, onNuevos }) {
   // frescos del servidor: un listado en caché no es base confiable.
   const alRefrescarRelevamientos = useCallback(async (resultado) => {
     try {
-      if (!resultado || resultado.success === false || resultado.offline) return;
+      if (!resultado || resultado.success === false || resultado.offline || resultado.remoto_bien_formado !== true) return;
       const ctx = await contexto();
       if (!ctx) return;
       const records = resultado.records || [];
@@ -74,7 +81,7 @@ export default function useAvisos({ activo, userId, onNuevos }) {
           rechazosEnCursoRef.current = false;
         }
       }
-      await publicar(creados);
+      await publicar(ctx, creados);
     } catch (error) {
       console.warn('[AVISOS][RELEVAMIENTOS]', error?.message);
     }
@@ -86,7 +93,7 @@ export default function useAvisos({ activo, userId, onNuevos }) {
       const ctx = await contexto();
       if (!ctx) return;
       const operaciones = await relevamientoService.getOperacionesParaAvisos();
-      await publicar(await detectarCola(ctx, operaciones));
+      await publicar(ctx, await detectarCola(ctx, operaciones));
     } catch (error) {
       console.warn('[AVISOS][COLA]', error?.message);
     }
@@ -120,5 +127,5 @@ export default function useAvisos({ activo, userId, onNuevos }) {
     recargar();
   }, [activo, userId, recargar]);
 
-  return { avisos, noLeidos, recargar, alRefrescarRelevamientos, alSincronizar, leer, leerTodo };
+  return { avisos, noLeidos, alRefrescarRelevamientos, alSincronizar, leer, leerTodo };
 }

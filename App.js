@@ -250,7 +250,7 @@ function AppContent() {
     setAvisosVisible(false);
     if (aviso.relevamiento_id) {
       const id = String(aviso.relevamiento_id);
-      setSelectedRelevamientoId(/^d+$/.test(id) ? Number(id) : id);
+      setSelectedRelevamientoId(/^\d+$/.test(id) ? Number(id) : id);
     }
   };
 

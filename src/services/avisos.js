@@ -3,7 +3,7 @@
 // no toca `outbox_relevamientos` ni `local_relevamientos`. Todo se guarda por dueño
 // (mismo criterio que la cola) y la clave de cada aviso es UNIQUE por dueño.
 
-export const RETENCION_LEIDOS_MS = 30 * 24 * 60 * 60 * 1000;
+export const RETENCION_MS = 30 * 24 * 60 * 60 * 1000;
 
 const ahoraMs = () => Date.now();
 const iso = (ms) => new Date(ms).toISOString();
@@ -37,6 +37,11 @@ export const crearTablasAvisos = async (db) => {
       relevamiento_id TEXT,
       PRIMARY KEY (owner, formulario_id)
     );
+    CREATE TABLE IF NOT EXISTS avisos_purgados (
+      owner TEXT NOT NULL,
+      clave TEXT NOT NULL,
+      PRIMARY KEY (owner, clave)
+    );
     CREATE TABLE IF NOT EXISTS avisos_estado (
       owner TEXT NOT NULL,
       clave TEXT NOT NULL,
@@ -63,12 +68,15 @@ export const guardarEstado = async (db, owner, clave, valor) => {
 export const crearAviso = async (db, owner, aviso, ahora = ahoraMs()) => {
   if (!owner || !aviso?.clave) return false;
   const resultado = await db.runAsync(
+    // Un aviso ya purgado por antigüedad no vuelve a crearse (queda su clave sin datos).
     `INSERT OR IGNORE INTO avisos (owner, tipo, clave, relevamiento_id, formulario_id, titulo, texto, creado_en)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?
+     WHERE NOT EXISTS (SELECT 1 FROM avisos_purgados WHERE owner = ? AND clave = ?)`,
     String(owner), aviso.tipo, aviso.clave,
     aviso.relevamiento_id == null ? null : String(aviso.relevamiento_id),
     aviso.formulario_id == null ? null : String(aviso.formulario_id),
-    aviso.titulo, aviso.texto || '', iso(ahora)
+    aviso.titulo, aviso.texto || '', iso(ahora),
+    String(owner), aviso.clave
   );
   return Number(resultado?.changes || 0) > 0;
 };
@@ -101,13 +109,15 @@ export const marcarTodoLeido = async (db, owner, ahora = ahoraMs()) => {
   await db.runAsync('UPDATE avisos SET leido_en = ? WHERE owner = ? AND leido_en IS NULL', iso(ahora), String(owner));
 };
 
-// Los leídos con más de 30 días se borran solos; los no leídos se quedan.
-export const purgarLeidosViejos = async (db, owner, ahora = ahoraMs()) => {
-  if (!owner) return;
+// Menos datos personales en el teléfono: los avisos con más de 30 días se borran, leídos
+// o no y de todos los dueños (no solo el de la sesión). Queda la clave, sin datos, para que
+// el mismo hecho no reaparezca como aviso nuevo.
+export const purgarAvisosViejos = async (db, ahora = ahoraMs()) => {
+  const limite = iso(ahora - RETENCION_MS);
   await db.runAsync(
-    'DELETE FROM avisos WHERE owner = ? AND leido_en IS NOT NULL AND leido_en < ?',
-    String(owner), iso(ahora - RETENCION_LEIDOS_MS)
+    'INSERT OR IGNORE INTO avisos_purgados (owner, clave) SELECT owner, clave FROM avisos WHERE creado_en < ?', limite
   );
+  await db.runAsync('DELETE FROM avisos WHERE creado_en < ?', limite);
 };
 
 export const haceCuanto = (creadoEn, ahora = ahoraMs()) => {

@@ -128,14 +128,30 @@ test('rechazos: un relevamiento vencido hace más de 30 días y fuera del listad
   assert.deepEqual([...e.llamadas.pedidos].sort(), [ruta(2), ruta(3)]);
 });
 
-test('rechazos: el listado actual se consulta aunque haya vencido, pero un 404 deja de seguirlo', async () => {
+test('rechazos: un 404 en JSON de un relevamiento que ya no está en el listado deja de seguirlo', async () => {
   const e = await entorno();
   await e.detectores.detectarRelevamientosNuevos(e.ctx(), [rel(1), rel(2)]);
   e.responder({[ruta(1)]: errorHttp(404), [ruta(2)]: []});
-  await e.detectores.detectarRechazos(e.ctx(), [rel(1), rel(2)]);
+  await e.detectores.detectarRechazos(e.ctx(), [rel(2)]);
+  e.llamadas.pedidos.length = 0;
+  await e.detectores.detectarRechazos(e.ctx(), [rel(2)]);
+  assert.deepEqual(e.llamadas.pedidos, [ruta(2)]);
+  // Aunque vuelva a aparecer en el listado, ya no se sigue.
   e.llamadas.pedidos.length = 0;
   await e.detectores.detectarRechazos(e.ctx(), [rel(1), rel(2)]);
   assert.deepEqual(e.llamadas.pedidos, [ruta(2)]);
+});
+
+test('rechazos: un 404 con el relevamiento todavía en el listado, o un 404 HTML, se saltea sin dejar de seguir', async () => {
+  const e = await entorno();
+  await e.detectores.detectarRelevamientosNuevos(e.ctx(), [rel(1), rel(2)]);
+  const html = Object.assign(errorHttp(404), {unexpectedHtml: true});
+  e.responder({[ruta(1)]: errorHttp(404), [ruta(2)]: html});
+  await e.detectores.detectarRechazos(e.ctx(), [rel(1)]); // 1 listado con 404 JSON; 2 fuera del listado con 404 HTML
+  e.llamadas.pedidos.length = 0;
+  e.responder({[ruta(1)]: [], [ruta(2)]: []});
+  await e.detectores.detectarRechazos(e.ctx(), [rel(1)]);
+  assert.deepEqual([...e.llamadas.pedidos].sort(), [ruta(1), ruta(2)]);
 });
 
 test('rechazos: 401/403 cortan la pasada y 5xx o red se saltean y se reintentan', async () => {
@@ -165,15 +181,58 @@ test('rechazos: sin red no consulta y las consultas van de a una', async () => {
   assert.equal(e.llamadas.maximoEnParalelo, 1);
 });
 
-test('rechazos con la API real: un 404 del servidor se reconoce por su status', async () => {
+test('rechazos con la API real: un 404 JSON de un relevamiento fuera del listado se reconoce; el HTML no', async () => {
+  const e = await entorno();
+  await e.detectores.detectarRelevamientosNuevos(e.ctx(), [rel(1), rel(2)]);
+  const pedidos = [];
+  e.t.setFetch(async url => {
+    pedidos.push(String(url).includes('/1/') ? 1 : 2);
+    return String(url).includes('/1/') ? response(404, {detail: 'No encontrado'})
+      : response(404, '<!doctype html><html></html>', {'content-type': 'text/html'});
+  });
+  const ctx = e.ctx({pedir: ruta => e.t.api.becasRequest(ruta)});
+  await e.detectores.detectarRechazos(ctx, []);
+  await e.detectores.detectarRechazos(ctx, []);
+  assert.deepEqual(pedidos, [1, 2, 2]);
+});
+
+test('rechazos: un 200 que no es una lista no asienta la línea de base ni marca nada', async () => {
   const e = await entorno();
   await e.detectores.detectarRelevamientosNuevos(e.ctx(), [rel(1)]);
-  let pedidos = 0;
-  e.t.setFetch(async () => { pedidos += 1; return response(404, {detail: 'No encontrado'}); });
-  const ctx = e.ctx({pedir: ruta => e.t.api.becasRequest(ruta)});
-  await e.detectores.detectarRechazos(ctx, [rel(1)]);
-  await e.detectores.detectarRechazos(ctx, [rel(1)]);
-  assert.equal(pedidos, 1);
+  e.responder({[ruta(1)]: {detail: '<!doctype html><html>'}});
+  assert.equal((await e.detectores.detectarRechazos(e.ctx(), [rel(1)])).length, 0);
+  e.responder({[ruta(1)]: {foo: 'bar'}});
+  await e.detectores.detectarRechazos(e.ctx(), [rel(1)]);
+  assert.equal(await e.avisos.leerEstado(e.db, e.owner, 'base_rechazos:1'), null);
+  // La primera respuesta buena es la línea de base: lo que ya estaba rechazado no avisa.
+  e.responder({[ruta(1)]: [rechazado(70), rechazado(71)]});
+  assert.equal((await e.detectores.detectarRechazos(e.ctx(), [rel(1)])).length, 0);
+  assert.equal(await e.avisos.contarNoLeidos(e.db, e.owner), 0);
+});
+
+test('listado: un 200 con HTML no es dato fresco; una lista bien formada sí', async () => {
+  const e = await entorno();
+  e.t.setFetch(async () => response(200, '<html>login</html>', {'content-type': 'text/html'}));
+  const malo = await e.t.service.getRelevamientos({refreshFromRemote: true});
+  assert.notEqual(malo.remoto_bien_formado, true);
+  e.t.setFetch(async () => response(200, []));
+  assert.equal((await e.t.service.getRelevamientos({refreshFromRemote: true})).remoto_bien_formado, true);
+});
+
+test('el «N°» del aviso sale del numero del back y no del id (pasando por getRelevamientos)', async () => {
+  const e = await entorno();
+  const fila = (id, numero) => ({id, numero, nombre: 'Relevamiento 00' + numero + ' · Conv', estado: 'ASIGNADO',
+    fecha_asignada: '2020-01-01T00:00:00-03:00', fecha_hasta: '2099-11-05T23:59:59-03:00'});
+  let listado = [fila(5, 1)];
+  e.t.setFetch(async url => String(url).endsWith('/api/becas/relevamientos/') ? response(200, listado)
+    : response(200, {...listado[0], definicion_formulario: {version: 3, globales: [], requisitos: []}}));
+  await e.detectores.detectarRelevamientosNuevos(e.ctx(), (await e.t.service.getRelevamientos({refreshFromRemote: true})).records);
+  listado = [fila(5, 1), fila(347, 3)];
+  const records = (await e.t.service.getRelevamientos({refreshFromRemote: true})).records;
+  await e.detectores.detectarRelevamientosNuevos(e.ctx(), records);
+  const aviso = (await e.avisos.listarAvisos(e.db, e.owner)).find(a => a.clave === 'rel:347');
+  assert.equal(aviso.titulo, 'Te asignaron el relevamiento N° 3');
+  assert.equal(aviso.texto, 'Relevamiento 003 · Conv · vence el 05/11');
 });
 
 // ---------------------------------------------------------------- cola
@@ -238,18 +297,20 @@ test('bandeja: el más nuevo arriba, marcar leído, marcar todo y contador', asy
   assert.equal((await e.avisos.listarAvisos(e.db, e.owner)).length, 3);
 });
 
-test('bandeja: los leídos con más de 30 días se borran solos y los no leídos se quedan', async () => {
+test('retención: los avisos con más de 30 días se borran, leídos o no y de todos los dueños, y no reaparecen', async () => {
   const e = await entorno();
   const hace = dias => Date.parse(AHORA) - dias * DIA;
-  await e.avisos.crearAviso(e.db, e.owner, {tipo: 'x', clave: 'viejo-leido', titulo: 'a'}, hace(40));
-  await e.avisos.crearAviso(e.db, e.owner, {tipo: 'x', clave: 'viejo-sin-leer', titulo: 'b'}, hace(40));
-  await e.avisos.crearAviso(e.db, e.owner, {tipo: 'x', clave: 'reciente-leido', titulo: 'c'}, hace(5));
-  const lista = await e.avisos.listarAvisos(e.db, e.owner);
-  for (const clave of ['viejo-leido', 'reciente-leido']) {
-    await e.avisos.marcarLeido(e.db, e.owner, lista.find(a => a.clave === clave).id, hace(clave === 'viejo-leido' ? 35 : 1));
-  }
-  await e.avisos.purgarLeidosViejos(e.db, e.owner, Date.parse(AHORA));
-  assert.deepEqual((await e.avisos.listarAvisos(e.db, e.owner)).map(a => a.clave).sort(), ['reciente-leido', 'viejo-sin-leer']);
+  await e.avisos.crearAviso(e.db, '7', {tipo: 'x', clave: 'viejo-leido', titulo: 'a'}, hace(40));
+  await e.avisos.crearAviso(e.db, '7', {tipo: 'x', clave: 'viejo-sin-leer', titulo: 'b'}, hace(40));
+  await e.avisos.crearAviso(e.db, '8', {tipo: 'x', clave: 'viejo-ajeno', titulo: 'c', texto: 'DNI 1'}, hace(31));
+  await e.avisos.marcarTodoLeido(e.db, '7', hace(35));
+  await e.avisos.crearAviso(e.db, '7', {tipo: 'x', clave: 'reciente-sin-leer', titulo: 'e'}, hace(2));
+  await e.avisos.purgarAvisosViejos(e.db, Date.parse(AHORA));
+  assert.deepEqual((await e.avisos.listarAvisos(e.db, '7')).map(a => a.clave).sort(), ['reciente-sin-leer']);
+  assert.equal((await e.avisos.listarAvisos(e.db, '8')).length, 0);
+  // El mismo hecho (misma clave) no reaparece como aviso nuevo.
+  assert.equal(await e.avisos.crearAviso(e.db, '7', {tipo: 'x', clave: 'viejo-sin-leer', titulo: 'b'}, Date.parse(AHORA)), false);
+  assert.equal(await e.avisos.crearAviso(e.db, '8', {tipo: 'x', clave: 'viejo-ajeno', titulo: 'c'}, Date.parse(AHORA)), false);
 });
 
 test('bandeja: «hace cuánto» en minutos, horas y días', async () => {
@@ -315,4 +376,45 @@ test('crear las tablas es idempotente y no toca la cola', async () => {
   await e.avisos.crearTablasAvisos(e.db);
   await e.t.service.getAvisosDb();
   assert.equal(e.t.sql.prepare('SELECT COUNT(*) AS n FROM outbox_relevamientos').get().n, 1);
+});
+
+// ---------------------------------------------------------------- sesión y lectura de la cola
+test('sesión: si cambia a mitad de la pasada de rechazos no se graba nada más', async () => {
+  const e = await entorno();
+  await e.detectores.detectarRelevamientosNuevos(e.ctx(), [rel(1), rel(2)]);
+  e.responder({[ruta(1)]: [], [ruta(2)]: []});
+  await e.detectores.detectarRechazos(e.ctx(), [rel(1), rel(2)]); // línea de base
+  let vigente = true;
+  const ctx = e.ctx({sesionVigente: async () => vigente,
+    pedir: async () => { vigente = false; return [rechazado(90)]; }});
+  assert.equal((await e.detectores.detectarRechazos(ctx, [rel(1), rel(2)])).length, 0);
+  assert.equal(await e.avisos.contarNoLeidos(e.db, e.owner), 0);
+  assert.equal(e.t.sql.prepare('SELECT COUNT(*) AS n FROM avisos_rechazos_conocidos').get().n, 0);
+  // Y con la sesión ya cambiada la pasada ni consulta ni graba.
+  const cuenta = e.llamadas.pedidos.length;
+  const cambiada = e.ctx({sesionVigente: async () => false});
+  await e.detectores.detectarRechazos(cambiada, [rel(1)]);
+  assert.equal((await e.detectores.detectarRelevamientosNuevos(cambiada, [rel(1), rel(77)])).length, 0);
+  assert.equal(e.llamadas.pedidos.length, cuenta);
+  assert.equal(e.t.sql.prepare("SELECT COUNT(*) AS n FROM avisos_relevamientos_vistos WHERE relevamiento_id = '77'").get().n, 0);
+});
+
+test('sesión: nunca se muestra un toast de un dueño que no es el usuario actual', async () => {
+  const e = await entorno();
+  const mostrados = [];
+  assert.equal(await e.detectores.avisarSiVigente(e.ctx({sesionVigente: async () => false}), [{titulo: 'x'}], n => mostrados.push(n)), false);
+  assert.equal(mostrados.length, 0);
+  assert.equal(await e.detectores.avisarSiVigente(e.ctx({sesionVigente: async () => true}), [{titulo: 'x'}], n => mostrados.push(n)), true);
+  assert.equal(mostrados.length, 1);
+});
+
+test('la cola para avisos trae solo las columnas necesarias, sin el payload', async () => {
+  const e = await entorno();
+  insertarOperacion(e.t, 'grande', {creada: '2026-10-26T01:00:00Z', relevamiento: 12});
+  e.t.sql.prepare("UPDATE outbox_relevamientos SET payload_json = json_set(payload_json, '$.adjuntos', ?)").run('x'.repeat(5000));
+  const [op] = await operaciones(e.t);
+  assert.deepEqual(Object.keys(op.payload), ['relevamiento_id']);
+  assert.equal(String(op.payload.relevamiento_id), '12');
+  assert.equal(op.status, 'PENDING');
+  assert.equal(op.local_id, 'grande');
 });

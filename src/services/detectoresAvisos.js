@@ -1,9 +1,11 @@
 // Detectores de avisos (etapa A). Cada uno recibe un contexto
-//   { db, owner, ahora(), pedir(ruta), hayRed() }
+//   { db, owner, ahora(), pedir(ruta), hayRed(), sesionVigente() }
+// `owner` y la sesión (token) se fijan al empezar la pasada; si `sesionVigente()` dice que
+// la sesión cambió, la pasada se aborta sin grabar nada más.
 // y devuelve los avisos que acaba de crear. Ninguno propaga un error: un fallo aquí no
 // puede cortar ni demorar la sincronización ni el refresco que los llaman.
 import { crearAviso, guardarEstado, leerEstado } from './avisos';
-import { GRACE_EXPIRED, INVALID_SUBMISSION, REJECTED_ATTACHMENTS } from './formularioSync';
+import { CODIGOS_REQUIEREN_ATENCION } from './formularioSync';
 import { dateKey, formatDate, parseAssignmentDate } from '../utils/dates';
 
 const HORA_MS = 60 * 60 * 1000;
@@ -11,7 +13,6 @@ const DIA_MS = 24 * HORA_MS;
 export const SEGUIR_VENCIDOS_MS = 30 * DIA_MS;
 export const ANTIGUEDAD_COLA_MS = 2 * HORA_MS;
 export const REPETIR_ANTIGUEDAD_MS = DIA_MS;
-export const CODIGOS_REQUIEREN_ATENCION = [GRACE_EXPIRED, INVALID_SUBMISSION, REJECTED_ATTACHMENTS];
 
 const reloj = (ctx) => (typeof ctx.ahora === 'function' ? ctx.ahora() : Date.now());
 
@@ -22,6 +23,15 @@ const aislado = (nombre, tarea) => async (...args) => {
     console.warn('[AVISOS][ERROR]', nombre, error?.message);
     return [];
   }
+};
+
+const sesionVigente = async (ctx) => (typeof ctx.sesionVigente === 'function' ? !!(await ctx.sesionVigente()) : true);
+
+// Avisa (toast) solo si el usuario de la pasada sigue siendo el de la sesión.
+export const avisarSiVigente = async (ctx, creados, notificar) => {
+  if (!creados?.length || !(await sesionVigente(ctx))) return false;
+  notificar(creados);
+  return true;
 };
 
 const unir = (partes) => partes.filter((parte) => parte != null && String(parte).trim() !== '').join(' · ');
@@ -35,6 +45,7 @@ export const rutaFormularios = (relevamientoId) => `/api/becas/relevamientos/${r
 export const detectarRelevamientosNuevos = aislado('relevamientos', async (ctx, records) => {
   const { db, owner } = ctx;
   if (!owner) return [];
+  if (!(await sesionVigente(ctx))) return [];
   const listado = (records || []).filter(esRelevamientoRemoto);
   const lineaDeBase = (await leerEstado(db, owner, 'base_relevamientos')) === '1';
   const filas = await db.getAllAsync('SELECT * FROM avisos_relevamientos_vistos WHERE owner = ?', owner);
@@ -105,18 +116,23 @@ export const detectarRechazos = aislado('rechazos', async (ctx, records) => {
   if (!owner) return [];
   if (!(await ctx.hayRed())) return [];
   const seguir = await relevamientosASeguir(ctx, records);
+  const listados = new Set((records || []).filter(esRelevamientoRemoto).map((item) => String(item.id)));
   const conocidas = new Set((await db.getAllAsync(
     'SELECT formulario_id FROM avisos_rechazos_conocidos WHERE owner = ?', owner
   )).map((fila) => String(fila.formulario_id)));
   const creados = [];
   // De a uno: nunca una ráfaga de consultas en paralelo.
   for (const [relevamientoId, numero] of seguir) {
+    if (!(await sesionVigente(ctx))) break;
     let respuesta;
     try {
       respuesta = await ctx.pedir(rutaFormularios(relevamientoId));
     } catch (error) {
+      if (!(await sesionVigente(ctx))) break;
       const status = Number(error?.status || 0);
-      if (status === 404) {
+      // Solo un 404 en JSON de un relevamiento que ya no está en el listado lo da de baja;
+      // el 404 HTML del ingress o el de uno todavía listado es transitorio.
+      if (status === 404 && !error?.unexpectedHtml && !listados.has(relevamientoId)) {
         await db.runAsync(
           `INSERT INTO avisos_relevamientos_vistos (owner, relevamiento_id, numero, seguido) VALUES (?, ?, ?, 0)
            ON CONFLICT(owner, relevamiento_id) DO UPDATE SET seguido = 0`,
@@ -127,7 +143,11 @@ export const detectarRechazos = aislado('rechazos', async (ctx, records) => {
       if (status === 401 || status === 403) break;
       continue; // red o 5xx: se reintenta en la próxima pasada
     }
-    const formularios = Array.isArray(respuesta) ? respuesta : (respuesta?.results || respuesta?.data || []);
+    if (!(await sesionVigente(ctx))) break;
+    // Un 200 que no es una lista (HTML, objeto raro) se trata como falla de red: ni línea de base ni avisos.
+    const formularios = Array.isArray(respuesta) ? respuesta
+      : (Array.isArray(respuesta?.results) ? respuesta.results : (Array.isArray(respuesta?.data) ? respuesta.data : null));
+    if (!formularios) continue;
     const rechazados = formularios.filter((item) => String(item?.estado || '').toUpperCase() === 'RECHAZADO' && item?.id != null);
     const claveBase = `base_rechazos:${relevamientoId}`;
     const lineaDeBase = (await leerEstado(db, owner, claveBase)) === '1';

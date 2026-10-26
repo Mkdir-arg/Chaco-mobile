@@ -3,7 +3,7 @@ import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-nati
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { haceCuanto } from '../services/avisos';
-import { designColors, fontSizes, radii } from '../theme';
+import { fontSizes, radii } from '../theme';
 import CustomButton from './CustomButton';
 
 const ICONOS = {
@@ -50,15 +50,15 @@ export default function AvisosBandeja({ visible, avisos = [], noLeidos = 0, onCl
                                 accessibilityRole="button"
                                 accessibilityLabel={aviso.titulo}
                                 style={[styles.item, {
-                                    backgroundColor: sinLeer ? designColors.bgBrandSofter : theme.colors.surface,
+                                    backgroundColor: sinLeer ? theme.colors.brandSoft : theme.colors.surface,
                                     borderColor: sinLeer ? theme.colors.primary : theme.colors.border,
                                 }]}
                             >
                                 <Ionicons name={ICONOS[aviso.tipo] || 'notifications-outline'} size={22} color={theme.colors.primary} />
                                 <View style={styles.textos}>
-                                    <Text style={[styles.itemTitulo, { color: designColors.textHeading, fontFamily: sinLeer ? typography.bold : typography.medium }]}>{aviso.titulo}</Text>
-                                    {aviso.texto ? <Text style={[styles.itemTexto, { color: designColors.textBody, fontFamily: typography.regular }]}>{aviso.texto}</Text> : null}
-                                    <Text style={[styles.itemFecha, { color: designColors.textBodySubtle, fontFamily: typography.regular }]}>{haceCuanto(aviso.creado_en, ahora)}</Text>
+                                    <Text style={[styles.itemTitulo, { color: theme.colors.text, fontFamily: sinLeer ? typography.bold : typography.medium }]}>{aviso.titulo}</Text>
+                                    {aviso.texto ? <Text style={[styles.itemTexto, { color: theme.colors.textMuted, fontFamily: typography.regular }]}>{aviso.texto}</Text> : null}
+                                    <Text style={[styles.itemFecha, { color: theme.colors.textSoft, fontFamily: typography.regular }]}>{haceCuanto(aviso.creado_en, ahora)}</Text>
                                 </View>
                                 {sinLeer ? <View style={[styles.punto, { backgroundColor: theme.colors.primary }]} /> : null}
                             </Pressable>
