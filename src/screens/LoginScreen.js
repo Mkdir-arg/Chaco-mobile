@@ -18,6 +18,7 @@ import CustomButton from '../components/CustomButton';
 import PwaInstallGuide from '../components/PwaInstallGuide';
 import AuthVisualBackground from '../components/AuthVisualBackground';
 import { designColors, fontSizes, radii } from '../theme';
+import { keyboardDismissModeFor } from '../utils/teclado';
 import { API_CONFIG } from '../config/apiConfig';
 import { versionActual } from '../services/versionApp';
 
@@ -74,7 +75,7 @@ export default function LoginScreen({ onNavigateToRegister }) {
           contentContainerStyle={styles.scrollContent}
           bounces={false}
           keyboardShouldPersistTaps="always"
-          keyboardDismissMode="on-drag"
+          keyboardDismissMode={keyboardDismissModeFor()}
         >
             <View style={styles.header}>
               <Image source={branding.assets.logo} style={styles.logo} resizeMode="contain" />

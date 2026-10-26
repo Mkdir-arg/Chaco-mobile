@@ -43,6 +43,7 @@ async function mount(items, options = {}) {
     '../context/ToastContext': {useToast: () => ({showToast: value => alerts.push(value), showAlert: (...args) => alerts.push(args)})},
     '../hooks/useAssignmentClock': {__esModule: true, default: () => new Date()},
     '../utils/dates': runtime.dates,
+    '../utils/teclado': {keyboardDismissModeFor: () => 'on-drag'},
     '@expo/vector-icons': {Ionicons: 'Ionicons'},
     '@react-native-community/netinfo': {__esModule: true, default: {fetch: async () => ({isConnected: true, isInternetReachable: true})}},
     '@react-native-community/datetimepicker': {__esModule: true, default: 'DateTimePicker', DateTimePickerAndroid: {open() {}}},
