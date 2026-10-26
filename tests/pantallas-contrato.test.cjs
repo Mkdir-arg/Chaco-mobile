@@ -56,6 +56,15 @@ async function render(Screen, props) {
   return {tree, labels, press, button, close: async () => renderer.act(async () => tree.unmount())};
 }
 
+// Helper real de src/utils/teclado.js, con el Platform.OS de los mocks (web).
+function loadTeclado() {
+  const {code} = transformSync(fs.readFileSync(path.join(root, 'src/utils/teclado.js'), 'utf8'), {
+    babelrc: false, configFile: false, plugins: ['@babel/plugin-transform-modules-commonjs']});
+  const module = {exports: {}};
+  new Function('require', 'module', 'exports', code)(() => ({Platform: native.Platform}), module, module.exports);
+  return module.exports;
+}
+
 // Detalle del relevamiento con servicio y servicios auxiliares mockeados.
 async function mountDetail(options = {}) {
   const runtime = await setup();
@@ -94,7 +103,7 @@ async function mountDetail(options = {}) {
     '../context/ToastContext': {useToast: () => ({showToast: value => alerts.push(value), showAlert: (...args) => alerts.push(args)})},
     '../hooks/useAssignmentClock': {__esModule: true, default: () => new Date()},
     '../utils/dates': runtime.dates,
-    '../utils/teclado': {keyboardDismissModeFor: () => 'on-drag'},
+    '../utils/teclado': options.tecladoReal ? loadTeclado() : {keyboardDismissModeFor: () => 'on-drag'},
     '../services/reloj': {ahoraCorregido: () => options.ahora || new Date()},
     '../services/documentPicker': {getDocumentAsync: options.getDocumentAsync || (async () => ({canceled: true}))},
     '../services/imagePicker': {}, '../services/ubicacion': {posicionActual: async () => { throw new Error('sin GPS en tests'); }},
@@ -369,4 +378,14 @@ test('P15 web: actualizar hace update del service worker y recarga; sin red no r
   assert.deepEqual(sinRed, []);
   // Sin service worker registrado igual recarga (con red el reload ya trae el bundle nuevo).
   assert.equal(await actualizarPWA({nav: {onLine: true}, loc: {reload: () => sinRed.push('reload')}}), 'recargado');
+});
+
+test('A2: en web el ScrollView del detalle no cierra el teclado (helper real)', async () => {
+  const ui = await mountDetail({tecladoReal: true});
+  try {
+    await ui.press('AGREGAR PERSONA');
+    const modos = ui.tree.root.findAllByType('ScrollView').filter(node => 'keyboardDismissMode' in node.props).map(node => node.props.keyboardDismissMode);
+    assert.ok(modos.length > 0);
+    assert.deepEqual([...new Set(modos)], ['none']);
+  } finally {await ui.close();}
 });
