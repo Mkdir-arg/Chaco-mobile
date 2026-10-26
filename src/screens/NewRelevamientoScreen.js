@@ -14,6 +14,7 @@ import CustomButton from '../components/CustomButton';
 import SignaturePad from '../components/SignaturePad';
 import FrostedBackButton from '../components/FrostedBackButton';
 import { designColors, fontSizes, radii } from '../theme';
+import { keyboardDismissModeFor } from '../utils/teclado';
 
 export default function NewRelevamientoScreen({ onCancel, onSave }) {
     const MAX_IMAGES = 8;
@@ -1349,7 +1350,7 @@ export default function NewRelevamientoScreen({ onCancel, onSave }) {
                 ref={formScrollRef}
                 contentContainerStyle={styles.scrollBody}
                 keyboardShouldPersistTaps="handled"
-                keyboardDismissMode="on-drag"
+                keyboardDismissMode={keyboardDismissModeFor()}
             >
                 {renderStepContent()}
             </ScrollView>

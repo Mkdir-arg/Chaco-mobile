@@ -32,6 +32,7 @@ import relevamientoService, { validateFormularioAttachment } from '../services/r
 import { becasRequest } from '../services/becasApi';
 import { designColors, fontSizes, radii } from '../theme';
 import { formatDate as formatAppDate, isDateTimeActive, formatDateTimeRange, closingSoonLabel } from '../utils/dates';
+import { keyboardDismissModeFor } from '../utils/teclado';
 
 const formatDate = (isoDate) => {
   return formatAppDate(isoDate, { includeTime: true });
@@ -2586,7 +2587,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
             },
           ]}
           keyboardShouldPersistTaps="handled"
-          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+          keyboardDismissMode={keyboardDismissModeFor(Platform.OS === 'ios' ? 'interactive' : 'on-drag')}
         >
           {loading ? (
             <ActivityIndicator size="large" color={theme.colors.primary} />

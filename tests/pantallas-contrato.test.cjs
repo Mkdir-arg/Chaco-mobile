@@ -94,6 +94,7 @@ async function mountDetail(options = {}) {
     '../context/ToastContext': {useToast: () => ({showToast: value => alerts.push(value), showAlert: (...args) => alerts.push(args)})},
     '../hooks/useAssignmentClock': {__esModule: true, default: () => new Date()},
     '../utils/dates': runtime.dates,
+    '../utils/teclado': {keyboardDismissModeFor: () => 'on-drag'},
     '../services/reloj': {ahoraCorregido: () => options.ahora || new Date()},
     '../services/documentPicker': {getDocumentAsync: options.getDocumentAsync || (async () => ({canceled: true}))},
     '../services/imagePicker': {}, '../services/ubicacion': {posicionActual: async () => { throw new Error('sin GPS en tests'); }},
