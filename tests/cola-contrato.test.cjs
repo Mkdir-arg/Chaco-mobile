@@ -719,3 +719,25 @@ test('manual: una carga sin dependencia ni error no inventa un motivo', async ()
   assert.equal(result.waiting, 0);
   assert.equal(result.waitingReason, null);
 });
+
+// F1: solo una alta descartada deja visible una tarjeta vencida; las demás operaciones no.
+test('una descartada que no es alta (finalizar, iniciar, reabrir) no hace visible una tarjeta vencida', async () => {
+  const r = await setup();
+  r.setPeriod('2020-01-01T00:00:00-03:00', '2020-01-02T00:00:00-03:00');
+  const remoto = {id: 1, nombre: 'Uno', estado: 'finalizado', fecha_asignada: '2020-01-01T00:00:00-03:00', fecha_hasta: '2020-01-02T00:00:00-03:00'};
+  r.setFetch(async url => response(200, /\/relevamientos\/(\?|$)/.test(String(url)) ? {results: [remoto]} : remoto));
+  const tarjeta = async () => (await r.service.getRelevamientos()).records.find(item => String(item.id) === '1');
+  const uuids = ['aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa', 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb', 'cccccccc-cccc-4ccc-cccc-cccccccccccc'];
+  const tipos = ['finalizar_relevamiento', 'iniciar_relevamiento', 'reabrir_relevamiento'];
+  for (const [i, tipo] of tipos.entries()) await enqueue(r, {client_uuid: uuids[i]}, tipo, `op${i}`);
+  r.sql.prepare("UPDATE outbox_relevamientos SET status='DISCARDED'").run();
+  const sinAlta = await tarjeta();
+  assert.equal(sinAlta.has_discarded_operations, false);
+  assert.equal(r.dates.isAssignmentVisible(sinAlta), false);
+  // Con un alta descartada, en cambio, la misma tarjeta vuelve a verse.
+  await enqueue(r, {}, 'insert_relevamiento', 'alta');
+  r.sql.prepare("UPDATE outbox_relevamientos SET status='DISCARDED' WHERE local_id='alta'").run();
+  const conAlta = await tarjeta();
+  assert.equal(conAlta.has_discarded_operations, true);
+  assert.equal(r.dates.isAssignmentVisible(conAlta), true);
+});
