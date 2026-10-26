@@ -5,6 +5,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import CustomButton from './CustomButton';
+import AvisosContador from './AvisosContador';
 import usePermisos from '../hooks/usePermisos';
 import { ETIQUETAS_ESTADO, ayudaBloqueado, abrirAjustes } from '../services/permisos';
 import { designColors, fontSizes, gradients, radii } from '../theme';
@@ -17,7 +18,7 @@ const FILAS_PERMISO = [
 const { width } = Dimensions.get('window');
 const PANEL_WIDTH = width * 0.8;
 
-export default function SettingsPanel({ visible, onClose, onLogout }) {
+export default function SettingsPanel({ visible, onClose, onLogout, onOpenAvisos, avisosNoLeidos = 0 }) {
     const { theme, isDark, toggleTheme, typography } = useTheme();
     const { user } = useAuth();
     const { permisos, pedir } = usePermisos(visible);
@@ -108,11 +109,17 @@ export default function SettingsPanel({ visible, onClose, onLogout }) {
                             />
                         </View>
 
-                        <Pressable style={[styles.menuItem, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}>
+                        <Pressable
+                            onPress={onOpenAvisos}
+                            accessibilityRole="button"
+                            accessibilityLabel="Notificaciones"
+                            style={[styles.menuItem, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}
+                        >
                             <View style={styles.menuLabel}>
                                 <Ionicons name="notifications-outline" size={22} color={theme.colors.icon} />
                                 <Text style={[styles.menuText, { color: theme.colors.text, fontFamily: typography.medium }]}>Notificaciones</Text>
                             </View>
+                            <AvisosContador cantidad={avisosNoLeidos} />
                         </Pressable>
 
                         <Text style={[styles.sectionTitle, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>Permisos</Text>

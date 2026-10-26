@@ -5,6 +5,7 @@ import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useTheme } from '../context/ThemeContext';
 import { fontSizes, radii } from '../theme';
+import AvisosContador from './AvisosContador';
 
 const NAV_ITEMS = [
     { id: 'Inicio', label: 'Inicio', icon: 'home-outline', activeIcon: 'home' },
@@ -13,7 +14,7 @@ const NAV_ITEMS = [
 
 const MENU_ITEM = { id: 'Menu', label: 'Menu', icon: 'person-circle-outline' };
 
-export default function BottomNav({ activeTab, onTabPress, onOpenSettings, pendingCount = 0 }) {
+export default function BottomNav({ activeTab, onTabPress, onOpenSettings, pendingCount = 0, avisosCount = 0 }) {
     const { typography, isDark, theme } = useTheme();
     const [contentWidth, setContentWidth] = useState(0);
     const activeIndex = Math.max(0, NAV_ITEMS.findIndex((item) => item.id === activeTab));
@@ -165,6 +166,7 @@ export default function BottomNav({ activeTab, onTabPress, onOpenSettings, pendi
                         ]}
                     >
                         <Ionicons name={MENU_ITEM.icon} size={23} color={iconColor} />
+                        <AvisosContador cantidad={avisosCount} style={styles.avisosContador} />
                         <Text
                             numberOfLines={1}
                             style={[styles.tabLabel, { color: iconColor, fontFamily: typography.medium }]}
@@ -286,6 +288,11 @@ const styles = StyleSheet.create({
         borderWidth: 1.5,
         borderColor: 'rgba(255,255,255,0.92)',
         backgroundColor: '#EF4444',
+    },
+    avisosContador: {
+        position: 'absolute',
+        top: 4,
+        right: 18,
     },
     tabLabel: {
         width: '100%',
