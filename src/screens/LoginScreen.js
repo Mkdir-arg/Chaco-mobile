@@ -24,6 +24,7 @@ import { versionActual } from '../services/versionApp';
 
 export default function LoginScreen({ onNavigateToRegister }) {
   const { theme, typography, branding } = useTheme();
+  const version = versionActual();
   const { login } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -215,7 +216,7 @@ export default function LoginScreen({ onNavigateToRegister }) {
 
             <View style={styles.footerContainer}>
               <Text style={[styles.footerText, { fontFamily: typography.bold, color: theme.colors.textMuted }]}>
-                {versionActual() ? `ICORE 2026 · v${versionActual()}` : 'ICORE 2026'}
+                {version ? `ICORE 2026 · v${version}` : 'ICORE 2026'}
               </Text>
             </View>
         </ScrollView>

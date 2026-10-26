@@ -9,7 +9,16 @@ if (!base) {
   console.error('Falta el SHA de la rama base.');
   process.exit(2);
 }
-const versionBase = JSON.parse(execFileSync('git', ['show', `${base}:app.json`], { encoding: 'utf8' })).expo.version;
+let versionBase;
+try {
+  versionBase = JSON.parse(execFileSync('git', ['show', `${base}:app.json`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })).expo.version;
+} catch {
+  versionBase = undefined;
+}
+if (typeof versionBase !== 'string' || !versionBase) {
+  console.error(`::error::No se pudo leer expo.version de app.json en la rama base (${base}): no existe, no es JSON válido o no tiene expo.version.`);
+  process.exit(1);
+}
 const versiones = versionesDe(path.join(__dirname, '..'));
 const problemas = verificarSubida(versiones, versionBase);
 if (problemas.length) {
