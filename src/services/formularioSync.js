@@ -1,6 +1,8 @@
 export const GRACE_EXPIRED = 'GRACIA_VENCIDA';
 export const INVALID_SUBMISSION = 'ALTA_INVALIDA';
 export const REJECTED_ATTACHMENTS = 'ADJUNTOS_RECHAZADOS';
+// Cargas que la app no resuelve sola: piden una decisión del relevador.
+export const CODIGOS_REQUIEREN_ATENCION = [GRACE_EXPIRED, INVALID_SUBMISSION, REJECTED_ATTACHMENTS];
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 
 export const apiErrorMessage = (payload, fallback = 'Error de sincronización') => {

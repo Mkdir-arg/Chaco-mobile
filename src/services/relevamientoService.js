@@ -10,7 +10,8 @@ import { Platform } from 'react-native';
 import { becasRequest, becasUploadFile, getBecasToken, getStoredBecasUser } from './becasApi';
 import { ahoraCorregido } from './reloj';
 import { isDateTimeActive } from '../utils/dates';
-import { GRACE_EXPIRED, INVALID_SUBMISSION, REJECTED_ATTACHMENTS, isGraceExpired, validateAttachmentMetadata } from './formularioSync';
+import { crearTablasAvisos } from './avisos';
+import { CODIGOS_REQUIEREN_ATENCION, GRACE_EXPIRED, INVALID_SUBMISSION, REJECTED_ATTACHMENTS, isGraceExpired, validateAttachmentMetadata } from './formularioSync';
 
 const LOCAL_RELEVAMIENTOS_KEY = 'field_relevamientos_records';
 const SYNC_QUEUE_KEY = 'field_relevamientos_sync_queue';
@@ -44,6 +45,7 @@ const ESTADOS_RELEVAMIENTO = ['ASIGNADO', 'EN_CURSO', 'FINALIZANDO', 'FINALIZADO
 let syncInFlightPromise = null;
 let sqliteDbPromise = null;
 let sqliteInitPromise = null;
+let avisosTablasPromise = null;
 
 const nowIso = () => new Date().toISOString();
 const createLocalId = () => `local_rel_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -111,6 +113,7 @@ const mapDjangoRelevamiento = (row = {}) => ({
   source: 'asignado',
   backend: 'django_becas',
   titulo: row.nombre || 'Relevamiento',
+  numero: row.numero ?? null,
   descripcion: row.convocatoria_nombre || '',
   direccion_objetivo: row.zona || '',
   localidad: row.zona || '',
@@ -1597,11 +1600,15 @@ const regenerateClientUuid = async (operation) => {
   return payload;
 };
 
-const fetchRemoteRecords = async () => {
+// `bienFormado`: la respuesta era realmente una lista. Un 200 con HTML o con cualquier otra
+// cosa se lee como lista vacía (como siempre), pero los avisos no lo toman como dato fresco.
+const fetchRemoteRecordsDetallado = async () => {
   const payload = await becasRequest('/api/becas/relevamientos/');
+  const bienFormado = Array.isArray(payload?.results) || Array.isArray(payload);
   const rows = Array.isArray(payload?.results) ? payload.results : (Array.isArray(payload) ? payload : []);
-  return rows.map(mapDjangoRelevamiento);
+  return { records: rows.map(mapDjangoRelevamiento), bienFormado };
 };
+const fetchRemoteRecords = async () => (await fetchRemoteRecordsDetallado()).records;
 
 const isLocalId = (id) => String(id || '').startsWith('local_rel_');
 
@@ -1903,6 +1910,46 @@ const relevamientoService = {
       .length;
   },
 
+  // Avisos: misma base que la cola, con sus propias tablas (creación idempotente).
+  async getAvisosDb() {
+    await ensureSqliteReady();
+    const db = await getSqliteDb();
+    // Las tablas se crean una sola vez por arranque.
+    if (!avisosTablasPromise) {
+      avisosTablasPromise = crearTablasAvisos(db).catch((error) => { avisosTablasPromise = null; throw error; });
+    }
+    await avisosTablasPromise;
+    return db;
+  },
+
+  async getOwnerIdActual() {
+    return getCurrentOwnerId();
+  },
+
+  // Cola del usuario de la sesión que interesa a los avisos: cargas pendientes y las que
+  // requieren atención. Solo lectura y solo las columnas que se usan: el payload (con los
+  // adjuntos en base64) no se trae ni se parsea.
+  async getOperacionesParaAvisos() {
+    await ensureSqliteReady();
+    const db = await getSqliteDb();
+    const ownerId = await getCurrentOwnerId();
+    if (!ownerId) return [];
+    const rows = await db.getAllAsync(
+      `SELECT local_id, status, type, created_at, last_error, last_error_code,
+              json_extract(payload_json, '$.relevamiento_id') AS relevamiento_id
+       FROM ${SQLITE_OUTBOX_TABLE}
+       WHERE status IN ('PENDING', 'FAILED_PERMANENT')
+         AND json_extract(payload_json, '$._owner_user_id') = ?
+       ORDER BY created_at`,
+      ownerId
+    );
+    return rows.map((row) => ({
+      local_id: row.local_id, status: row.status, type: row.type, created_at: row.created_at,
+      last_error: row.last_error, last_error_code: row.last_error_code,
+      payload: { relevamiento_id: row.relevamiento_id },
+    }));
+  },
+
   async getFailedOperations(relevamientoId) {
     await ensureSqliteReady();
     const db = await getSqliteDb();
@@ -2065,7 +2112,7 @@ const relevamientoService = {
     if (syncInFlightPromise) await syncInFlightPromise;
     const db = await getSqliteDb();
     const operations = await this.getFailedOperations();
-    const needsDecision = [GRACE_EXPIRED, INVALID_SUBMISSION, REJECTED_ATTACHMENTS];
+    const needsDecision = CODIGOS_REQUIEREN_ATENCION;
     await runSqliteTx(db, async (tx) => {
       for (const operation of operations) {
         if (needsDecision.includes(operation.last_error_code)) continue;
@@ -2143,7 +2190,7 @@ const relevamientoService = {
 
       try {
         await this.syncPendingOperations();
-        const remote = await fetchRemoteRecords();
+        const { records: remote, bienFormado } = await fetchRemoteRecordsDetallado();
         await warmRemoteDetailCache(remote);
         await pruneRemoteCacheForCurrentOwner(remote);
         const localRecords = await readLocalRecords();
@@ -2160,7 +2207,7 @@ const relevamientoService = {
         const retained = await mapCachedRecordsForList();
         const pendingIds = new Set(retained.filter((item) => item.has_pending_operations).map((item) => String(item.id)));
         const discardedIds = new Set(retained.filter((item) => item.has_discarded_operations).map((item) => String(item.id)));
-        return { success: true, records: uniqueBy([...pendingLocal, ...remote, ...retained], (item) => String(item.id))
+        return { success: true, remoto_bien_formado: bienFormado, records: uniqueBy([...pendingLocal, ...remote, ...retained], (item) => String(item.id))
           .map((item) => ({
             ...item,
             has_pending_operations: pendingIds.has(String(item.id)),
