@@ -354,10 +354,11 @@ test('P15: bloqueo por versión mínima, con y sin dato', async () => {
   assert.equal(await evaluarBloqueoVersion({requiereActualizacionGuardada: async () => { throw new Error('x'); }, versionActual: () => '1.1.0'}), null);
 });
 
-test('P15: con la versión real, 1.1.0 contra mínima 1.2.0 bloquea y 1.0.0 no', async () => {
+test('P15: con la versión real, una mínima mayor bloquea y 1.0.0 no', async () => {
   const runtime = await setup();
   const version = runtime.load('./versionApp');
-  assert.equal(version.requiereActualizacion('1.2.0'), true);
+  const [mayor, menor] = require('../app.json').expo.version.split('.').map(Number);
+  assert.equal(version.requiereActualizacion(`${mayor}.${menor + 1}.0`), true);
   assert.equal(version.requiereActualizacion('1.0.0'), false);
   assert.equal(version.requiereActualizacion(null), false);
 });
