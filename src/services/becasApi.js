@@ -108,6 +108,17 @@ export const getModuloActivo = () => storage.getItem(MODULO_ACTIVO_KEY);
 
 export const setModuloActivo = (modulo) => storage.setItem(MODULO_ACTIVO_KEY, modulo);
 
+// El back dejó de admitir un módulo (403 SIN_MODULO): se saca del usuario guardado y, si era
+// el activo, del módulo activo. Devuelve el usuario actualizado, o null si no hay sesión.
+export const quitarModuloLocal = async (modulo) => {
+  const user = await getStoredBecasUser();
+  if (!user) return null;
+  const next = { ...user, modulos: user.modulos.filter((item) => item !== modulo) };
+  await storage.setItem(USER_DATA_KEY, JSON.stringify(next));
+  if (await getModuloActivo() === modulo) await storage.deleteItem(MODULO_ACTIVO_KEY);
+  return next;
+};
+
 export const clearBecasSession = async () => {
   await Promise.all([
     storage.deleteItem(TOKEN_KEY),

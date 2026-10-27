@@ -51,3 +51,25 @@ test('el modulo elegido se guarda y cerrar sesion lo borra', async () => {
   await r.api.clearBecasSession();
   assert.equal(await r.api.getModuloActivo(), null);
 });
+
+test('quitarModuloLocal saca el modulo del usuario guardado y del modulo activo', async () => {
+  const {r} = await login({modulos: ['becas', 'dispositivos']});
+  await r.api.setModuloActivo('dispositivos');
+  const user = await r.api.quitarModuloLocal('dispositivos');
+  assert.deepEqual([...user.modulos], ['becas']);
+  assert.deepEqual([...(await r.api.getStoredBecasUser()).modulos], ['becas']);
+  assert.equal(await r.api.getModuloActivo(), null);
+  // Quitar el que no era el activo deja el activo como estaba.
+  await r.api.setModuloActivo('becas');
+  await r.api.quitarModuloLocal('dispositivos');
+  assert.equal(await r.api.getModuloActivo(), 'becas');
+  const vacio = await r.api.quitarModuloLocal('becas');
+  assert.deepEqual([...vacio.modulos], []);
+});
+
+test('quitarModuloLocal sin sesion no hace nada', async () => {
+  const r = await setup();
+  r.values.delete('user_data');
+  assert.equal(await r.api.quitarModuloLocal('dispositivos'), null);
+  assert.equal(r.values.has('user_data'), false);
+});

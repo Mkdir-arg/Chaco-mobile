@@ -4,9 +4,11 @@ import {
   getModuloActivo,
   getStoredBecasUser,
   loginBecas,
+  quitarModuloLocal,
   setModuloActivo as guardarModuloActivo,
   subscribeBecasSessionExpired,
 } from '../services/becasApi';
+import { subscribeSinModulo } from '../services/dispositivosService';
 import { moduloInicial } from '../services/modulos';
 
 const AuthContext = createContext({});
@@ -26,6 +28,24 @@ export const AuthProvider = ({ children }) => {
         setModuloActivoState(null);
       }
     });
+    // El back dejó de admitir un módulo: se actualiza la sesión; sin módulos, se sale.
+    const unsubscribeSinModulo = subscribeSinModulo(async (modulo) => {
+      try {
+        const next = await quitarModuloLocal(modulo);
+        if (!mounted || !next) return;
+        if (!next.modulos.length) {
+          await clearBecasSession();
+          setUser(null);
+          setModuloActivoState(null);
+          return;
+        }
+        setUser(next);
+        setModuloActivoState((actual) => (actual === modulo || !next.modulos.includes(actual)
+          ? moduloInicial(next.modulos, null) : actual));
+      } catch {
+        // Sin poder actualizar la sesión guardada se deja como está.
+      }
+    });
     (async () => {
       try {
         const stored = await getStoredBecasUser();
@@ -43,6 +63,7 @@ export const AuthProvider = ({ children }) => {
     return () => {
       mounted = false;
       unsubscribe();
+      unsubscribeSinModulo();
     };
   }, []);
 
