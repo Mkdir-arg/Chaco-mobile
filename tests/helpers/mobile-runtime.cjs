@@ -85,7 +85,7 @@ async function setup(platform = 'android') {
     VALUES ('remote_django_becas_1','1','now','now',?,1)`).run(JSON.stringify(campaign));
   const setPeriod = (start, end) => sql.prepare("UPDATE local_relevamientos SET payload_json=? WHERE local_id='remote_django_becas_1'")
     .run(JSON.stringify({...campaign, fecha_asignada: start, fecha_hasta: end}));
-  return {definition: load('./definicionFormulario'), attachments: load('./webAttachments'), images: load('./webImages'), location: load('./ubicacion'), conditions: load('./condiciones'), identity: load('./identityLookup'), api, service, dates: load('../utils/dates'), values, sql, setPeriod,
+  return {definition: load('./definicionFormulario'), attachments: load('./webAttachments'), images: load('./webImages'), location: load('./ubicacion'), conditions: load('./condiciones'), identity: load('./identityLookup'), modulos: load('./modulos'), api, service, dates: load('../utils/dates'), values, sql, setPeriod,
     setNow: value => {currentTime = new Date(value).getTime();}, setOnline: value => {online = value;}, setFetch: handler => {fetchHandler = handler;}, setLocation: handler => {locationHandler = handler;},
     setNavigator: value => {navigatorValue = value;}, setAppVersion: value => {appVersion = value;}, setFileInfo: handler => {fileInfoHandler = handler;}, load};
 }

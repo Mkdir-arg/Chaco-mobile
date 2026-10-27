@@ -72,9 +72,25 @@ async function mount(items, options = {}) {
   const module = {exports: {}};
   const context = vm.createContext({console, setTimeout, clearTimeout, setInterval: () => 0, clearInterval() {},
     requestAnimationFrame: () => 0, cancelAnimationFrame() {}});
-  vm.runInContext('(function(require,module,exports){' + code + '\n})', context)((name) => {
-    assert.ok(mocks[name], 'Missing screen mock: ' + name); return mocks[name];
-  }, module, module.exports);
+  // Los componentes del formulario se cargan de verdad: son parte del render que se prueba.
+  const screensDir = path.dirname(filename);
+  const resolve = (dir, name) => {
+    const key = name.startsWith('.') ? path.relative(screensDir, path.join(dir, name)).split(path.sep).join('/') : name;
+    if (key.startsWith('../components/formulario/')) return load(path.join(screensDir, key + '.js'));
+    assert.ok(mocks[key], 'Missing screen mock: ' + key); return mocks[key];
+  };
+  const load = (file) => {
+    const source = transformSync(fs.readFileSync(file, 'utf8'), {
+      filename: file, babelrc: false, configFile: false,
+      plugins: ['@babel/plugin-transform-react-jsx', '@babel/plugin-transform-modules-commonjs'],
+    }).code;
+    const loaded = {exports: {}};
+    vm.runInContext('(function(require,module,exports){' + source + '\n})', context)(
+      name => resolve(path.dirname(file), name), loaded, loaded.exports);
+    return loaded.exports;
+  };
+  vm.runInContext('(function(require,module,exports){' + code + '\n})', context)(
+    name => resolve(screensDir, name), module, module.exports);
   let tree;
   await renderer.act(async () => {tree = renderer.create(React.createElement(module.exports.default, {relevamientoId: 1, onClose() {}}));});
   const text = node => node.children.map(value => typeof value === 'string' ? value : typeof value === 'number' ? String(value) : text(value)).join('');
@@ -259,4 +275,74 @@ test('la tarjeta de envíos fallidos muestra cuándo fue el último intento', as
   try {
     assert.ok(ui.labels().some(t => t.startsWith('Último intento: ') && /2026|22/.test(t)), ui.labels().join('|'));
   } finally { await ui.close(); }
+});
+
+// Regresión del render de campos antes de extraerlo a un componente compartido con
+// Dispositivos: cada tipo de campo, y el árbol dibujado exacto contra una foto guardada.
+test('screen renders every field type and sends their answers', async () => {
+  const ui = await mount([group('g-tipos', 'Todos los tipos', [
+    {tipo: 'texto', clave: 'tx-1', texto: 'Ver https://example.test/guia antes de seguir'},
+    field('cp-sel', 'Estado del techo', {tipo: 'SELECTOR', opciones: ['Bueno', 'Malo'], obligatorio: true}),
+    field('cp-mul', 'Servicios', {tipo: 'SELECTOR_MULTIPLE', opciones: ['Agua', 'Luz', 'Gas']}),
+    field('cp-bus', 'Localidad', {tipo: 'SELECTOR', presentacion: 'BUSCADOR', opciones: ['Resistencia', 'Barranqueras', 'Fontana']}),
+    field('cp-fec', 'Fecha de visita', {tipo: 'DATE'}),
+    field('cp-arc', 'Foto del frente', {tipo: 'ARCHIVO'}),
+    field('cp-int', 'Cantidad de aulas', {tipo: 'INT'}),
+    field('cp-txa', 'Descripción', {tipo: 'TEXTAREA'}),
+    field('cp-obs', 'Observaciones generales'),
+  ])]);
+  try {
+    await ui.press('AGREGAR PERSONA'); await ui.identify();
+    const card = ui.tree.root.findAllByType('Text').filter(node => node.children.includes('Todos los tipos'))
+      .map(node => node.parent).find(node => node.findAllByType('TextInput').length);
+    assert.ok(card, 'no se encontró la tarjeta del grupo');
+    const snapshotFile = require('node:path').join(__dirname, 'fixtures', 'render-campos-becas.json');
+    // Solo lo que se dibuja: los componentes intermedios no cuentan, así extraer el
+    // render a otro componente no cambia la foto.
+    const serialize = (node) => {
+      if (typeof node === 'string' || typeof node === 'number') return [node];
+      const children = node.children.flatMap(serialize);
+      if (typeof node.type !== 'string') return children;
+      const props = Object.fromEntries(Object.entries(node.props).filter(([key, value]) => key !== 'children' && typeof value !== 'function'));
+      return [{type: node.type, props, children}];
+    };
+    const actual = JSON.stringify(serialize(card), null, 1);
+    if (process.env.UPDATE_SNAPSHOTS) require('node:fs').writeFileSync(snapshotFile, actual + '\n');
+    assert.equal(actual + '\n', require('node:fs').readFileSync(snapshotFile, 'utf8').replace(/\r\n/g, '\n'), 'el render de campos de Becas cambió');
+
+    const labels = ui.labels();
+    for (const label of ['Estado del techo *', 'Servicios', 'Localidad', 'Fecha de visita', 'Foto del frente',
+      'Cantidad de aulas', 'Descripción', 'Observaciones generales', 'Tocar para sacar una foto o elegir un archivo']) {
+      assert.ok(labels.includes(label), 'falta ' + label);
+    }
+    assert.ok(ui.tree.root.findAllByType('Text').some(node => node.props.accessibilityRole === 'link'));
+    const inputs = () => ui.tree.root.findAllByType('TextInput');
+    const input = predicate => inputs().find(predicate);
+    const fecha = () => ui.tree.root.findAllByType('WebDateInput').find(node => node.props.label === 'Fecha de visita');
+    assert.ok(fecha(), 'fecha en web usa el input date');
+    const search = input(node => node.props.accessibilityLabel === 'Buscar opciones de Localidad');
+    await renderer.act(async () => search.props.onChangeText('barr'));
+    assert.equal(ui.labels().includes('Resistencia'), false, 'el buscador filtra');
+    await ui.press('Barranqueras', 'Pressable');
+    await ui.press('Malo', 'Pressable');
+    await ui.press('Agua', 'Pressable'); await ui.press('Gas', 'Pressable'); await ui.press('Agua', 'Pressable');
+    const icons = ui.tree.root.findAllByType('Ionicons').map(node => node.props.name);
+    assert.ok(icons.includes('checkbox') && icons.includes('square-outline'));
+    await renderer.act(async () => fecha().props.onSelect('05/11/2026'));
+    const texts = inputs().filter(node => ['Ej.: 12', 'Ingresá texto'].includes(node.props.placeholder));
+    const [aulas, descripcion, observaciones] = texts;
+    assert.equal(aulas.props.keyboardType, 'numeric');
+    assert.equal(descripcion.props.multiline, true);
+    assert.equal(observaciones.props.multiline, true, 'un campo de observaciones es multilínea');
+    await renderer.act(async () => aulas.props.onChangeText('12'));
+    await renderer.act(async () => descripcion.props.onChangeText('Edificio de dos plantas'));
+    await ui.press('SIGUIENTE'); await ui.press('CONFIRMAR CASO');
+    const respuestas = ui.submitted().respuestas;
+    assert.equal(respuestas['cp-sel'], 'Malo');
+    assert.deepEqual([...respuestas['cp-mul']], ['Gas']);
+    assert.equal(respuestas['cp-bus'], 'Barranqueras');
+    assert.equal(respuestas['cp-fec'], '2026-11-05');
+    assert.equal(respuestas['cp-int'], '12');
+    assert.equal(respuestas['cp-txa'], 'Edificio de dos plantas');
+  } finally {await ui.close();}
 });

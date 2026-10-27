@@ -506,18 +506,20 @@ const login = (r, payload) => {
   return r.api.loginBecas({username: 'ana', password: 'x'});
 };
 
-test('login con módulos sin becas se rechaza y no guarda token ni usuario', async () => {
+test('login sin ningún módulo conocido se rechaza y no guarda token ni usuario', async () => {
   const r = await setup();
-  await assert.rejects(login(r, {modulos: ['dispositivos']}), (error) => error.code === 'SIN_MODULO_BECAS'
-    && error.message === 'Tu usuario no tiene acceso a Becas en la app.');
+  await assert.rejects(login(r, {modulos: []}), (error) => error.code === 'SIN_MODULOS'
+    && error.message === 'Tu usuario no tiene acceso a ningun modulo de la app.');
+  await assert.rejects(login(r, {modulos: ['otro']}), (error) => error.code === 'SIN_MODULOS');
   assert.equal(r.values.get('becas_auth_token'), 'old-token'); assert.equal(r.values.get('user_data'), JSON.stringify({id: 7}));
-  await assert.rejects(login(r, {modulos: []}), (error) => error.code === 'SIN_MODULO_BECAS');
+  const solo = await login(r, {modulos: ['dispositivos']});
+  assert.deepEqual(plano(solo.modulos), ['dispositivos']);
 });
 
-test('login sin módulos (back viejo) o con becas entra y guarda módulos y versión mínima', async () => {
+test('login sin módulos (back viejo) entra como Becas; con módulos y guarda módulos y versión mínima', async () => {
   const r = await setup();
   const viejo = await login(r, {});
-  assert.equal(viejo.modulos, null); assert.equal(viejo.version_minima, null); assert.equal(r.values.get('becas_auth_token'), 'nuevo');
+  assert.deepEqual(plano(viejo.modulos), ['becas']); assert.equal(viejo.version_minima, null); assert.equal(r.values.get('becas_auth_token'), 'nuevo');
   const nuevo = await login(r, {modulos: ['becas', 'dispositivos'], app: {version_minima: '1.2.0'}});
   assert.deepEqual(plano(nuevo.modulos), ['becas', 'dispositivos']); assert.equal(nuevo.version_minima, '1.2.0');
   assert.equal(JSON.parse(r.values.get('user_data')).version_minima, '1.2.0');
