@@ -46,8 +46,8 @@ test('sin conexión y sin nada pendiente', () => {
   assert.deepEqual(resumen(undefined), {title: 'Sincronizacion', message: 'No habia elementos pendientes.'});
 });
 
-test('App.js arma el Alert de la sincronización manual con resumenSyncManual', () => {
-  const app = fs.readFileSync(path.join(__dirname, '../App.js'), 'utf8');
-  assert.match(app, /import \{ resumenSyncManual \} from '\.\/src\/utils\/syncManual'/);
+test('BecasApp arma el Alert de la sincronización manual con resumenSyncManual', () => {
+  const app = fs.readFileSync(path.join(__dirname, '../src/navigation/BecasApp.js'), 'utf8');
+  assert.match(app, /import \{ resumenSyncManual \} from '\.\.\/utils\/syncManual'/);
   assert.match(app, /const \{ title, message \} = resumenSyncManual\(relevamientoResult\);\s+Alert\.alert\(title, message\)/);
 });

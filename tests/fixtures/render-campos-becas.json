@@ -1,0 +1,899 @@
+[
+ {
+  "type": "View",
+  "props": {
+   "style": [
+    {
+     "borderRadius": 12,
+     "borderWidth": 1,
+     "padding": 14,
+     "marginBottom": 12,
+     "shadowColor": "#252F40",
+     "shadowOffset": {
+      "width": 0,
+      "height": 10
+     },
+     "shadowOpacity": 0.06,
+     "shadowRadius": 20,
+     "elevation": 2
+    },
+    {
+     "backgroundColor": "#5059BC",
+     "borderColor": "#5059BC"
+    }
+   ]
+  },
+  "children": [
+   {
+    "type": "Text",
+    "props": {
+     "style": [
+      {
+       "fontSize": 16,
+       "marginBottom": 8
+      },
+      {
+       "color": "#5059BC",
+       "fontFamily": "Manrope"
+      }
+     ]
+    },
+    "children": [
+     "Todos los tipos"
+    ]
+   },
+   {
+    "type": "Text",
+    "props": {
+     "style": [
+      {
+       "fontSize": 12
+      },
+      {
+       "color": "#5059BC",
+       "fontFamily": "Manrope"
+      }
+     ]
+    },
+    "children": [
+     "Ver ",
+     {
+      "type": "Text",
+      "props": {
+       "accessibilityRole": "link",
+       "style": {
+        "color": "#5059BC",
+        "textDecorationLine": "underline"
+       }
+      },
+      "children": [
+       "https://example.test/guia"
+      ]
+     },
+     " antes de seguir"
+    ]
+   },
+   {
+    "type": "View",
+    "props": {
+     "style": {
+      "marginBottom": 14
+     }
+    },
+    "children": [
+     {
+      "type": "Text",
+      "props": {
+       "style": [
+        {
+         "fontSize": 14,
+         "marginBottom": 7
+        },
+        {
+         "color": "#5059BC",
+         "fontFamily": "Manrope"
+        }
+       ]
+      },
+      "children": [
+       "Estado del techo",
+       " *"
+      ]
+     },
+     {
+      "type": "View",
+      "props": {
+       "style": {
+        "flexDirection": "row",
+        "flexWrap": "wrap",
+        "gap": 8
+       }
+      },
+      "children": [
+       {
+        "type": "Pressable",
+        "props": {
+         "style": [
+          {
+           "borderWidth": 1,
+           "borderRadius": 9999,
+           "paddingHorizontal": 12,
+           "paddingVertical": 8
+          },
+          {
+           "borderColor": "#5059BC",
+           "backgroundColor": "#5059BC"
+          },
+          false
+         ]
+        },
+        "children": [
+         {
+          "type": "Text",
+          "props": {
+           "style": [
+            {
+             "fontSize": 12
+            },
+            {
+             "color": "#5059BC",
+             "fontFamily": "Manrope"
+            }
+           ]
+          },
+          "children": [
+           "Bueno"
+          ]
+         }
+        ]
+       },
+       {
+        "type": "Pressable",
+        "props": {
+         "style": [
+          {
+           "borderWidth": 1,
+           "borderRadius": 9999,
+           "paddingHorizontal": 12,
+           "paddingVertical": 8
+          },
+          {
+           "borderColor": "#5059BC",
+           "backgroundColor": "#5059BC"
+          },
+          false
+         ]
+        },
+        "children": [
+         {
+          "type": "Text",
+          "props": {
+           "style": [
+            {
+             "fontSize": 12
+            },
+            {
+             "color": "#5059BC",
+             "fontFamily": "Manrope"
+            }
+           ]
+          },
+          "children": [
+           "Malo"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "type": "View",
+    "props": {
+     "style": {
+      "marginBottom": 14
+     }
+    },
+    "children": [
+     {
+      "type": "Text",
+      "props": {
+       "style": [
+        {
+         "fontSize": 14,
+         "marginBottom": 7
+        },
+        {
+         "color": "#5059BC",
+         "fontFamily": "Manrope"
+        }
+       ]
+      },
+      "children": [
+       "Servicios"
+      ]
+     },
+     {
+      "type": "View",
+      "props": {
+       "style": {
+        "flexDirection": "row",
+        "flexWrap": "wrap",
+        "gap": 8
+       }
+      },
+      "children": [
+       {
+        "type": "Pressable",
+        "props": {
+         "style": [
+          {
+           "borderWidth": 1,
+           "borderRadius": 9999,
+           "paddingHorizontal": 12,
+           "paddingVertical": 8
+          },
+          {
+           "borderColor": "#5059BC",
+           "backgroundColor": "#5059BC"
+          },
+          false
+         ]
+        },
+        "children": [
+         {
+          "type": "Ionicons",
+          "props": {
+           "name": "square-outline",
+           "size": 17,
+           "color": "#5059BC"
+          },
+          "children": []
+         },
+         {
+          "type": "Text",
+          "props": {
+           "style": [
+            {
+             "fontSize": 12
+            },
+            {
+             "color": "#5059BC",
+             "fontFamily": "Manrope"
+            }
+           ]
+          },
+          "children": [
+           "Agua"
+          ]
+         }
+        ]
+       },
+       {
+        "type": "Pressable",
+        "props": {
+         "style": [
+          {
+           "borderWidth": 1,
+           "borderRadius": 9999,
+           "paddingHorizontal": 12,
+           "paddingVertical": 8
+          },
+          {
+           "borderColor": "#5059BC",
+           "backgroundColor": "#5059BC"
+          },
+          false
+         ]
+        },
+        "children": [
+         {
+          "type": "Ionicons",
+          "props": {
+           "name": "square-outline",
+           "size": 17,
+           "color": "#5059BC"
+          },
+          "children": []
+         },
+         {
+          "type": "Text",
+          "props": {
+           "style": [
+            {
+             "fontSize": 12
+            },
+            {
+             "color": "#5059BC",
+             "fontFamily": "Manrope"
+            }
+           ]
+          },
+          "children": [
+           "Luz"
+          ]
+         }
+        ]
+       },
+       {
+        "type": "Pressable",
+        "props": {
+         "style": [
+          {
+           "borderWidth": 1,
+           "borderRadius": 9999,
+           "paddingHorizontal": 12,
+           "paddingVertical": 8
+          },
+          {
+           "borderColor": "#5059BC",
+           "backgroundColor": "#5059BC"
+          },
+          false
+         ]
+        },
+        "children": [
+         {
+          "type": "Ionicons",
+          "props": {
+           "name": "square-outline",
+           "size": 17,
+           "color": "#5059BC"
+          },
+          "children": []
+         },
+         {
+          "type": "Text",
+          "props": {
+           "style": [
+            {
+             "fontSize": 12
+            },
+            {
+             "color": "#5059BC",
+             "fontFamily": "Manrope"
+            }
+           ]
+          },
+          "children": [
+           "Gas"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "type": "View",
+    "props": {
+     "style": {
+      "marginBottom": 14
+     }
+    },
+    "children": [
+     {
+      "type": "Text",
+      "props": {
+       "style": [
+        {
+         "fontSize": 14,
+         "marginBottom": 7
+        },
+        {
+         "color": "#5059BC",
+         "fontFamily": "Manrope"
+        }
+       ]
+      },
+      "children": [
+       "Localidad"
+      ]
+     },
+     {
+      "type": "TextInput",
+      "props": {
+       "value": "",
+       "accessibilityLabel": "Buscar opciones de Localidad",
+       "placeholder": "Buscar opciones",
+       "placeholderTextColor": "#5059BC",
+       "style": [
+        {
+         "minHeight": 46,
+         "borderWidth": 1,
+         "borderRadius": 8,
+         "paddingHorizontal": 12,
+         "paddingVertical": 10,
+         "fontSize": 14
+        },
+        {
+         "color": "#5059BC",
+         "borderColor": "#5059BC",
+         "backgroundColor": "#5059BC"
+        }
+       ]
+      },
+      "children": []
+     },
+     {
+      "type": "View",
+      "props": {
+       "style": {
+        "flexDirection": "row",
+        "flexWrap": "wrap",
+        "gap": 8
+       }
+      },
+      "children": [
+       {
+        "type": "Pressable",
+        "props": {
+         "style": [
+          {
+           "borderWidth": 1,
+           "borderRadius": 9999,
+           "paddingHorizontal": 12,
+           "paddingVertical": 8
+          },
+          {
+           "borderColor": "#5059BC",
+           "backgroundColor": "#5059BC"
+          },
+          false
+         ]
+        },
+        "children": [
+         {
+          "type": "Text",
+          "props": {
+           "style": [
+            {
+             "fontSize": 12
+            },
+            {
+             "color": "#5059BC",
+             "fontFamily": "Manrope"
+            }
+           ]
+          },
+          "children": [
+           "Resistencia"
+          ]
+         }
+        ]
+       },
+       {
+        "type": "Pressable",
+        "props": {
+         "style": [
+          {
+           "borderWidth": 1,
+           "borderRadius": 9999,
+           "paddingHorizontal": 12,
+           "paddingVertical": 8
+          },
+          {
+           "borderColor": "#5059BC",
+           "backgroundColor": "#5059BC"
+          },
+          false
+         ]
+        },
+        "children": [
+         {
+          "type": "Text",
+          "props": {
+           "style": [
+            {
+             "fontSize": 12
+            },
+            {
+             "color": "#5059BC",
+             "fontFamily": "Manrope"
+            }
+           ]
+          },
+          "children": [
+           "Barranqueras"
+          ]
+         }
+        ]
+       },
+       {
+        "type": "Pressable",
+        "props": {
+         "style": [
+          {
+           "borderWidth": 1,
+           "borderRadius": 9999,
+           "paddingHorizontal": 12,
+           "paddingVertical": 8
+          },
+          {
+           "borderColor": "#5059BC",
+           "backgroundColor": "#5059BC"
+          },
+          false
+         ]
+        },
+        "children": [
+         {
+          "type": "Text",
+          "props": {
+           "style": [
+            {
+             "fontSize": 12
+            },
+            {
+             "color": "#5059BC",
+             "fontFamily": "Manrope"
+            }
+           ]
+          },
+          "children": [
+           "Fontana"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "type": "View",
+    "props": {
+     "style": {
+      "marginBottom": 14
+     }
+    },
+    "children": [
+     {
+      "type": "Text",
+      "props": {
+       "style": [
+        {
+         "fontSize": 14,
+         "marginBottom": 7
+        },
+        {
+         "color": "#5059BC",
+         "fontFamily": "Manrope"
+        }
+       ]
+      },
+      "children": [
+       "Fecha de visita"
+      ]
+     },
+     {
+      "type": "WebDateInput",
+      "props": {
+       "value": "",
+       "label": "Fecha de visita",
+       "required": false,
+       "style": {
+        "minHeight": 46,
+        "borderWidth": 1,
+        "borderRadius": 8,
+        "paddingHorizontal": 12,
+        "paddingVertical": 10,
+        "fontSize": 14
+       }
+      },
+      "children": []
+     }
+    ]
+   },
+   {
+    "type": "View",
+    "props": {
+     "style": {
+      "marginBottom": 14
+     }
+    },
+    "children": [
+     {
+      "type": "Text",
+      "props": {
+       "style": [
+        {
+         "fontSize": 14,
+         "marginBottom": 7
+        },
+        {
+         "color": "#5059BC",
+         "fontFamily": "Manrope"
+        }
+       ]
+      },
+      "children": [
+       "Foto del frente"
+      ]
+     },
+     {
+      "type": "TouchableOpacity",
+      "props": {
+       "activeOpacity": 0.86,
+       "style": [
+        {
+         "minHeight": 74,
+         "borderWidth": 1,
+         "borderStyle": "dashed",
+         "borderRadius": 8,
+         "alignItems": "center",
+         "justifyContent": "center",
+         "padding": 12
+        },
+        {
+         "borderColor": "#5059BC",
+         "backgroundColor": "#5059BC"
+        }
+       ]
+      },
+      "children": [
+       {
+        "type": "Ionicons",
+        "props": {
+         "name": "image-outline",
+         "size": 24,
+         "color": "#5059BC"
+        },
+        "children": []
+       },
+       {
+        "type": "Text",
+        "props": {
+         "style": [
+          {
+           "fontSize": 12,
+           "marginTop": 6,
+           "textAlign": "center"
+          },
+          {
+           "color": "#5059BC",
+           "fontFamily": "Manrope"
+          }
+         ]
+        },
+        "children": [
+         "Tocar para sacar una foto o elegir un archivo"
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "type": "View",
+    "props": {
+     "style": {
+      "marginBottom": 14
+     }
+    },
+    "children": [
+     {
+      "type": "Text",
+      "props": {
+       "style": [
+        {
+         "fontSize": 14,
+         "marginBottom": 7
+        },
+        {
+         "color": "#5059BC",
+         "fontFamily": "Manrope"
+        }
+       ]
+      },
+      "children": [
+       "Cantidad de aulas"
+      ]
+     },
+     {
+      "type": "TextInput",
+      "props": {
+       "value": "",
+       "multiline": false,
+       "keyboardType": "numeric",
+       "inputMode": "numeric",
+       "autoCapitalize": "sentences",
+       "autoCorrect": true,
+       "accessibilityLabel": "Cantidad de aulas",
+       "accessibilityHint": "Ingresá un número entero, sin letras ni decimales.",
+       "aria-invalid": false,
+       "style": [
+        {
+         "minHeight": 46,
+         "borderWidth": 1,
+         "borderRadius": 8,
+         "paddingHorizontal": 12,
+         "paddingVertical": 10,
+         "fontSize": 14
+        },
+        false,
+        {
+         "color": "#5059BC",
+         "borderColor": "#5059BC",
+         "backgroundColor": "#5059BC"
+        }
+       ],
+       "placeholderTextColor": "#5059BC",
+       "placeholder": "Ej.: 12"
+      },
+      "children": []
+     },
+     {
+      "type": "Text",
+      "props": {
+       "style": {
+        "color": "#5059BC",
+        "fontFamily": "Manrope",
+        "fontSize": 12
+       }
+      },
+      "children": [
+       "Número entero, sin letras ni decimales."
+      ]
+     }
+    ]
+   },
+   {
+    "type": "View",
+    "props": {
+     "style": {
+      "marginBottom": 14
+     }
+    },
+    "children": [
+     {
+      "type": "Text",
+      "props": {
+       "style": [
+        {
+         "fontSize": 14,
+         "marginBottom": 7
+        },
+        {
+         "color": "#5059BC",
+         "fontFamily": "Manrope"
+        }
+       ]
+      },
+      "children": [
+       "Descripción"
+      ]
+     },
+     {
+      "type": "TextInput",
+      "props": {
+       "value": "",
+       "multiline": true,
+       "keyboardType": "default",
+       "inputMode": "text",
+       "autoCapitalize": "sentences",
+       "autoCorrect": true,
+       "accessibilityLabel": "Descripción",
+       "accessibilityHint": "Ingresá texto.",
+       "aria-invalid": false,
+       "style": [
+        {
+         "minHeight": 46,
+         "borderWidth": 1,
+         "borderRadius": 8,
+         "paddingHorizontal": 12,
+         "paddingVertical": 10,
+         "fontSize": 14
+        },
+        {
+         "minHeight": 96,
+         "textAlignVertical": "top"
+        },
+        {
+         "color": "#5059BC",
+         "borderColor": "#5059BC",
+         "backgroundColor": "#5059BC"
+        }
+       ],
+       "placeholderTextColor": "#5059BC",
+       "placeholder": "Ingresá texto"
+      },
+      "children": []
+     },
+     {
+      "type": "Text",
+      "props": {
+       "style": {
+        "color": "#5059BC",
+        "fontFamily": "Manrope",
+        "fontSize": 12
+       }
+      },
+      "children": [
+       "Texto."
+      ]
+     }
+    ]
+   },
+   {
+    "type": "View",
+    "props": {
+     "style": {
+      "marginBottom": 14
+     }
+    },
+    "children": [
+     {
+      "type": "Text",
+      "props": {
+       "style": [
+        {
+         "fontSize": 14,
+         "marginBottom": 7
+        },
+        {
+         "color": "#5059BC",
+         "fontFamily": "Manrope"
+        }
+       ]
+      },
+      "children": [
+       "Observaciones generales"
+      ]
+     },
+     {
+      "type": "TextInput",
+      "props": {
+       "value": "",
+       "multiline": true,
+       "keyboardType": "default",
+       "inputMode": "text",
+       "autoCapitalize": "sentences",
+       "autoCorrect": true,
+       "accessibilityLabel": "Observaciones generales",
+       "accessibilityHint": "Ingresá texto.",
+       "aria-invalid": false,
+       "style": [
+        {
+         "minHeight": 46,
+         "borderWidth": 1,
+         "borderRadius": 8,
+         "paddingHorizontal": 12,
+         "paddingVertical": 10,
+         "fontSize": 14
+        },
+        {
+         "minHeight": 96,
+         "textAlignVertical": "top"
+        },
+        {
+         "color": "#5059BC",
+         "borderColor": "#5059BC",
+         "backgroundColor": "#5059BC"
+        }
+       ],
+       "placeholderTextColor": "#5059BC",
+       "placeholder": "Ingresá texto"
+      },
+      "children": []
+     },
+     {
+      "type": "Text",
+      "props": {
+       "style": {
+        "color": "#5059BC",
+        "fontFamily": "Manrope",
+        "fontSize": 12
+       }
+      },
+      "children": [
+       "Texto."
+      ]
+     }
+    ]
+   }
+  ]
+ }
+]

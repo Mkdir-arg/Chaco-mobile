@@ -8,6 +8,7 @@ import CustomButton from './CustomButton';
 import AvisosContador from './AvisosContador';
 import usePermisos from '../hooks/usePermisos';
 import { ETIQUETAS_ESTADO, ayudaBloqueado, abrirAjustes } from '../services/permisos';
+import { NOMBRE_MODULO } from '../services/modulos';
 import { designColors, fontSizes, gradients, radii } from '../theme';
 
 const FILAS_PERMISO = [
@@ -18,9 +19,9 @@ const FILAS_PERMISO = [
 const { width } = Dimensions.get('window');
 const PANEL_WIDTH = width * 0.8;
 
-export default function SettingsPanel({ visible, onClose, onLogout, onOpenAvisos, avisosNoLeidos = 0 }) {
+export default function SettingsPanel({ visible, onClose, onLogout, onOpenAvisos, avisosNoLeidos = 0, onCambiarModulo }) {
     const { theme, isDark, toggleTheme, typography } = useTheme();
-    const { user } = useAuth();
+    const { user, moduloActivo } = useAuth();
     const { permisos, pidiendo, pedir } = usePermisos(visible);
     // Start from -PANEL_WIDTH to slide from the left
     const slideAnim = useRef(new Animated.Value(-PANEL_WIDTH)).current;
@@ -32,7 +33,7 @@ export default function SettingsPanel({ visible, onClose, onLogout, onOpenAvisos
         .slice(0, 2)
         .map((part) => part[0]?.toUpperCase())
         .join('') || 'U';
-    const roleLabel = user?.grupos?.[0]?.nombre || (user?.es_admin ? 'Administrador' : 'Usuario');
+    const roleLabel = NOMBRE_MODULO[moduloActivo] || user?.grupos?.[0]?.nombre || (user?.es_admin ? 'Administrador' : 'Usuario');
 
     useEffect(() => {
         if (visible) {
@@ -121,6 +122,15 @@ export default function SettingsPanel({ visible, onClose, onLogout, onOpenAvisos
                             </View>
                             <AvisosContador cantidad={avisosNoLeidos} />
                         </Pressable>
+
+                        {onCambiarModulo && (
+                            <Pressable onPress={onCambiarModulo} style={[styles.menuItem, { borderColor: theme.colors.border, backgroundColor: theme.colors.surface }]}>
+                                <View style={styles.menuLabel}>
+                                    <Ionicons name="swap-horizontal-outline" size={22} color={theme.colors.icon} />
+                                    <Text style={[styles.menuText, { color: theme.colors.text, fontFamily: typography.medium }]}>Cambiar de módulo</Text>
+                                </View>
+                            </Pressable>
+                        )}
 
                         <Text style={[styles.sectionTitle, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>Permisos</Text>
                         {FILAS_PERMISO.map(({ clave, titulo, icono }) => {

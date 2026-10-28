@@ -31,16 +31,26 @@ function loadTokens() {
 
 function loadScreen(relative, mocks) {
   const filename = path.join(root, relative);
-  const {code} = transformSync(fs.readFileSync(filename, 'utf8'), {
-    filename, babelrc: false, configFile: false,
-    plugins: ['@babel/plugin-transform-react-jsx', '@babel/plugin-transform-modules-commonjs']});
-  const module = {exports: {}};
   const context = vm.createContext({console, setTimeout, clearTimeout, setInterval: () => 0, clearInterval() {},
     requestAnimationFrame: () => 0, cancelAnimationFrame() {}});
-  vm.runInContext('(function(require,module,exports){' + code + '\n})', context)(name => {
-    assert.ok(mocks[name], 'Missing screen mock: ' + name); return mocks[name];
-  }, module, module.exports);
-  return module.exports.default;
+  // Los componentes del formulario se cargan de verdad: son parte de la pantalla. Sus
+  // imports se resuelven contra los mocks de la pantalla, con la ruta vista desde ella.
+  const screensDir = path.dirname(filename);
+  const resolve = (dir, name) => {
+    const key = name.startsWith('.') ? path.relative(screensDir, path.join(dir, name)).split(path.sep).join('/') : name;
+    if (key.startsWith('../components/formulario/')) return load(path.join(screensDir, key + '.js'));
+    assert.ok(mocks[key], 'Missing screen mock: ' + key); return mocks[key];
+  };
+  const load = (file) => {
+    const {code} = transformSync(fs.readFileSync(file, 'utf8'), {
+      filename: file, babelrc: false, configFile: false,
+      plugins: ['@babel/plugin-transform-react-jsx', '@babel/plugin-transform-modules-commonjs']});
+    const module = {exports: {}};
+    vm.runInContext('(function(require,module,exports){' + code + '\n})', context)(
+      name => resolve(path.dirname(file), name), module, module.exports);
+    return module.exports;
+  };
+  return load(filename).default;
 }
 
 async function render(Screen, props) {
@@ -353,10 +363,11 @@ test('P15: bloqueo por versión mínima, con y sin dato', async () => {
   assert.equal(await evaluarBloqueoVersion({requiereActualizacionGuardada: async () => { throw new Error('x'); }, versionActual: () => '1.1.0'}), null);
 });
 
-test('P15: con la versión real, 1.1.0 contra mínima 1.2.0 bloquea y 1.0.0 no', async () => {
+test('P15: con la versión real, una mínima mayor bloquea y 1.0.0 no', async () => {
   const runtime = await setup();
   const version = runtime.load('./versionApp');
-  assert.equal(version.requiereActualizacion('1.2.0'), true);
+  const [mayor, menor] = require('../app.json').expo.version.split('.').map(Number);
+  assert.equal(version.requiereActualizacion(`${mayor}.${menor + 1}.0`), true);
   assert.equal(version.requiereActualizacion('1.0.0'), false);
   assert.equal(version.requiereActualizacion(null), false);
 });

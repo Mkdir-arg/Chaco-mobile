@@ -3,6 +3,7 @@ import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import { API_CONFIG } from '../config/apiConfig';
 import { apiErrorMessage } from './formularioSync';
+import { normalizarModulos } from './modulos';
 import { readWebBlob } from './webAttachments';
 import { ahoraCorregido, registrarHoraServidor } from './reloj';
 
@@ -17,6 +18,7 @@ const CREDENCIALES = Platform.OS === 'web' ? 'omit' : 'include';
 const TOKEN_KEY = 'becas_auth_token';
 const USER_DATA_KEY = 'user_data';
 const USER_ID_KEY = 'user_id';
+const MODULO_ACTIVO_KEY = 'modulo_activo';
 const sessionExpiredListeners = new Set();
 let sessionInvalidation = null;
 
@@ -95,10 +97,26 @@ export const getStoredBecasUser = async () => {
   const raw = await storage.getItem(USER_DATA_KEY);
   if (!raw) return null;
   try {
-    return JSON.parse(raw);
+    const user = JSON.parse(raw);
+    return user && { ...user, modulos: normalizarModulos(user.modulos) };
   } catch {
     return null;
   }
+};
+
+export const getModuloActivo = () => storage.getItem(MODULO_ACTIVO_KEY);
+
+export const setModuloActivo = (modulo) => storage.setItem(MODULO_ACTIVO_KEY, modulo);
+
+// El back dejó de admitir un módulo (403 SIN_MODULO): se saca del usuario guardado y, si era
+// el activo, del módulo activo. Devuelve el usuario actualizado, o null si no hay sesión.
+export const quitarModuloLocal = async (modulo) => {
+  const user = await getStoredBecasUser();
+  if (!user) return null;
+  const next = { ...user, modulos: user.modulos.filter((item) => item !== modulo) };
+  await storage.setItem(USER_DATA_KEY, JSON.stringify(next));
+  if (await getModuloActivo() === modulo) await storage.deleteItem(MODULO_ACTIVO_KEY);
+  return next;
 };
 
 export const clearBecasSession = async () => {
@@ -106,6 +124,7 @@ export const clearBecasSession = async () => {
     storage.deleteItem(TOKEN_KEY),
     storage.deleteItem(USER_DATA_KEY),
     storage.deleteItem(USER_ID_KEY),
+    storage.deleteItem(MODULO_ACTIVO_KEY),
   ]);
 };
 
@@ -172,21 +191,19 @@ export const loginBecas = async ({ username, password }) => {
     throw new Error(payload?.detail || payload?.non_field_errors?.[0] || 'No se pudo iniciar sesion.');
   }
 
-  // Un back viejo no manda `modulos`: se deja pasar. Si manda la lista y no incluye
-  // Becas, el usuario no tiene nada que hacer en esta app y no se guarda la sesión.
-  if (Array.isArray(payload.modulos) && !payload.modulos.includes('becas')) {
-    const error = new Error('Tu usuario no tiene acceso a Becas en la app.');
-    error.code = 'SIN_MODULO_BECAS';
+  const modulos = normalizarModulos(payload.modulos);
+  if (!modulos.length) {
+    const error = new Error('Tu usuario no tiene acceso a ningun modulo de la app.');
+    error.code = 'SIN_MODULOS';
     throw error;
   }
-
   const user = {
     id: payload.user_id,
     username: payload.username,
     nombre: payload.username,
     grupos: [],
     es_admin: false,
-    modulos: Array.isArray(payload.modulos) ? payload.modulos : null,
+    modulos,
     version_minima: payload.app?.version_minima || null,
   };
   await Promise.all([

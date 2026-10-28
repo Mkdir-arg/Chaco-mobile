@@ -142,6 +142,7 @@ async function montarPanel({os = 'android', leer, pedir}) {
     '@expo/vector-icons': {Ionicons: 'Ionicons'}, 'expo-linear-gradient': {LinearGradient: 'LinearGradient'},
     '../context/ThemeContext': {useTheme: () => ({theme, isDark: false, toggleTheme() {}, typography: {medium: 'M', regular: 'R', bold: 'B', semibold: 'S'}})},
     '../context/AuthContext': {useAuth: () => ({user: {username: 'ana'}})},
+    '../services/modulos': {NOMBRE_MODULO: {becas: 'Becas', dispositivos: 'Dispositivos'}},
     './CustomButton': {__esModule: true, default: 'CustomButton'},
     './AvisosContador': {__esModule: true, default: 'AvisosContador'},
     '../hooks/usePermisos': {__esModule: true, default: usePermisos},
