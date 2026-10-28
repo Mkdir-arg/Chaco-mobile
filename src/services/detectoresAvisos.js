@@ -4,7 +4,7 @@
 // la sesión cambió, la pasada se aborta sin grabar nada más.
 // y devuelve los avisos que acaba de crear. Ninguno propaga un error: un fallo aquí no
 // puede cortar ni demorar la sincronización ni el refresco que los llaman.
-import { crearAviso, guardarEstado, leerEstado } from './avisos';
+import { CLAVE_ANTIGUEDAD_COLA, crearAviso, guardarEstado, leerEstado } from './avisos';
 import { CODIGOS_REQUIEREN_ATENCION } from './formularioSync';
 import { dateKey, formatDate, parseAssignmentDate } from '../utils/dates';
 
@@ -13,6 +13,8 @@ const DIA_MS = 24 * HORA_MS;
 export const SEGUIR_VENCIDOS_MS = 30 * DIA_MS;
 export const ANTIGUEDAD_COLA_MS = 2 * HORA_MS;
 export const REPETIR_ANTIGUEDAD_MS = DIA_MS;
+// Plazo de cada consulta de rechazos; vencido cuenta como falla transitoria (ni avisos ni línea de base).
+export const TIMEOUT_CONSULTA_RECHAZOS_MS = 15 * 1000;
 
 const reloj = (ctx) => (typeof ctx.ahora === 'function' ? ctx.ahora() : Date.now());
 
@@ -38,6 +40,22 @@ const unir = (partes) => partes.filter((parte) => parte != null && String(parte)
 const esRelevamientoRemoto = (item) => item?.id != null && !String(item.id).startsWith('local_rel_')
   && (item.backend == null || item.backend === 'django_becas');
 const numeroDe = (item) => String(item?.numero ?? item?.id);
+
+// Una consulta de rechazos con plazo. Si vence se aborta y se rechaza como falla de red, lo
+// mismo que si no hubiera conexión. El plazo se puede cambiar con `ctx.timeoutMs`.
+const consultarConPlazo = (ctx, ruta) => {
+  const plazo = ctx.timeoutMs ?? TIMEOUT_CONSULTA_RECHAZOS_MS;
+  const control = typeof AbortController === 'function' ? new AbortController() : null;
+  let temporizador;
+  const vencida = new Promise((_, rechazar) => {
+    temporizador = setTimeout(() => {
+      control?.abort();
+      rechazar(Object.assign(new Error('Tiempo de espera agotado'), { network: true, timeout: true }));
+    }, plazo);
+  });
+  return Promise.race([ctx.pedir(ruta, { signal: control?.signal }), vencida])
+    .finally(() => clearTimeout(temporizador));
+};
 
 export const rutaFormularios = (relevamientoId) => `/api/becas/relevamientos/${relevamientoId}/formularios/`;
 
@@ -126,7 +144,7 @@ export const detectarRechazos = aislado('rechazos', async (ctx, records) => {
     if (!(await sesionVigente(ctx))) break;
     let respuesta;
     try {
-      respuesta = await ctx.pedir(rutaFormularios(relevamientoId));
+      respuesta = await consultarConPlazo(ctx, rutaFormularios(relevamientoId));
     } catch (error) {
       if (!(await sesionVigente(ctx))) break;
       const status = Number(error?.status || 0);
@@ -207,7 +225,7 @@ export const detectarCola = aislado('cola', async (ctx, operaciones) => {
   const total = pendientes.length;
   const aviso = {
     tipo: 'cargas_sin_subir',
-    clave: `cola:antiguedad:${ahora}`,
+    clave: `${CLAVE_ANTIGUEDAD_COLA}${ahora}`,
     relevamiento_id: masVieja.payload?.relevamiento_id,
     titulo: `Tenés ${total} ${total === 1 ? 'carga' : 'cargas'} sin subir`,
     texto: 'Revisá la conexión o sincronizá desde el detalle del relevamiento.',

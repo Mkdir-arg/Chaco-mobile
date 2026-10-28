@@ -22,7 +22,7 @@ const PANEL_WIDTH = width * 0.8;
 export default function SettingsPanel({ visible, onClose, onLogout, onOpenAvisos, avisosNoLeidos = 0, onCambiarModulo }) {
     const { theme, isDark, toggleTheme, typography } = useTheme();
     const { user, moduloActivo } = useAuth();
-    const { permisos, pedir } = usePermisos(visible);
+    const { permisos, pidiendo, pedir } = usePermisos(visible);
     // Start from -PANEL_WIDTH to slide from the left
     const slideAnim = useRef(new Animated.Value(-PANEL_WIDTH)).current;
     const [shouldRender, setShouldRender] = useState(visible);
@@ -151,8 +151,9 @@ export default function SettingsPanel({ visible, onClose, onLogout, onOpenAvisos
                                         </View>
                                         {estado !== 'granted' && !(esWeb && bloqueado) ? (
                                             <CustomButton
-                                                title={bloqueado ? 'Abrir ajustes' : 'Permitir'}
+                                                title={pidiendo[clave] ? 'Pidiendo…' : (bloqueado ? 'Abrir ajustes' : 'Permitir')}
                                                 size="SM"
+                                                disabled={!!pidiendo[clave]}
                                                 onPress={bloqueado ? abrirAjustes : () => pedir(clave)}
                                             />
                                         ) : null}

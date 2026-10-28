@@ -687,3 +687,59 @@ test('manual: con la cola vacía waiting es 0 y sin motivo; la carga de otro usu
   result = await r.service.retryFailedOperations();
   assert.equal(result.waiting, 0); assert.equal(result.waitingReason, null);
 });
+
+// E1: una carga PENDING detrás de otra operación del mismo relevamiento da su motivo.
+test('manual: un finalizar detrás de un alta que no subió da el motivo de la dependencia', async () => {
+  const r = await setup(); r.setNow(T0);
+  await enqueue(r, {}, 'insert_relevamiento', 'alta');
+  r.sql.prepare("UPDATE outbox_relevamientos SET status='FAILED_PERMANENT', last_error_code='ALTA_INVALIDA', last_error='x' WHERE local_id='alta'").run();
+  await enqueue(r, {client_uuid: '22222222-2222-4222-a222-222222222222'}, 'finalizar_relevamiento', 'fin');
+  const c = contador(r);
+  const result = await r.service.retryFailedOperations();
+  assert.equal(c.n, 0);
+  assert.equal(row(r, 'fin').status, 'PENDING');
+  assert.equal(result.waiting, 1);
+  assert.equal(result.waitingReason, 'esperando que suba primero otra operación del mismo relevamiento');
+});
+
+test('manual: un alta detrás de un iniciar que no subió da el motivo de la dependencia', async () => {
+  const r = await setup(); r.setNow(T0);
+  await enqueue(r, {client_uuid: '33333333-3333-4333-a333-333333333333'}, 'iniciar_relevamiento', 'ini');
+  r.sql.prepare("UPDATE outbox_relevamientos SET status='FAILED_PERMANENT', last_error_code='ALTA_INVALIDA', last_error='x' WHERE local_id='ini'").run();
+  await enqueue(r, {}, 'insert_relevamiento', 'alta');
+  const result = await r.service.retryFailedOperations();
+  assert.equal(row(r, 'alta').status, 'PENDING');
+  assert.equal(result.waiting, 1);
+  assert.equal(result.waitingReason, 'esperando que suba primero otra operación del mismo relevamiento');
+});
+
+test('manual: una carga sin dependencia ni error no inventa un motivo', async () => {
+  const r = await setup(); r.setNow(T0);
+  await enqueue(r, {}, 'insert_relevamiento', 'sola');
+  r.setFetch(async () => response(200, {id: 55}));
+  const result = await r.service.retryFailedOperations();
+  assert.equal(result.waiting, 0);
+  assert.equal(result.waitingReason, null);
+});
+
+// F1: solo una alta descartada deja visible una tarjeta vencida; las demás operaciones no.
+test('una descartada que no es alta (finalizar, iniciar, reabrir) no hace visible una tarjeta vencida', async () => {
+  const r = await setup();
+  r.setPeriod('2020-01-01T00:00:00-03:00', '2020-01-02T00:00:00-03:00');
+  const remoto = {id: 1, nombre: 'Uno', estado: 'finalizado', fecha_asignada: '2020-01-01T00:00:00-03:00', fecha_hasta: '2020-01-02T00:00:00-03:00'};
+  r.setFetch(async url => response(200, /\/relevamientos\/(\?|$)/.test(String(url)) ? {results: [remoto]} : remoto));
+  const tarjeta = async () => (await r.service.getRelevamientos()).records.find(item => String(item.id) === '1');
+  const uuids = ['aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa', 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb', 'cccccccc-cccc-4ccc-cccc-cccccccccccc'];
+  const tipos = ['finalizar_relevamiento', 'iniciar_relevamiento', 'reabrir_relevamiento'];
+  for (const [i, tipo] of tipos.entries()) await enqueue(r, {client_uuid: uuids[i]}, tipo, `op${i}`);
+  r.sql.prepare("UPDATE outbox_relevamientos SET status='DISCARDED'").run();
+  const sinAlta = await tarjeta();
+  assert.equal(sinAlta.has_discarded_operations, false);
+  assert.equal(r.dates.isAssignmentVisible(sinAlta), false);
+  // Con un alta descartada, en cambio, la misma tarjeta vuelve a verse.
+  await enqueue(r, {}, 'insert_relevamiento', 'alta');
+  r.sql.prepare("UPDATE outbox_relevamientos SET status='DISCARDED' WHERE local_id='alta'").run();
+  const conAlta = await tarjeta();
+  assert.equal(conAlta.has_discarded_operations, true);
+  assert.equal(r.dates.isAssignmentVisible(conAlta), true);
+});

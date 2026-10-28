@@ -30,11 +30,28 @@ test('en nativo se mantiene el modo pedido', () => {
   }
 });
 
-test('ninguna pantalla fija keyboardDismissMode en un literal on-drag', () => {
-  const dir = 'src/screens';
-  for (const file of fs.readdirSync(dir).filter(f => f.endsWith('.js'))) {
-    const source = fs.readFileSync(path.join(dir, file), 'utf8');
-    assert.doesNotMatch(source, /keyboardDismissMode\s*=\s*(["']on-drag["']|\{\s*["']on-drag["']\s*\})/, `${file} fija on-drag`);
-    assert.doesNotMatch(source, /keyboardDismissMode\s*=\s*\{(?![^}]*keyboardDismissModeFor)/, `${file} no usa keyboardDismissModeFor`);
+function archivosFuente(dir) {
+  return fs.readdirSync(dir, {withFileTypes: true}).flatMap(entry => {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) return archivosFuente(full);
+    return /\.(js|jsx|ts|tsx)$/.test(entry.name) ? [full] : [];
+  });
+}
+
+test('todo keyboardDismissMode en src/ pasa por keyboardDismissModeFor', () => {
+  const helper = path.normalize(path.join('src', 'utils', 'teclado.js'));
+  let encontrados = 0;
+  for (const file of archivosFuente('src')) {
+    if (path.normalize(file) === helper) continue;
+    fs.readFileSync(file, 'utf8').split('\n').forEach((linea, index) => {
+      if (!/keyboardDismissMode\s*[:=]/.test(linea)) return;
+      encontrados += 1;
+      assert.match(linea, /keyboardDismissModeFor/, file + ':' + (index + 1) + ' no usa keyboardDismissModeFor');
+    });
+  }
+  assert.ok(encontrados >= 3);
+  for (const pantalla of ['LoginScreen', 'NewRelevamientoScreen', 'RelevamientoDetailScreen']) {
+    const source = fs.readFileSync(path.join('src', 'screens', pantalla + '.js'), 'utf8');
+    assert.match(source, /keyboardDismissMode\s*=\s*\{[^}]*keyboardDismissModeFor/, pantalla + ' no usa el helper');
   }
 });
