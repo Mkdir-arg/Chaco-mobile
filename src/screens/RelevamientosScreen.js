@@ -428,7 +428,7 @@ function IconButton({ icon, tone }) {
 }
 
 const toneStyles = {
-    brand: { bg: '#FFEAF6', fg: UI.brand },
+    brand: { bg: designColors.bgBrandSoft, fg: UI.brand },
     warning: { bg: '#FFF8F1', fg: designColors.warning },
     success: { bg: '#ECFDF5', fg: designColors.success },
     danger: { bg: '#FEF0F2', fg: designColors.danger },
@@ -572,8 +572,8 @@ const styles = StyleSheet.create({
         borderColor: UI.border,
     },
     filterChipSelected: {
-        backgroundColor: '#FFEAF6',
-        borderColor: '#FFB9DC',
+        backgroundColor: designColors.bgBrandSoft,
+        borderColor: designColors.bgBrandMedium,
     },
     filterChipText: {
         fontSize: fontSizes.xs,
@@ -582,7 +582,7 @@ const styles = StyleSheet.create({
         color: UI.body,
     },
     filterChipTextSelected: {
-        color: '#A11F60',
+        color: designColors.textBrand,
     },
     centerBox: {
         alignItems: 'center',

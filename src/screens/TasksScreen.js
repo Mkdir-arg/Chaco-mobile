@@ -112,21 +112,21 @@ export default function TasksScreen({ onOpenSurvey }) {
                                 <Text style={[
                                     styles.dayName,
                                     { color: theme.colors.textSoft, fontFamily: typography.extrabold },
-                                    info.isSelected && { color: '#A11F60' }
+                                    info.isSelected && { color: designColors.textBrand }
                                 ]}>
                                     {info.dayName}
                                 </Text>
                                 <Text style={[
                                     styles.dayNum,
                                     { color: theme.colors.text, fontFamily: typography.bold },
-                                    info.isSelected && { color: '#A11F60' }
+                                    info.isSelected && { color: designColors.textBrand }
                                 ]}>
                                     {info.dayNum}
                                 </Text>
                                 <Text style={[
                                     styles.monthAbbr,
                                     { color: theme.colors.textSoft, fontFamily: typography.medium },
-                                    info.isSelected && { color: '#A11F60' }
+                                    info.isSelected && { color: designColors.textBrand }
                                 ]}>
                                     {info.monthAbbr}
                                 </Text>
