@@ -328,9 +328,10 @@ test('P12: la lista lee localidad con respaldo subsegmento y EN_REVISION tiene s
     '../context/ThemeContext': {useTheme: () => ({theme, typography})},
     '../components/StaggeredItem': {__esModule: true, default: ({children}) => children},
     '../components/PressableScale': {__esModule: true, default: ({containerStyle, haptic, scale, ...props}) => React.createElement('Pressable', props)},
+    '../components/SkeletonLoader': {__esModule: true, default: 'SkeletonLoader'},
     '../hooks/useAssignmentClock': {__esModule: true, default: () => new Date()},
     '../services/relevamientoService': {__esModule: true, default: {getRelevamientos: async () => ({success: true, records: recordsSets})}},
-    '../theme': loadTokens(), '../utils/dates': runtime.dates,
+    '../theme': loadTokens(), '../utils/dates': runtime.dates, '../utils/teclado': {keyboardDismissModeFor: () => 'none'},
   });
   const ui = await render(Screen, {onOpenRelevamiento() {}});
   try {
@@ -344,6 +345,15 @@ test('P12: la lista lee localidad con respaldo subsegmento y EN_REVISION tiene s
     const filtered = ui.labels().join('|');
     assert.match(filtered, /Dos/);
     assert.doesNotMatch(filtered, /Uno/);
+    // Buscador: sin tildes ni mayúsculas, sobre el filtro de estado elegido.
+    await ui.press('Todos', 'Pressable');
+    await renderer.act(async () => { ui.tree.root.findByType('TextInput').props.onChangeText('FONTANA'); });
+    const buscados = ui.labels().join('|');
+    assert.match(buscados, /Tres/);
+    assert.doesNotMatch(buscados, /\|Uno\||\|Dos\|/);
+    await renderer.act(async () => { ui.tree.root.findByType('TextInput').props.onChangeText('zzz'); });
+    assert.ok(ui.labels().includes('Sin resultados'));
+    assert.ok(ui.labels().includes('Ningún relevamiento coincide con «zzz».'));
   } finally {await ui.close();}
 });
 
