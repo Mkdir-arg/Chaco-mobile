@@ -14,3 +14,18 @@ export const vibrarSeleccion = (plataforma = Platform.OS, vibrar = (ms) => Vibra
         return false;
     }
 };
+
+// Aviso de resultado: un toque corto si salió bien, dos si hubo error. Va junto con el aviso
+// en pantalla, nunca solo. Mismas reglas de plataforma que vibrarSeleccion.
+const PATRONES_AVISO = { success: 15, error: [0, 25, 70, 25] };
+
+export const vibrarAviso = (tipo, plataforma = Platform.OS, vibrar = (patron) => Vibration.vibrate(patron)) => {
+    const patron = PATRONES_AVISO[tipo];
+    if (!patron || plataforma === 'ios') return false;
+    try {
+        vibrar(patron);
+        return true;
+    } catch {
+        return false;
+    }
+};
