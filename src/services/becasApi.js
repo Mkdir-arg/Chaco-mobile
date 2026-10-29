@@ -34,11 +34,17 @@ const invalidateRejectedSession = async (token) => {
     return;
   }
   sessionInvalidation = (async () => {
-    if (await getBecasToken() !== token) return;
+    // Comparar y borrar en la misma tarea de la cola: si no, un login que entra en el medio
+    // pierde su sesión recién guardada.
+    let invalidada = false;
     try {
-      await clearBecasSession();
+      await enColaSesion(async () => {
+        if (await getBecasToken() !== token) return;
+        invalidada = true;
+        await borrarSesion();
+      });
     } finally {
-      sessionExpiredListeners.forEach((listener) => listener());
+      if (invalidada) sessionExpiredListeners.forEach((listener) => listener());
     }
   })();
   try {
@@ -124,18 +130,17 @@ export const getModuloActivo = () => storage.getItem(MODULO_ACTIVO_KEY);
 
 export const setModuloActivo = (modulo) => storage.setItem(MODULO_ACTIVO_KEY, modulo);
 
-// El back dejó de admitir un módulo (403 SIN_MODULO): se saca del usuario guardado y, si era
-// el activo, del módulo activo. Devuelve el usuario actualizado, o null si no hay sesión.
-export const quitarModuloLocal = async (modulo) => {
-  const user = await getStoredBecasUser();
-  if (!user) return null;
-  const next = { ...user, modulos: user.modulos.filter((item) => item !== modulo) };
-  await storage.setItem(USER_DATA_KEY, JSON.stringify(next));
-  if (await getModuloActivo() === modulo) await storage.deleteItem(MODULO_ACTIVO_KEY);
-  return next;
+// Todo lo que escribe o borra la sesión (login, logout, 401, quitarModuloLocal) lo hace en
+// varios pasos: va de a uno para que uno no escriba en el medio del otro. Una tarea de la cola
+// no debe llamar a otra función encolada (se esperaría a sí misma): usa `borrarSesion`.
+let colaSesion = Promise.resolve();
+const enColaSesion = (tarea) => {
+  const resultado = colaSesion.then(tarea, tarea);
+  colaSesion = resultado.catch(() => {});
+  return resultado;
 };
 
-export const clearBecasSession = async () => {
+const borrarSesion = async () => {
   await Promise.all([
     storage.deleteItem(TOKEN_KEY),
     storage.deleteItem(USER_DATA_KEY),
@@ -143,6 +148,27 @@ export const clearBecasSession = async () => {
     storage.deleteItem(MODULO_ACTIVO_KEY),
   ]);
 };
+
+// El back dejó de admitir un módulo (403 SIN_MODULO): se saca del usuario guardado y, si era
+// el activo, del módulo activo; si no le queda ninguno, se borra la sesión. Devuelve el usuario
+// actualizado, o null si no hay sesión.
+// `tokenDelPedido` es el token con el que se hizo el pedido rechazado: si ya hay otra sesión
+// (otro relevador entró mientras tanto), el 403 no es suyo y no se toca nada.
+export const quitarModuloLocal = (modulo, tokenDelPedido) => enColaSesion(async () => {
+  if (await getBecasToken() !== tokenDelPedido) return null;
+  const user = await getStoredBecasUser();
+  if (!user) return null;
+  const next = { ...user, modulos: user.modulos.filter((item) => item !== modulo) };
+  if (!next.modulos.length) {
+    await borrarSesion();
+    return next;
+  }
+  await storage.setItem(USER_DATA_KEY, JSON.stringify(next));
+  if (await getModuloActivo() === modulo) await storage.deleteItem(MODULO_ACTIVO_KEY);
+  return next;
+});
+
+export const clearBecasSession = () => enColaSesion(borrarSesion);
 
 const isUnexpectedHtmlResponse = (response, payload) => {
   const contentType = String(response?.headers?.get?.('content-type') || '').toLowerCase();
@@ -159,7 +185,7 @@ const parseRetryAfter = (response) => {
   return Number.isFinite(ms) ? Math.min(Math.max(ms, 1000), 60 * 60 * 1000) : null;
 };
 
-const buildResponseError = (response, payload, fallback) => {
+const buildResponseError = (response, payload, fallback, token) => {
   const unexpectedHtml = isUnexpectedHtmlResponse(response, payload);
   const error = new Error(unexpectedHtml
     ? `El servidor devolvio una pagina HTML inesperada (HTTP ${response.status}).`
@@ -168,6 +194,8 @@ const buildResponseError = (response, payload, fallback) => {
   error.payload = unexpectedHtml ? null : payload;
   error.unexpectedHtml = unexpectedHtml;
   error.retryAfter = parseRetryAfter(response);
+  // No enumerable: el error se puede serializar en logs o exportaciones y el token no debe salir.
+  Object.defineProperty(error, 'requestToken', { value: token ?? null, enumerable: false });
   return error;
 };
 
@@ -222,11 +250,11 @@ export const loginBecas = async ({ username, password }) => {
     modulos,
     version_minima: payload.app?.version_minima || null,
   };
-  await Promise.all([
+  await enColaSesion(() => Promise.all([
     storage.setItem(TOKEN_KEY, payload.token),
     storage.setItem(USER_ID_KEY, String(payload.user_id)),
     storage.setItem(USER_DATA_KEY, JSON.stringify(user)),
-  ]);
+  ]));
   return user;
 };
 
@@ -270,7 +298,7 @@ export const becasUploadFile = async (path, { fileUri, fileField = 'archivo', fi
   const payload = await parseResponse(response);
   if (!response.ok) {
     if (response.status === 401) await invalidateRejectedSession(token);
-    throw buildResponseError(response, payload, `Error HTTP ${response.status}`);
+    throw buildResponseError(response, payload, `Error HTTP ${response.status}`, token);
   }
   return payload;
 };
@@ -296,7 +324,7 @@ export const becasRequest = async (path, options = {}) => {
   const payload = await parseResponse(response);
   if (!response.ok) {
     if (response.status === 401) await invalidateRejectedSession(token);
-    throw buildResponseError(response, payload, `Error HTTP ${response.status}`);
+    throw buildResponseError(response, payload, `Error HTTP ${response.status}`, token);
   }
   return payload;
 };
