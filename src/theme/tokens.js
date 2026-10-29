@@ -29,6 +29,7 @@ export const designColors = {
     warning: '#FF5A1F',
     warningSoft: '#FFF8F1',
     warningMedium: '#FEECDC',
+    warningStrong: '#9A3412', // texto naranja legible sobre warningSoft (AA)
     disabledBg: '#F3F4F6',
     disabledText: '#9CA3AF',
     darkBgPrimary: '#030712',
