@@ -41,6 +41,16 @@ test('vibrarSeleccion: 10 ms en Android y web, nada en iOS, sin romper si falla'
   assert.equal(vibrarSeleccion('android', () => { throw new Error('sin permiso'); }), false);
 });
 
+test('vibrarAviso: un toque si salió bien, dos si hubo error, nada para info ni en iOS', () => {
+  const {vibrarAviso} = load('src/utils/haptica.js', {'react-native': {Platform: {OS: 'android'}, Vibration: {}}});
+  const llamadas = [];
+  assert.equal(vibrarAviso('success', 'android', p => llamadas.push(p)), true);
+  assert.equal(vibrarAviso('error', 'web', p => llamadas.push(p)), true);
+  assert.equal(vibrarAviso('info', 'android', p => llamadas.push(p)), false);
+  assert.equal(vibrarAviso('success', 'ios', p => llamadas.push(p)), false);
+  assert.equal(JSON.stringify(llamadas), '[15,[0,25,70,25]]');
+});
+
 async function montar(props, {reduce = false} = {}) {
   const animaciones = [];
   const vibraciones = [];

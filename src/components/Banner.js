@@ -1,10 +1,12 @@
-import { View, Text, StyleSheet, Pressable } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, Pressable, Animated, Easing } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import { fontSizes, radii } from '../theme';
 import FrostedBackButton from './FrostedBackButton';
+import useReduceMotion from '../hooks/useReduceMotion';
 
 export default function Banner({
     title,
@@ -44,12 +46,14 @@ export default function Banner({
                             </Text>
                         </View>
 
-                        <Pressable style={styles.iconButton} onPress={onSyncPress} accessibilityRole="button" accessibilityLabel="Sincronizar">
-                            <Ionicons
-                                name={isSyncing ? 'sync' : (isSynced ? 'cloud-done' : 'cloud-upload')}
-                                size={27}
-                                color="#FFF"
-                            />
+                        <Pressable
+                            style={styles.iconButton}
+                            onPress={onSyncPress}
+                            accessibilityRole="button"
+                            accessibilityLabel={isSyncing ? 'Sincronizando' : 'Sincronizar'}
+                            accessibilityState={{ busy: isSyncing }}
+                        >
+                            <SyncIcon isSyncing={isSyncing} isSynced={isSynced} />
                             {syncPendingCount > 0 ? (
                                 <View style={[styles.syncBadge, { borderColor: '#FFF', backgroundColor: theme.colors.warning }]}>
                                     <Text style={[styles.syncBadgeText, { fontFamily: typography.bold }]}>
@@ -62,6 +66,48 @@ export default function Banner({
                 </SafeAreaView>
             </LinearGradient>
         </View>
+    );
+}
+
+// Flechas que giran mientras sincroniza; al terminar, la nube con tilde entra con un rebote
+// chico. Con «reducir movimiento» solo cambia el ícono.
+function SyncIcon({ isSyncing, isSynced }) {
+    const reduceMotion = useReduceMotion();
+    const spin = useRef(new Animated.Value(0)).current;
+    const pop = useRef(new Animated.Value(1)).current;
+    const wasSyncing = useRef(isSyncing);
+
+    useEffect(() => {
+        if (!isSyncing || reduceMotion) return undefined;
+        spin.setValue(0);
+        const loop = Animated.loop(Animated.timing(spin, {
+            toValue: 1,
+            duration: 900,
+            easing: Easing.linear,
+            useNativeDriver: true,
+        }));
+        loop.start();
+        return () => loop.stop();
+    }, [isSyncing, reduceMotion, spin]);
+
+    useEffect(() => {
+        const termino = wasSyncing.current && !isSyncing;
+        wasSyncing.current = isSyncing;
+        if (!termino || reduceMotion) return;
+        pop.setValue(0.6);
+        Animated.spring(pop, { toValue: 1, useNativeDriver: true, damping: 10, stiffness: 260, mass: 0.7 }).start();
+    }, [isSyncing, reduceMotion, pop]);
+
+    const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
+
+    return (
+        <Animated.View style={{ transform: isSyncing ? [{ rotate }] : [{ scale: pop }] }}>
+            <Ionicons
+                name={isSyncing ? 'sync' : (isSynced ? 'cloud-done' : 'cloud-upload')}
+                size={27}
+                color="#FFF"
+            />
+        </Animated.View>
     );
 }
 
