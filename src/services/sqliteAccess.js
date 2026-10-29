@@ -26,20 +26,29 @@ export const serializeSqliteAccess = (database) => {
 // NoModificationAllowedError, dejando el worker inutilizable hasta recargar. Por eso las
 // aperturas van de a una: la primera inicializa el pool y las demás lo reutilizan.
 let pendingOpen = Promise.resolve();
+// Tras el primer choque el worker queda roto hasta recargar: las aperturas siguientes ya no
+// lo llaman y devuelven el mismo aviso.
+let baseOcupada = null;
 
 export const BASE_OCUPADA = 'BASE_OCUPADA';
 export const MENSAJE_BASE_OCUPADA =
   'DATAÑACH ya está abierta en otra pestaña o ventana. Cerrala y recargá esta página.';
 
 // El mismo error aparece si otra pestaña (o la versión anterior que sigue abierta) tiene la base.
+// «Invalid VFS state» es lo que contesta el worker roto a las aperturas siguientes.
 export const esBaseOcupada = (error) =>
   error?.name === 'NoModificationAllowedError'
-  || /createSyncAccessHandle|Access Handles cannot be created/i.test(String(error?.message || ''));
+  || /createSyncAccessHandle|Access Handles cannot be created|Invalid VFS state/i.test(String(error?.message || ''));
 
 export const openSqliteSerialized = (openDatabase, name) => {
-  const result = pendingOpen.then(() => openDatabase(name)).catch((error) => {
+  const result = pendingOpen.then(() => {
+    if (baseOcupada) throw baseOcupada;
+    return openDatabase(name);
+  }).catch((error) => {
+    if (error === baseOcupada) throw error;
     if (!esBaseOcupada(error)) throw error;
-    throw Object.assign(new Error(MENSAJE_BASE_OCUPADA), { code: BASE_OCUPADA, cause: error });
+    baseOcupada = Object.assign(new Error(MENSAJE_BASE_OCUPADA), { code: BASE_OCUPADA, cause: error });
+    throw baseOcupada;
   });
   pendingOpen = result.catch(() => {});
   return result;
