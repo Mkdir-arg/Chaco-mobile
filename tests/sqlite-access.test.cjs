@@ -10,7 +10,7 @@ const {code} = transformSync(fs.readFileSync(path.join(__dirname, '../src/servic
 });
 const exportsObject = {};
 vm.runInNewContext(code, {exports: exportsObject});
-const {serializeSqliteAccess} = exportsObject;
+const {serializeSqliteAccess, openSqliteSerialized, esBaseOcupada, BASE_OCUPADA, MENSAJE_BASE_OCUPADA} = exportsObject;
 
 for (const exclusive of [true, false]) {
   test(`cache waits until ${exclusive ? 'native exclusive' : 'web'} transaction commits`, async () => {
@@ -87,4 +87,42 @@ test('SQLite lock after server accepted case retries idempotently and sends atta
   const row = sql.prepare("SELECT * FROM outbox_relevamientos WHERE local_id='locked-case'").get();
   assert.equal(row.status, 'SYNCED');
   assert.equal(JSON.parse(row.payload_json).remote_formulario_id, 3);
+});
+
+test('las bases se abren de a una: la segunda espera a que termine la primera', async () => {
+  const events = [];
+  let release;
+  const gate = new Promise(resolve => {release = resolve;});
+  const open = async name => {
+    events.push(`abre ${name}`);
+    if (name === 'relevamientos') await gate;
+    events.push(`lista ${name}`);
+    return {name};
+  };
+  const first = openSqliteSerialized(open, 'relevamientos');
+  const second = openSqliteSerialized(open, 'dispositivos');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(events, ['abre relevamientos']);
+  release();
+  assert.equal((await first).name, 'relevamientos');
+  assert.equal((await second).name, 'dispositivos');
+  assert.equal(events.join(','), 'abre relevamientos,lista relevamientos,abre dispositivos,lista dispositivos');
+});
+
+test('base tomada por otra pestaña: mensaje claro y la siguiente apertura igual se intenta', async () => {
+  const ocupada = Object.assign(new Error("Failed to execute 'createSyncAccessHandle' on 'FileSystemFileHandle': Access Handles cannot be created if there is another open Access Handle or Writable stream associated with the same file."), {name: 'NoModificationAllowedError'});
+  await assert.rejects(openSqliteSerialized(async () => { throw ocupada; }, 'relevamientos'), error => {
+    assert.equal(error.code, BASE_OCUPADA);
+    assert.equal(error.message, MENSAJE_BASE_OCUPADA);
+    assert.equal(error.cause, ocupada);
+    return true;
+  });
+  assert.equal((await openSqliteSerialized(async name => ({name}), 'dispositivos')).name, 'dispositivos');
+});
+
+test('otros errores de apertura pasan sin tocar', async () => {
+  const otro = new Error('disk full');
+  await assert.rejects(openSqliteSerialized(async () => { throw otro; }, 'x'), error => error === otro);
+  assert.equal(esBaseOcupada(otro), false);
+  assert.equal(esBaseOcupada({name: 'NoModificationAllowedError', message: ''}), true);
 });

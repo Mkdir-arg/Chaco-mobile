@@ -3,7 +3,7 @@ import NetInfo from '@react-native-community/netinfo';
 import * as Crypto from 'expo-crypto';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as SQLite from 'expo-sqlite';
-import { serializeSqliteAccess } from './sqliteAccess';
+import { openSqliteSerialized, serializeSqliteAccess } from './sqliteAccess';
 import { persistWebAttachment, readWebBlob } from './webAttachments';
 import { usaConstructor, camposDelDiseno, cupoDisponibleConfiable } from './definicionFormulario';
 import { Platform } from 'react-native';
@@ -186,7 +186,7 @@ const mapDjangoRelevamientoDetail = (row = {}) => {
 
 const getSqliteDb = async () => {
   if (!sqliteDbPromise) {
-    sqliteDbPromise = SQLite.openDatabaseAsync(SQLITE_DB_NAME).then(serializeSqliteAccess);
+    sqliteDbPromise = openSqliteSerialized(SQLite.openDatabaseAsync, SQLITE_DB_NAME).then(serializeSqliteAccess);
   }
   return sqliteDbPromise;
 };
