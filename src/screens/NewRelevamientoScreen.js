@@ -649,7 +649,7 @@ export default function NewRelevamientoScreen({ onCancel, onSave }) {
                                 style={[
                                     styles.optionText,
                                     { color: theme.colors.text, fontFamily: typography.medium },
-                                    selected && { color: '#A11F60', fontFamily: typography.bold },
+                                    selected && { color: designColors.textBrand, fontFamily: typography.bold },
                                 ]}
                             >
                                 {option}

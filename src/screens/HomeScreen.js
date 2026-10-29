@@ -17,7 +17,7 @@ const UI = {
     border: designColors.borderBase,
     brandSoft: designColors.bgBrandSoft,
     brandBorder: designColors.bgBrandMedium,
-    brandText: '#A11F60',
+    brandText: designColors.textBrand,
 };
 
 export default function HomeScreen({

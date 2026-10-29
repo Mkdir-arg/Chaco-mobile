@@ -15,9 +15,11 @@ export const designColors = {
     bgSecondary: '#F9FAFB',
     bgTertiary: '#F3F4F6',
     bgQuaternary: '#E5E7EB',
-    bgBrandSofter: '#FFF5FC',
-    bgBrandSoft: '#FFEAF6',
-    bgBrandMedium: '#FFB9DC',
+    // Tintes del índigo de marca (#5059BC). Antes eran rosas del perfil viejo.
+    bgBrandSofter: '#F6F7FD',
+    bgBrandSoft: '#EEF0FB',
+    bgBrandMedium: '#CDD1F3',
+    textBrand: '#3B43A0',
     success: '#007A55',
     successSoft: '#ECFDF5',
     successMedium: '#D0FAE5',
@@ -78,4 +80,20 @@ export const gradients = {
     brand: [designColors.brand, designColors.pink],
     buttonPrimary: [designColors.brand, designColors.pink],
     buttonPrimaryPressedOverlay: 'rgba(0, 0, 0, 0.20)',
+};
+
+// Sombras como boxShadow (iOS, Android con new arch y web). Reemplazan a shadowOpacity/elevation.
+export const shadows = {
+    card: '0 1px 2px rgba(30, 35, 64, 0.06), 0 4px 12px -4px rgba(30, 35, 64, 0.08)',
+    raised: '0 6px 16px -6px rgba(30, 35, 64, 0.18)',
+    overlay: '0 12px 28px -8px rgba(30, 35, 64, 0.28)',
+};
+
+// Duraciones en ms y resortes compartidos, para que todas las animaciones se sientan iguales.
+export const motion = {
+    fast: 150,
+    base: 250,
+    slow: 400,
+    spring: { damping: 18, stiffness: 220, mass: 0.8 },
+    pressScale: 0.97,
 };
