@@ -1,7 +1,12 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, Easing, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from './ThemeContext';
+import useReduceMotion from '../hooks/useReduceMotion';
+import { vibrarAviso } from '../utils/haptica';
+import { shadows } from '../theme';
+
+const EASE_OUT = Easing.bezier(0.23, 1, 0.32, 1);
 
 const ToastContext = createContext(null);
 
@@ -16,11 +21,13 @@ export function ToastProvider({ children }) {
   const { theme, typography } = useTheme();
   const [toast, setToast] = useState(null);
   const visibility = useRef(new Animated.Value(0)).current;
+  const iconScale = useRef(new Animated.Value(1)).current;
   const timerRef = useRef(null);
+  const reduceMotion = useReduceMotion();
 
   const hideToast = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
-    Animated.timing(visibility, { toValue: 0, duration: 180, useNativeDriver: true })
+    Animated.timing(visibility, { toValue: 0, duration: 150, easing: EASE_OUT, useNativeDriver: true })
       .start(() => setToast(null));
   }, [visibility]);
 
@@ -28,9 +35,16 @@ export function ToastProvider({ children }) {
     if (timerRef.current) clearTimeout(timerRef.current);
     setToast({ message, type, title, actions: actions?.length ? actions : [{ text: 'OK' }] });
     visibility.setValue(0);
-    Animated.timing(visibility, { toValue: 1, duration: 180, useNativeDriver: true }).start();
+    Animated.timing(visibility, { toValue: 1, duration: 220, easing: EASE_OUT, useNativeDriver: true }).start();
+    // El tilde de éxito entra con un rebote chico; los demás íconos aparecen quietos.
+    const rebote = type === 'success' && !reduceMotion;
+    iconScale.setValue(rebote ? 0.5 : 1);
+    if (rebote) {
+      Animated.spring(iconScale, { toValue: 1, delay: 80, damping: 9, stiffness: 240, mass: 0.7, useNativeDriver: true }).start();
+    }
+    vibrarAviso(type);
     if (duration > 0) timerRef.current = setTimeout(hideToast, duration);
-  }, [hideToast, visibility]);
+  }, [hideToast, visibility, iconScale, reduceMotion]);
 
   const showAlert = useCallback((title, message, buttons = [{ text: 'OK' }]) => {
     const value = `${title || ''} ${message || ''}`.toLowerCase();
@@ -60,11 +74,23 @@ export function ToastProvider({ children }) {
       {children}
       {toast ? (
         <Animated.View style={[styles.host, { opacity: visibility }]}>
-          <View style={[styles.toast, { backgroundColor: theme.colors.surfaceRaised, borderColor: theme.colors.border, borderLeftColor: accent }]} accessibilityRole="alert">
+          <Animated.View
+            style={[
+              styles.toast,
+              { backgroundColor: theme.colors.surfaceRaised, borderColor: theme.colors.border, borderLeftColor: accent },
+              !reduceMotion && {
+                transform: [
+                  { translateY: visibility.interpolate({ inputRange: [0, 1], outputRange: [12, 0] }) },
+                  { scale: visibility.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) },
+                ],
+              },
+            ]}
+            accessibilityRole="alert"
+          >
             <View style={styles.content}>
-              <View style={[styles.icon, { backgroundColor: `${accent}18` }]}>
+              <Animated.View style={[styles.icon, { backgroundColor: `${accent}18`, transform: [{ scale: iconScale }] }]}>
                 <Ionicons name={config.icon} size={24} color={accent} />
-              </View>
+              </Animated.View>
               <View style={styles.copy}>
                 <Text style={[styles.title, { color: theme.colors.text, fontFamily: typography.bold }]}>
                   {toast.title || config.label}
@@ -101,7 +127,7 @@ export function ToastProvider({ children }) {
                 );
               })}
             </View>
-          </View>
+          </Animated.View>
         </Animated.View>
       ) : null}
     </ToastContext.Provider>
@@ -132,10 +158,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderLeftWidth: 5,
     padding: 14,
-    shadowColor: '#000',
-    shadowOpacity: 0.16,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 8 },
+    boxShadow: shadows.overlay,
   },
   content: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   icon: { width: 42, height: 42, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },

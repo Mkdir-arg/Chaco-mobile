@@ -8,14 +8,18 @@ import {
     Pressable,
     ActivityIndicator,
     RefreshControl,
+    TextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import StaggeredItem from '../components/StaggeredItem';
+import PressableScale from '../components/PressableScale';
+import SkeletonLoader from '../components/SkeletonLoader';
 import useAssignmentClock from '../hooks/useAssignmentClock';
 import relevamientoService from '../services/relevamientoService';
-import { designColors, fontSizes, radii } from '../theme';
+import { designColors, fontSizes, radii, shadows } from '../theme';
 import { formatDate as formatAppDate, formatDateTimeRange, isAssignmentVisible, closingSoonLabel } from '../utils/dates';
+import { keyboardDismissModeFor } from '../utils/teclado';
 
 const DONE_STATES = ['SINCRONIZADO', 'COMPLETADO_LOCAL', 'REALIZADO', 'FINALIZADO', 'TERMINADO'];
 const IN_PROGRESS_STATES = ['EN_PROGRESO', 'EN_CURSO', 'FINALIZANDO'];
@@ -23,7 +27,7 @@ const IN_PROGRESS_STATES = ['EN_PROGRESO', 'EN_CURSO', 'FINALIZANDO'];
 const UI = {
     canvas: designColors.bgSecondary,
     surface: designColors.white,
-    heading: '#252F40',
+    heading: designColors.textHeading,
     body: designColors.textBody,
     subtle: designColors.textBodySubtle,
     border: designColors.borderBase,
@@ -41,6 +45,13 @@ const FILTER_OPTIONS = [
 ];
 
 const normalizeEstado = (estado) => String(estado || '').toUpperCase();
+
+// Sin tildes ni mayúsculas: «fontana» encuentra «Fontana» y «revision» encuentra «Revisión».
+const normalizeSearch = (value) => String(value || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .trim();
 
 const progressLabel = (item) => relevamientoBadge(item.estado).label;
 const progressBadge = (item) => relevamientoBadge(item.estado);
@@ -86,6 +97,7 @@ export default function RelevamientosScreen({ onOpenRelevamiento }) {
     const { typography } = useTheme();
     const [relevamientos, setRelevamientos] = useState([]);
     const [statusFilter, setStatusFilter] = useState('TODOS');
+    const [query, setQuery] = useState('');
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
     const [error, setError] = useState('');
@@ -141,23 +153,41 @@ export default function RelevamientosScreen({ onOpenRelevamiento }) {
         return relevamientosDesdeHoy;
     }, [relevamientosDesdeHoy, statusFilter]);
 
+    const visibleRelevamientos = useMemo(() => {
+        const search = normalizeSearch(query);
+        if (!search) return filteredRelevamientos;
+        return filteredRelevamientos.filter((item) => normalizeSearch([
+            titleFor(item),
+            item.zona,
+            item.localidad,
+            item.segmento,
+            item.subsegmento,
+            item.convocatoria_nombre,
+            item.direccion_objetivo,
+        ].filter(Boolean).join(' ')).includes(search));
+    }, [filteredRelevamientos, query]);
+
     const stats = useMemo(() => {
         const total = relevamientosDesdeHoy.length;
         const inProgress = relevamientosDesdeHoy.filter((item) => IN_PROGRESS_STATES.includes(normalizeEstado(item.estado))).length;
         const done = relevamientosDesdeHoy.filter((item) => DONE_STATES.includes(normalizeEstado(item.estado))).length;
         const pendingSync = relevamientosDesdeHoy.filter((item) => normalizeEstado(item.sync_estado) !== 'SINCRONIZADO').length;
         return [
-            { key: 'total', label: 'Total', value: total, icon: 'folder-open-outline', tone: 'brand' },
-            { key: 'progress', label: 'En curso', value: inProgress, icon: 'time-outline', tone: 'warning' },
-            { key: 'done', label: 'Finalizados', value: done, icon: 'checkmark-done-outline', tone: 'success' },
-            { key: 'sync', label: 'Sin sync', value: pendingSync, icon: 'cloud-upload-outline', tone: 'danger' },
+            { key: 'total', label: 'Desde hoy', value: total, tone: 'brand' },
+            { key: 'progress', label: 'En curso', value: inProgress, tone: 'warning' },
+            { key: 'done', label: 'Finalizados', value: done, tone: 'success' },
+            { key: 'sync', label: 'Sin sync', value: pendingSync, tone: 'danger' },
         ];
     }, [relevamientosDesdeHoy]);
+
+    const hasSearch = !!query.trim();
 
     return (
         <View style={styles.container}>
             <ScrollView
                 contentContainerStyle={styles.content}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode={keyboardDismissModeFor('on-drag')}
                 refreshControl={
                     <RefreshControl
                         refreshing={refreshing}
@@ -168,62 +198,48 @@ export default function RelevamientosScreen({ onOpenRelevamiento }) {
                 }
             >
                 <StaggeredItem index={0}>
-                    <View style={styles.header}>
-                        <View style={styles.breadcrumbRow}>
-                            <Text style={[styles.breadcrumbText, { fontFamily: typography.semibold }]}>Programa Becas</Text>
-                            <Ionicons name="chevron-forward" size={14} color={UI.subtle} />
-                            <Text style={[styles.breadcrumbText, { fontFamily: typography.semibold }]}>Relevamientos</Text>
-                        </View>
-
-                        <View style={styles.headerTitleRow}>
-                            <View style={styles.headerCopy}>
-                                <Text style={[styles.title, { fontFamily: typography.bold }]}>Relevamientos</Text>
-                                <Text style={[styles.subtitle, { fontFamily: typography.regular }]}>
-                                    Operativos de relevamiento en territorio. Entra a un operativo para ver las personas relevadas dentro.
-                                </Text>
-                            </View>
-                        </View>
+                    <View style={styles.statsRow} accessibilityRole="summary">
+                        {stats.map((stat, index) => (
+                            <StatCell key={stat.key} stat={stat} first={index === 0} typography={typography} />
+                        ))}
                     </View>
                 </StaggeredItem>
 
                 <StaggeredItem index={1}>
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.statsRow}>
-                        {stats.map((stat) => (
-                            <StatCard key={stat.key} stat={stat} typography={typography} />
-                        ))}
-                    </ScrollView>
-                </StaggeredItem>
-
-                <StaggeredItem index={2}>
                     <View style={styles.filterBar}>
-                        <View style={styles.filterHeader}>
-                            <View>
-                                <Text style={[styles.filterLabel, { fontFamily: typography.bold }]}>Estado</Text>
-                                <Text style={[styles.filterHint, { fontFamily: typography.regular }]}>
-                                    {`${filteredRelevamientos.length} de ${relevamientosDesdeHoy.length} relevamientos desde hoy`}
-                                </Text>
-                            </View>
-                            <Pressable
-                                accessibilityRole="button"
-                                accessibilityLabel="Actualizar relevamientos"
-                                onPress={() => loadRelevamientos(true)}
-                                style={({ pressed }) => [styles.tertiaryButton, pressed && styles.pressed]}
-                            >
-                                {refreshing ? (
-                                    <ActivityIndicator size="small" color={UI.brand} />
-                                ) : (
-                                    <Ionicons name="refresh-outline" size={17} color={UI.brand} />
-                                )}
-                                <Text style={[styles.tertiaryButtonText, { fontFamily: typography.bold }]}>Actualizar</Text>
-                            </Pressable>
+                        <View style={styles.searchBox}>
+                            <Ionicons name="search-outline" size={18} color={UI.subtle} />
+                            <TextInput
+                                value={query}
+                                onChangeText={setQuery}
+                                placeholder="Buscar por operativo o zona"
+                                placeholderTextColor={UI.subtle}
+                                accessibilityLabel="Buscar relevamientos por operativo o zona"
+                                returnKeyType="search"
+                                autoCorrect={false}
+                                style={[styles.searchInput, { fontFamily: typography.medium }]}
+                            />
+                            {hasSearch ? (
+                                <Pressable
+                                    onPress={() => setQuery('')}
+                                    accessibilityRole="button"
+                                    accessibilityLabel="Borrar búsqueda"
+                                    hitSlop={10}
+                                >
+                                    <Ionicons name="close-circle" size={18} color={UI.subtle} />
+                                </Pressable>
+                            ) : null}
                         </View>
 
                         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filtersRow}>
                             {FILTER_OPTIONS.map((option) => {
                                 const selected = statusFilter === option.key;
                                 return (
-                                    <Pressable
+                                    <PressableScale
                                         key={option.key}
+                                        haptic={!selected}
+                                        accessibilityRole="button"
+                                        accessibilityState={{ selected }}
                                         onPress={() => setStatusFilter(option.key)}
                                         style={[
                                             styles.filterChip,
@@ -239,19 +255,31 @@ export default function RelevamientosScreen({ onOpenRelevamiento }) {
                                         >
                                             {option.label}
                                         </Text>
-                                    </Pressable>
+                                    </PressableScale>
                                 );
                             })}
                         </ScrollView>
+
+                        <View style={styles.filterHeader}>
+                            <Text style={[styles.filterHint, { fontFamily: typography.medium }]}>
+                                {`${visibleRelevamientos.length} de ${relevamientosDesdeHoy.length} relevamientos desde hoy`}
+                            </Text>
+                            <PressableScale
+                                accessibilityRole="button"
+                                accessibilityLabel="Actualizar relevamientos"
+                                onPress={() => loadRelevamientos(true)}
+                                style={({ pressed }) => [styles.tertiaryButton, pressed && styles.pressed]}
+                            >
+                                {refreshing ? (
+                                    <ActivityIndicator size="small" color={UI.brand} />
+                                ) : (
+                                    <Ionicons name="refresh-outline" size={16} color={UI.brand} />
+                                )}
+                                <Text style={[styles.tertiaryButtonText, { fontFamily: typography.bold }]}>Actualizar</Text>
+                            </PressableScale>
+                        </View>
                     </View>
                 </StaggeredItem>
-
-                {loading ? (
-                    <View style={styles.centerBox}>
-                        <ActivityIndicator size="large" color={UI.brand} />
-                        <Text style={[styles.infoText, { fontFamily: typography.medium }]}>Cargando relevamientos...</Text>
-                    </View>
-                ) : null}
 
                 {!loading && !!error ? (
                     <View style={[styles.messageCard, styles.errorCard]}>
@@ -262,47 +290,56 @@ export default function RelevamientosScreen({ onOpenRelevamiento }) {
                     </View>
                 ) : null}
 
-                {!loading && (
+                {loading ? (
+                    <View style={styles.tableCard} accessibilityLabel="Cargando relevamientos">
+                        {[0, 1, 2].map((index) => (
+                            <View key={index} style={[styles.skeletonRow, index === 2 && styles.rowCardLast]}>
+                                <SkeletonLoader width="70%" height={14} delay={index * 120} />
+                                <SkeletonLoader width="45%" height={10} delay={index * 120} />
+                                <SkeletonLoader width="100%" height={46} delay={index * 120} />
+                            </View>
+                        ))}
+                    </View>
+                ) : (
                     <View style={styles.tableCard}>
-                        <View style={styles.tableHeader}>
-                            <Text style={[styles.tableTitle, { fontFamily: typography.bold }]}>Operativos asignados</Text>
-                            <Badge label="Mobile" tone={BADGE.brand} typography={typography} />
-                        </View>
-
-                        {filteredRelevamientos.length === 0 ? (
+                        {visibleRelevamientos.length === 0 ? (
                             <View style={styles.emptyState}>
-                                <Ionicons name="file-tray-outline" size={30} color={UI.subtle} />
-                                <Text style={[styles.emptyTitle, { fontFamily: typography.bold }]}>Sin relevamientos</Text>
-                                <Text style={[styles.emptyText, { fontFamily: typography.regular }]}>
-                                    {error
-                                        ? 'No hay relevamientos locales para el filtro seleccionado.'
-                                        : 'No hay relevamientos para el filtro seleccionado.'}
+                                <Ionicons name={hasSearch ? 'search-outline' : 'file-tray-outline'} size={30} color={UI.subtle} />
+                                <Text style={[styles.emptyTitle, { fontFamily: typography.bold }]}>
+                                    {hasSearch ? 'Sin resultados' : 'Sin relevamientos'}
                                 </Text>
+                                <Text style={[styles.emptyText, { fontFamily: typography.regular }]}>
+                                    {hasSearch
+                                        ? `Ningún relevamiento coincide con «${query.trim()}».`
+                                        : error
+                                            ? 'No hay relevamientos locales para el filtro seleccionado.'
+                                            : 'No hay relevamientos para el filtro seleccionado.'}
+                                </Text>
+                                {hasSearch ? (
+                                    <PressableScale
+                                        accessibilityRole="button"
+                                        onPress={() => setQuery('')}
+                                        style={styles.tertiaryButton}
+                                    >
+                                        <Text style={[styles.tertiaryButtonText, { fontFamily: typography.bold }]}>Borrar búsqueda</Text>
+                                    </PressableScale>
+                                ) : null}
                             </View>
                         ) : null}
 
-                        {filteredRelevamientos.map((item, index) => (
-                            <StaggeredItem key={item.id} index={index + 3}>
+                        {visibleRelevamientos.map((item, index) => (
+                            <StaggeredItem key={item.id} index={Math.min(index, 5) + 2}>
                                 <RelevamientoRow
                                     item={item}
                                     now={now}
                                     index={index}
-                                    total={filteredRelevamientos.length}
+                                    total={visibleRelevamientos.length}
                                     formatDate={formatDate}
                                     onOpenRelevamiento={onOpenRelevamiento}
                                     typography={typography}
                                 />
                             </StaggeredItem>
                         ))}
-
-                        <View style={styles.tableFooter}>
-                            <Text style={[styles.footerText, { fontFamily: typography.medium }]}>
-                                {`Mostrando ${filteredRelevamientos.length} de ${relevamientosDesdeHoy.length} desde hoy`}
-                            </Text>
-                            <View style={styles.pagePill}>
-                                <Text style={[styles.pagePillText, { fontFamily: typography.bold }]}>1</Text>
-                            </View>
-                        </View>
                     </View>
                 )}
             </ScrollView>
@@ -310,22 +347,21 @@ export default function RelevamientosScreen({ onOpenRelevamiento }) {
     );
 }
 
-function StatCard({ stat, typography }) {
+// Los cuatro números en una fila, todos visibles a la vez.
+function StatCell({ stat, first, typography }) {
     const tone = toneStyles[stat.tone] || toneStyles.brand;
+    const highlight = stat.key !== 'total' && stat.value > 0;
     return (
-        <View style={styles.statCard}>
-            <View style={[styles.statIcon, { backgroundColor: tone.bg }]}>
-                <Ionicons name={stat.icon} size={21} color={tone.fg} />
-            </View>
-            <Text style={[styles.statLabel, { fontFamily: typography.semibold }]}>{stat.label}</Text>
+        <View style={[styles.statCell, !first && styles.statCellDivider]} accessible accessibilityLabel={`${stat.label}: ${stat.value}`}>
             <Text
-                style={[styles.statValue, { fontFamily: typography.bold }]}
+                style={[styles.statValue, { fontFamily: typography.extrabold }, highlight && { color: tone.fg }]}
                 numberOfLines={1}
                 adjustsFontSizeToFit
                 minimumFontScale={0.72}
             >
                 {stat.value}
             </Text>
+            <Text style={[styles.statLabel, { fontFamily: typography.semibold }]} numberOfLines={1}>{stat.label}</Text>
         </View>
     );
 }
@@ -350,7 +386,7 @@ function RelevamientoRow({ item, now, index, total, formatDate, onOpenRelevamien
                     <Text style={[styles.rowSubtitle, { fontFamily: typography.medium }]}>
                         {formatDateTimeRange(item.fecha_asignada || item.created_at, item.fecha_hasta || item.fecha_asignada || item.created_at)}
                     </Text>
-                    {closing ? <Text accessibilityRole="alert" style={[styles.rowSubtitle, { color: BADGE.warning.tx, fontFamily: typography.semibold }]}>{closing}</Text> : null}
+                    {closing ? <Text accessibilityRole="alert" style={[styles.rowSubtitle, { color: designColors.warningStrong, fontFamily: typography.semibold }]}>{closing}</Text> : null}
                     <Text style={[styles.rowSubtitle, { fontFamily: typography.medium }]} numberOfLines={1}>
                         {valueOrDash(item.convocatoria_nombre || item.descripcion || item.observaciones)}
                     </Text>
@@ -381,13 +417,9 @@ function RelevamientoRow({ item, now, index, total, formatDate, onOpenRelevamien
 
             <View style={styles.rowFooter}>
                 <Badge label={syncLabel(item.sync_estado)} tone={syncBadge(item.sync_estado)} icon={statusIcon(item.sync_estado)} typography={typography} />
-                <View style={styles.actionsRow}>
-                    {isDone ? (
-                        <IconButton icon="checkmark-circle-outline" tone={BADGE.success} />
-                    ) : (
-                        <IconButton icon="time-outline" tone={BADGE.warning} />
-                    )}
-                    <IconButton icon="eye-outline" tone={BADGE.white} />
+                <View style={styles.rowOpen}>
+                    <Text style={[styles.rowOpenText, { fontFamily: typography.bold }]}>Abrir</Text>
+                    <Ionicons name="chevron-forward" size={16} color={UI.brand} />
                 </View>
             </View>
         </Pressable>
@@ -419,27 +451,15 @@ function Badge({ label, tone, icon, typography }) {
     );
 }
 
-function IconButton({ icon, tone }) {
-    return (
-        <View style={[styles.iconButton, { backgroundColor: tone.bg, borderColor: tone.bd }]}>
-            <Ionicons name={icon} size={17} color={tone.tx} />
-        </View>
-    );
-}
-
 const toneStyles = {
-    brand: { bg: '#FFEAF6', fg: UI.brand },
-    warning: { bg: '#FFF8F1', fg: designColors.warning },
-    success: { bg: '#ECFDF5', fg: designColors.success },
-    danger: { bg: '#FEF0F2', fg: designColors.danger },
+    brand: { bg: designColors.bgBrandSoft, fg: UI.brand },
+    warning: { bg: designColors.warningSoft, fg: designColors.warningStrong },
+    success: { bg: designColors.successSoft, fg: designColors.success },
+    danger: { bg: designColors.dangerSoft, fg: designColors.danger },
 };
 
 const cardShadow = {
-    shadowColor: '#252F40',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.08,
-    shadowRadius: 24,
-    elevation: 2,
+    boxShadow: shadows.card,
 };
 
 const styles = StyleSheet.create({
@@ -451,77 +471,60 @@ const styles = StyleSheet.create({
         padding: 20,
         paddingBottom: 28,
     },
-    header: {
-        marginBottom: 18,
-    },
-    breadcrumbRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 4,
-        marginBottom: 10,
-    },
-    breadcrumbText: {
-        color: UI.subtle,
-        fontSize: fontSizes.xs,
-    },
-    headerTitleRow: {
-        gap: 14,
-    },
-    headerCopy: {
-        gap: 6,
-    },
-    title: {
-        color: UI.heading,
-        fontSize: 28,
-        lineHeight: 34,
-    },
-    subtitle: {
-        color: UI.subtle,
-        fontSize: fontSizes.sm,
-        lineHeight: 21,
-    },
     pressed: {
         opacity: 0.82,
     },
     statsRow: {
-        gap: 12,
-        paddingBottom: 16,
-        paddingRight: 4,
-    },
-    statCard: {
         ...cardShadow,
-        width: 128,
-        minHeight: 126,
-        borderRadius: radii.xl,
-        borderWidth: 1,
-        borderColor: UI.border,
+        flexDirection: 'row',
         backgroundColor: UI.surface,
-        padding: 14,
+        borderRadius: radii['2xl'],
+        borderCurve: 'continuous',
+        marginBottom: 14,
     },
-    statIcon: {
-        width: 44,
-        height: 44,
-        borderRadius: radii.lg,
-        alignItems: 'center',
-        justifyContent: 'center',
-        marginBottom: 12,
+    statCell: {
+        flex: 1,
+        minWidth: 0,
+        paddingVertical: 12,
+        paddingHorizontal: 10,
+        gap: 2,
+    },
+    statCellDivider: {
+        borderLeftWidth: 1,
+        borderLeftColor: UI.borderSoft,
     },
     statLabel: {
         color: UI.subtle,
-        fontSize: fontSizes.xs,
-        marginBottom: 2,
+        fontSize: 11,
     },
     statValue: {
         color: UI.heading,
-        fontSize: 30,
-        lineHeight: 34,
+        fontSize: 22,
+        lineHeight: 28,
+        fontVariant: ['tabular-nums'],
+    },
+    searchBox: {
+        minHeight: 44,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        paddingHorizontal: 12,
+        borderRadius: radii.xl,
+        borderCurve: 'continuous',
+        backgroundColor: UI.borderSoft,
+    },
+    searchInput: {
+        flex: 1,
+        minWidth: 0,
+        paddingVertical: 10,
+        color: UI.heading,
+        fontSize: fontSizes.sm,
     },
     filterBar: {
         ...cardShadow,
         backgroundColor: UI.surface,
-        borderWidth: 1,
-        borderColor: UI.border,
-        borderRadius: radii.xl,
+        borderRadius: radii['2xl'],
+        borderCurve: 'continuous',
         padding: 14,
         marginBottom: 16,
         gap: 12,
@@ -531,10 +534,6 @@ const styles = StyleSheet.create({
         justifyContent: 'space-between',
         alignItems: 'center',
         gap: 12,
-    },
-    filterLabel: {
-        color: UI.heading,
-        fontSize: fontSizes.sm,
     },
     filterHint: {
         color: UI.subtle,
@@ -572,8 +571,8 @@ const styles = StyleSheet.create({
         borderColor: UI.border,
     },
     filterChipSelected: {
-        backgroundColor: '#FFEAF6',
-        borderColor: '#FFB9DC',
+        backgroundColor: designColors.bgBrandSoft,
+        borderColor: designColors.bgBrandMedium,
     },
     filterChipText: {
         fontSize: fontSizes.xs,
@@ -582,17 +581,7 @@ const styles = StyleSheet.create({
         color: UI.body,
     },
     filterChipTextSelected: {
-        color: '#A11F60',
-    },
-    centerBox: {
-        alignItems: 'center',
-        justifyContent: 'center',
-        paddingVertical: 28,
-        gap: 10,
-    },
-    infoText: {
-        color: UI.subtle,
-        fontSize: fontSizes.sm,
+        color: designColors.textBrand,
     },
     messageCard: {
         borderRadius: radii.xl,
@@ -618,25 +607,9 @@ const styles = StyleSheet.create({
     tableCard: {
         ...cardShadow,
         backgroundColor: UI.surface,
-        borderWidth: 1,
-        borderColor: UI.border,
-        borderRadius: radii.xl,
+        borderRadius: radii['2xl'],
+        borderCurve: 'continuous',
         overflow: 'hidden',
-    },
-    tableHeader: {
-        minHeight: 58,
-        paddingHorizontal: 16,
-        paddingVertical: 14,
-        borderBottomWidth: 1,
-        borderBottomColor: UI.borderSoft,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 12,
-    },
-    tableTitle: {
-        color: UI.heading,
-        fontSize: fontSizes.base,
     },
     emptyState: {
         alignItems: 'center',
@@ -660,11 +633,26 @@ const styles = StyleSheet.create({
         borderBottomColor: UI.borderSoft,
         backgroundColor: UI.surface,
     },
+    skeletonRow: {
+        padding: 16,
+        gap: 10,
+        borderBottomWidth: 1,
+        borderBottomColor: UI.borderSoft,
+    },
+    rowOpen: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 2,
+    },
+    rowOpenText: {
+        color: UI.brand,
+        fontSize: fontSizes.xs,
+    },
     rowCardLast: {
         borderBottomWidth: 0,
     },
     rowPressed: {
-        backgroundColor: '#FAFAFD',
+        backgroundColor: designColors.bgBrandSofter,
     },
     rowTop: {
         flexDirection: 'row',
@@ -735,47 +723,6 @@ const styles = StyleSheet.create({
         gap: 4,
     },
     badgeText: {
-        fontSize: fontSizes.xs,
-    },
-    actionsRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-    },
-    iconButton: {
-        width: 34,
-        height: 34,
-        borderRadius: radii.full,
-        borderWidth: 1,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    tableFooter: {
-        minHeight: 56,
-        paddingHorizontal: 16,
-        paddingVertical: 12,
-        backgroundColor: UI.canvas,
-        borderTopWidth: 1,
-        borderTopColor: UI.borderSoft,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 12,
-    },
-    footerText: {
-        color: UI.subtle,
-        fontSize: fontSizes.xs,
-    },
-    pagePill: {
-        width: 32,
-        height: 32,
-        borderRadius: radii.lg,
-        backgroundColor: UI.brand,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    pagePillText: {
-        color: designColors.white,
         fontSize: fontSizes.xs,
     },
 });

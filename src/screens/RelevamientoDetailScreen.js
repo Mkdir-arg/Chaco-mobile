@@ -2874,7 +2874,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
                 style={[
                   styles.tabChipText,
                   { color: theme.colors.text, fontFamily: typography.medium },
-                  selected && { color: '#A11F60', fontFamily: typography.bold },
+                  selected && { color: designColors.textBrand, fontFamily: typography.bold },
                 ]}
               >
                 {tab}
@@ -3691,12 +3691,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
   },
   countPillValue: {
-    color: '#A11F60',
+    color: designColors.textBrand,
     fontSize: fontSizes.lg,
     lineHeight: 24,
   },
   countPillLabel: {
-    color: '#A11F60',
+    color: designColors.textBrand,
     fontSize: fontSizes.xxs,
   },
   peopleHeaderRow: {

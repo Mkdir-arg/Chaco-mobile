@@ -88,3 +88,69 @@ test('SQLite lock after server accepted case retries idempotently and sends atta
   assert.equal(row.status, 'SYNCED');
   assert.equal(JSON.parse(row.payload_json).remote_formulario_id, 3);
 });
+
+// openSqliteSerialized guarda estado del módulo: cada test arranca con uno recién cargado.
+const fresco = () => {
+  const exportsFresco = {};
+  vm.runInNewContext(code, {exports: exportsFresco});
+  return exportsFresco;
+};
+
+const errorOcupada = () => Object.assign(new Error("Failed to execute 'createSyncAccessHandle' on 'FileSystemFileHandle': Access Handles cannot be created if there is another open Access Handle or Writable stream associated with the same file."), {name: 'NoModificationAllowedError'});
+
+test('las bases se abren de a una: la segunda espera a que termine la primera', async () => {
+  const {openSqliteSerialized} = fresco();
+  const events = [];
+  let release;
+  const gate = new Promise(resolve => {release = resolve;});
+  const open = async name => {
+    events.push(`abre ${name}`);
+    if (name === 'relevamientos') await gate;
+    events.push(`lista ${name}`);
+    return {name};
+  };
+  const first = openSqliteSerialized(open, 'relevamientos');
+  const second = openSqliteSerialized(open, 'dispositivos');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(events, ['abre relevamientos']);
+  release();
+  assert.equal((await first).name, 'relevamientos');
+  assert.equal((await second).name, 'dispositivos');
+  assert.equal(events.join(','), 'abre relevamientos,lista relevamientos,abre dispositivos,lista dispositivos');
+});
+
+test('base tomada por otra pestaña: las dos aperturas dan el mismo aviso y el worker roto no se vuelve a llamar', async () => {
+  const {openSqliteSerialized, BASE_OCUPADA, MENSAJE_BASE_OCUPADA} = fresco();
+  const ocupada = errorOcupada();
+  const llamadas = [];
+  const open = async name => {
+    llamadas.push(name);
+    if (name === 'relevamientos') throw ocupada;
+    throw new Error('Invalid VFS state');
+  };
+  const first = openSqliteSerialized(open, 'relevamientos');
+  const second = openSqliteSerialized(open, 'dispositivos');
+  for (const apertura of [first, second]) {
+    await assert.rejects(apertura, error => {
+      assert.equal(error.code, BASE_OCUPADA);
+      assert.equal(error.message, MENSAJE_BASE_OCUPADA);
+      assert.equal(error.cause, ocupada);
+      return true;
+    });
+  }
+  assert.deepEqual(llamadas, ['relevamientos']);
+});
+
+test('«Invalid VFS state» solo (worker roto de antes) también es base ocupada', async () => {
+  const {openSqliteSerialized, BASE_OCUPADA} = fresco();
+  await assert.rejects(openSqliteSerialized(async () => { throw new Error('Invalid VFS state'); }, 'x'), error => error.code === BASE_OCUPADA);
+});
+
+test('otros errores de apertura pasan sin tocar y no bloquean las siguientes', async () => {
+  const {openSqliteSerialized, esBaseOcupada} = fresco();
+  const otro = new Error('disk full');
+  await assert.rejects(openSqliteSerialized(async () => { throw otro; }, 'x'), error => error === otro);
+  assert.equal((await openSqliteSerialized(async name => ({name}), 'dispositivos')).name, 'dispositivos');
+  assert.equal(esBaseOcupada(otro), false);
+  assert.equal(esBaseOcupada({name: 'NoModificationAllowedError', message: ''}), true);
+});
