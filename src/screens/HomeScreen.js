@@ -1,9 +1,10 @@
 import { relevamientoBadge } from '../theme/statusBadges';
 import React, { useCallback, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, RefreshControl } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, RefreshControl } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
 import { Ionicons } from '@expo/vector-icons';
 import StaggeredItem from '../components/StaggeredItem';
+import PressableScale from '../components/PressableScale';
 import { designColors, fontSizes, radii } from '../theme';
 import { dateKey, parseAssignmentDate, formatDateTimeRange, closingSoonLabel, isDateTimeCurrentOrFuture, ASSIGNMENT_TIME_ZONE } from '../utils/dates';
 import useAssignmentClock from '../hooks/useAssignmentClock';
@@ -91,8 +92,11 @@ export default function HomeScreen({
                             const hasOverdue = key < todayDateKey && dayRelevamientos.some((item) => isOverdueRelevamiento(item, now));
                             const label = formatCalendarLabel(key);
                             return (
-                                <Pressable
+                                <PressableScale
                                     key={key}
+                                    haptic={!selected}
+                                    accessibilityRole="button"
+                                    accessibilityState={{ selected }}
                                     onPress={() => setSelectedDateKey(key)}
                                     style={[
                                         styles.dayChip,
@@ -105,7 +109,7 @@ export default function HomeScreen({
                                     <Text style={[styles.dayNumber, { fontFamily: typography.bold }, selected && styles.dayTextSelected, isToday && styles.dayTextToday]}>{label.number}</Text>
                                     <Text style={[styles.dayMonth, { fontFamily: typography.semibold }, selected && styles.dayTextSelected, isToday && styles.dayTextToday]}>{label.month}</Text>
                                     {count > 0 ? <View style={[styles.dayDot, isToday && styles.dayDotToday, hasOverdue && styles.dayDotOverdue]} /> : null}
-                                </Pressable>
+                                </PressableScale>
                             );
                         })}
                     </ScrollView>
@@ -139,7 +143,7 @@ export default function HomeScreen({
 function RelevamientoCard({ item, typography, overdue, onPress, now }) {
     const closing = !item.pausado && isOpenRelevamiento(item) ? closingSoonLabel(item.fecha_asignada, item.fecha_hasta, now) : '';
     return (
-        <Pressable
+        <PressableScale
             onPress={onPress}
             style={({ pressed }) => [
                 styles.assignmentRow,
@@ -170,7 +174,7 @@ function RelevamientoCard({ item, typography, overdue, onPress, now }) {
                 </View>
             </View>
             <Ionicons name="chevron-forward" size={18} color={UI.subtle} />
-        </Pressable>
+        </PressableScale>
     );
 }
 

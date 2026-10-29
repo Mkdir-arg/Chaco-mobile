@@ -327,6 +327,7 @@ test('P12: la lista lee localidad con respaldo subsegmento y EN_REVISION tiene s
     '../theme/statusBadges': loadPure('src/theme/statusBadges.js'),
     '../context/ThemeContext': {useTheme: () => ({theme, typography})},
     '../components/StaggeredItem': {__esModule: true, default: ({children}) => children},
+    '../components/PressableScale': {__esModule: true, default: ({containerStyle, haptic, scale, ...props}) => React.createElement('Pressable', props)},
     '../hooks/useAssignmentClock': {__esModule: true, default: () => new Date()},
     '../services/relevamientoService': {__esModule: true, default: {getRelevamientos: async () => ({success: true, records: recordsSets})}},
     '../theme': loadTokens(), '../utils/dates': runtime.dates,
