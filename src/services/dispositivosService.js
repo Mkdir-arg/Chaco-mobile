@@ -5,7 +5,7 @@ import * as SQLite from 'expo-sqlite';
 import { Platform } from 'react-native';
 import { becasRequest, becasUploadFile, getBecasToken, getStoredBecasUser } from './becasApi';
 import { validateAttachmentMetadata } from './formularioSync';
-import { serializeSqliteAccess } from './sqliteAccess';
+import { openSqliteSerialized, serializeSqliteAccess } from './sqliteAccess';
 import { persistWebAttachment } from './webAttachments';
 
 // Módulo Relevamiento de Dispositivos: caché de inspecciones y cola de envíos offline.
@@ -64,7 +64,7 @@ const createError = (code, message) => Object.assign(new Error(message), { code 
 
 const getSqliteDb = async () => {
   if (!sqliteDbPromise) {
-    sqliteDbPromise = SQLite.openDatabaseAsync(SQLITE_DB_NAME).then(serializeSqliteAccess);
+    sqliteDbPromise = openSqliteSerialized(SQLite.openDatabaseAsync, SQLITE_DB_NAME).then(serializeSqliteAccess);
   }
   return sqliteDbPromise;
 };
