@@ -29,12 +29,12 @@ export const AuthProvider = ({ children }) => {
       }
     });
     // El back dejó de admitir un módulo: se actualiza la sesión; sin módulos, se sale.
-    const unsubscribeSinModulo = subscribeSinModulo(async (modulo) => {
+    const unsubscribeSinModulo = subscribeSinModulo(async (modulo, tokenDelPedido) => {
       try {
-        const next = await quitarModuloLocal(modulo);
+        const next = await quitarModuloLocal(modulo, tokenDelPedido);
         if (!mounted || !next) return;
+        // Sin módulos, quitarModuloLocal ya borró la sesión guardada.
         if (!next.modulos.length) {
-          await clearBecasSession();
           setUser(null);
           setModuloActivoState(null);
           return;

@@ -55,21 +55,68 @@ test('el modulo elegido se guarda y cerrar sesion lo borra', async () => {
 test('quitarModuloLocal saca el modulo del usuario guardado y del modulo activo', async () => {
   const {r} = await login({modulos: ['becas', 'dispositivos']});
   await r.api.setModuloActivo('dispositivos');
-  const user = await r.api.quitarModuloLocal('dispositivos');
+  const user = await r.api.quitarModuloLocal('dispositivos', 'nuevo');
   assert.deepEqual([...user.modulos], ['becas']);
   assert.deepEqual([...(await r.api.getStoredBecasUser()).modulos], ['becas']);
   assert.equal(await r.api.getModuloActivo(), null);
   // Quitar el que no era el activo deja el activo como estaba.
   await r.api.setModuloActivo('becas');
-  await r.api.quitarModuloLocal('dispositivos');
+  await r.api.quitarModuloLocal('dispositivos', 'nuevo');
   assert.equal(await r.api.getModuloActivo(), 'becas');
-  const vacio = await r.api.quitarModuloLocal('becas');
+  const vacio = await r.api.quitarModuloLocal('becas', 'nuevo');
   assert.deepEqual([...vacio.modulos], []);
 });
 
 test('quitarModuloLocal sin sesion no hace nada', async () => {
   const r = await setup();
   r.values.delete('user_data');
-  assert.equal(await r.api.quitarModuloLocal('dispositivos'), null);
+  assert.equal(await r.api.quitarModuloLocal('dispositivos', 'old-token'), null);
   assert.equal(r.values.has('user_data'), false);
+});
+
+// Un 403 SIN_MODULO de un pedido hecho con la sesion anterior no toca la sesion de quien
+// entro despues: antes podia dejar el token nuevo con el usuario de la sesion vieja.
+test('quitarModuloLocal con el token de otra sesion no hace nada', async () => {
+  const {r} = await login({modulos: ['becas', 'dispositivos']});
+  await r.api.setModuloActivo('dispositivos');
+  assert.equal(await r.api.quitarModuloLocal('dispositivos', 'old-token'), null);
+  assert.deepEqual([...(await r.api.getStoredBecasUser()).modulos], ['becas', 'dispositivos']);
+  assert.equal(await r.api.getModuloActivo(), 'dispositivos');
+});
+
+test('un 403 SIN_MODULO viejo que llega en medio del login no mezcla las sesiones', async () => {
+  const r = await setup();
+  r.values.set('user_data', JSON.stringify({id: 7, username: 'ana', modulos: ['becas', 'dispositivos']}));
+  r.setFetch(async () => response(200, {token: 'de-beto', user_id: 8, username: 'beto', modulos: ['becas', 'dispositivos']}));
+  // El 403 de ana llega justo cuando el login de beto empezó a guardar su sesión.
+  let quitado;
+  const guardar = r.secure.set.bind(r.secure);
+  r.secure.set = (key, value) => {
+    if (key === 'becas_auth_token' && !quitado) quitado = r.api.quitarModuloLocal('dispositivos', 'old-token');
+    return guardar(key, value);
+  };
+  await r.api.loginBecas({username: 'beto', password: 'x'});
+  assert.equal(await quitado, null, 'el 403 era de la sesion de ana');
+  const user = await r.api.getStoredBecasUser();
+  assert.equal(await r.api.getBecasToken(), 'de-beto');
+  assert.equal(user.id, 8);
+  assert.deepEqual([...user.modulos], ['becas', 'dispositivos']);
+});
+
+test('un 403 SIN_MODULO que llega durante el logout no revive la sesion', async () => {
+  const {r} = await login({modulos: ['becas', 'dispositivos']});
+  const salida = r.api.clearBecasSession();
+  const quitado = r.api.quitarModuloLocal('dispositivos', 'nuevo');
+  await salida;
+  assert.equal(await quitado, null);
+  assert.equal(await r.api.getStoredBecasUser(), null);
+  assert.equal(await r.api.getBecasToken(), null);
+});
+
+test('si el 403 deja al usuario sin modulos, se borra la sesion guardada', async () => {
+  const {r} = await login({modulos: ['dispositivos']});
+  const user = await r.api.quitarModuloLocal('dispositivos', 'nuevo');
+  assert.deepEqual([...user.modulos], []);
+  assert.equal(await r.api.getStoredBecasUser(), null);
+  assert.equal(await r.api.getBecasToken(), null);
 });

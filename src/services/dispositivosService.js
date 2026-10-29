@@ -32,14 +32,15 @@ let sqliteDbPromise = null;
 let sqliteInitPromise = null;
 const sinModuloListeners = new Set();
 
-// El listener recibe el nombre del módulo que el back dejó de admitir.
+// El listener recibe el nombre del módulo que el back dejó de admitir y el token con el que
+// se hizo el pedido rechazado.
 export const subscribeSinModulo = (listener) => {
   sinModuloListeners.add(listener);
   return () => sinModuloListeners.delete(listener);
 };
-const notificarSinModulo = () => sinModuloListeners.forEach((listener) => {
+const notificarSinModulo = (error) => sinModuloListeners.forEach((listener) => {
   try {
-    listener(MODULO);
+    listener(MODULO, error?.requestToken ?? null);
   } catch (error) {
     console.warn('[DISPOSITIVOS][SIN_MODULO][LISTENER]', error?.message);
   }
@@ -370,7 +371,7 @@ export const getInspecciones = async ({ refreshFromRemote = true } = {}) => {
         }
       }
     } catch (error) {
-      if (esSinModulo(error)) notificarSinModulo();
+      if (esSinModulo(error)) notificarSinModulo(error);
       if (!esFallaTransitoria(error) && !esSinModulo(error)) throw error;
     }
   }
@@ -388,7 +389,7 @@ export const getInspeccion = async (id, { refreshFromRemote = true } = {}) => {
     try {
       return conEnvio(await traerDetalle(ownerId, id), envios);
     } catch (error) {
-      if (esSinModulo(error)) notificarSinModulo();
+      if (esSinModulo(error)) notificarSinModulo(error);
       if (!cached || !(esFallaTransitoria(error) || esSinModulo(error))) throw error;
     }
   }
@@ -625,7 +626,7 @@ const aplicarFalla = async (operation, error) => {
     await cerrarOperacion(operation.op_id, {
       status: 'PENDING', retryCount, info, nextRetryAt: new Date(Date.now() + PAUSED_RETRY_MS).toISOString(),
     });
-    notificarSinModulo();
+    notificarSinModulo(error);
   } else if (accion === 'espera') {
     await cerrarOperacion(operation.op_id, {
       status: 'PENDING', retryCount, info, nextRetryAt: new Date(Date.now() + espera).toISOString(),

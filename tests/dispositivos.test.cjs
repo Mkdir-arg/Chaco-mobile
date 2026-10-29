@@ -382,10 +382,13 @@ test('si cambia la formulario_version del listado se vuelve a pedir el detalle',
 test('un 403 SIN_MODULO al leer tambien avisa', async () => {
   const {r, d} = await preparar();
   const avisos = [];
-  d.subscribeSinModulo((modulo) => avisos.push(modulo));
+  const tokens = [];
+  d.subscribeSinModulo((modulo, token) => { avisos.push(modulo); tokens.push(token); });
   router(r, async () => response(403, {detail: 'sin acceso', code: 'SIN_MODULO'}));
   await d.getInspecciones();
   assert.deepEqual(avisos, ['dispositivos']);
+  // Va el token del pedido rechazado, para no tocar una sesion que entro despues.
+  assert.deepEqual(tokens, [await r.api.getBecasToken()]);
 });
 
 test('aislamiento: el servicio solo pega a /api/dispositivos/inspecciones/ y las fuentes no se cruzan', async () => {
