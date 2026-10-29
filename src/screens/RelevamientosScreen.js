@@ -12,6 +12,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
 import StaggeredItem from '../components/StaggeredItem';
+import PressableScale from '../components/PressableScale';
 import useAssignmentClock from '../hooks/useAssignmentClock';
 import relevamientoService from '../services/relevamientoService';
 import { designColors, fontSizes, radii } from '../theme';
@@ -203,7 +204,7 @@ export default function RelevamientosScreen({ onOpenRelevamiento }) {
                                     {`${filteredRelevamientos.length} de ${relevamientosDesdeHoy.length} relevamientos desde hoy`}
                                 </Text>
                             </View>
-                            <Pressable
+                            <PressableScale
                                 accessibilityRole="button"
                                 accessibilityLabel="Actualizar relevamientos"
                                 onPress={() => loadRelevamientos(true)}
@@ -215,15 +216,18 @@ export default function RelevamientosScreen({ onOpenRelevamiento }) {
                                     <Ionicons name="refresh-outline" size={17} color={UI.brand} />
                                 )}
                                 <Text style={[styles.tertiaryButtonText, { fontFamily: typography.bold }]}>Actualizar</Text>
-                            </Pressable>
+                            </PressableScale>
                         </View>
 
                         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filtersRow}>
                             {FILTER_OPTIONS.map((option) => {
                                 const selected = statusFilter === option.key;
                                 return (
-                                    <Pressable
+                                    <PressableScale
                                         key={option.key}
+                                        haptic={!selected}
+                                        accessibilityRole="button"
+                                        accessibilityState={{ selected }}
                                         onPress={() => setStatusFilter(option.key)}
                                         style={[
                                             styles.filterChip,
@@ -239,7 +243,7 @@ export default function RelevamientosScreen({ onOpenRelevamiento }) {
                                         >
                                             {option.label}
                                         </Text>
-                                    </Pressable>
+                                    </PressableScale>
                                 );
                             })}
                         </ScrollView>

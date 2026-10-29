@@ -3,7 +3,8 @@ import { Pressable, Text, StyleSheet, View, Platform, Animated, ActivityIndicato
 import { LinearGradient } from 'expo-linear-gradient';
 import { useTheme } from '../context/ThemeContext';
 import { Ionicons } from '@expo/vector-icons';
-import { designColors, fontSizes, radii } from '../theme';
+import { designColors, fontSizes, motion, radii } from '../theme';
+import useReduceMotion from '../hooks/useReduceMotion';
 
 const SIZES = {
     XS: { h: 32, px: 12, fontSize: fontSizes.xs, iconSize: fontSizes.sm },
@@ -24,14 +25,15 @@ const CustomButton = ({
     size = 'Base',
     variant = 'primary', // primary, secondary, tertiary
     loading = false,
-    pressAnimation = 'none' // none | scale
+    pressAnimation = 'scale' // none | scale
 }) => {
     const { theme, typography } = useTheme();
     const config = SIZES[size] || SIZES.Base;
     const pressScale = useRef(new Animated.Value(1)).current;
+    const reduceMotion = useReduceMotion();
 
     const animatePress = (toValue) => {
-        if (pressAnimation !== 'scale' || disabled || loading) return;
+        if (pressAnimation !== 'scale' || disabled || loading || reduceMotion) return;
         Animated.spring(pressScale, {
             toValue,
             useNativeDriver: true,
@@ -126,7 +128,7 @@ const CustomButton = ({
         <Animated.View style={[styles.container, style, { transform: [{ scale: pressScale }] }]}>
             <Pressable
                 onPress={onPress}
-                onPressIn={() => animatePress(0.94)}
+                onPressIn={() => animatePress(motion.pressScale)}
                 onPressOut={() => animatePress(1)}
                 disabled={disabled || loading}
                 accessibilityRole="button"
