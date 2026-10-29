@@ -48,30 +48,46 @@ const invalidateRejectedSession = async (token) => {
   }
 };
 
+// En nativo, si SecureStore falla al guardar, el valor queda en AsyncStorage como respaldo
+// bajo `respaldo_<clave>`, y se lee de ahí cuando SecureStore no tiene nada (antes solo se
+// leía si SecureStore tiraba error, y la sesión se perdía al reiniciar).
+// Las versiones anteriores guardaban el respaldo con la clave sin prefijo y el logout no lo
+// borraba: puede quedar la sesión vieja de otro relevador. Esa clave solo se lee si SecureStore
+// tira error (como antes), para no revivir esa sesión, y se limpia en el próximo login o logout.
+const respaldoKey = (key) => `respaldo_${key}`;
+
 const storage = {
   getItem: async (key) => {
     if (Platform.OS === 'web') return AsyncStorage.getItem(key);
+    let value;
     try {
-      return await SecureStore.getItemAsync(key);
+      value = await SecureStore.getItemAsync(key);
     } catch {
-      return AsyncStorage.getItem(key);
+      return (await AsyncStorage.getItem(respaldoKey(key))) ?? AsyncStorage.getItem(key);
     }
+    if (value != null) return value;
+    return AsyncStorage.getItem(respaldoKey(key));
   },
   setItem: async (key, value) => {
     if (Platform.OS === 'web') return AsyncStorage.setItem(key, value);
     try {
-      return await SecureStore.setItemAsync(key, value);
+      await SecureStore.setItemAsync(key, value);
     } catch {
-      return AsyncStorage.setItem(key, value);
+      // Un valor cifrado anterior ganaría en la lectura frente al respaldo nuevo.
+      await Promise.allSettled([SecureStore.deleteItemAsync(key)]);
+      return AsyncStorage.setItem(respaldoKey(key), value);
     }
+    await Promise.allSettled([AsyncStorage.removeItem(respaldoKey(key)), AsyncStorage.removeItem(key)]);
+    return undefined;
   },
   deleteItem: async (key) => {
     if (Platform.OS === 'web') return AsyncStorage.removeItem(key);
-    try {
-      return await SecureStore.deleteItemAsync(key);
-    } catch {
-      return AsyncStorage.removeItem(key);
-    }
+    await Promise.allSettled([
+      SecureStore.deleteItemAsync(key),
+      AsyncStorage.removeItem(respaldoKey(key)),
+      AsyncStorage.removeItem(key),
+    ]);
+    return undefined;
   },
 };
 

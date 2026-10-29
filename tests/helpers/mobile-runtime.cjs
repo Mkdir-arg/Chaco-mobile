@@ -5,12 +5,41 @@ const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 const { transformSync } = require('@babel/core');
 
-async function setup(platform = 'android') {
-  const values = new Map([['becas_auth_token', 'old-token'], ['user_data', JSON.stringify({id: 7})]]);
+// Las claves de sesión que en nativo van a SecureStore.
+const CLAVES_SEGURAS = new Set(['becas_auth_token', 'user_data', 'user_id', 'modulo_activo']);
+
+// SecureStore (`secure`) y AsyncStorage (`legacy`) son almacenamientos separados, como en el
+// celular. `values` mira cada clave donde vive: las de sesión en SecureStore (en nativo) y el
+// resto en AsyncStorage. Con `secureStoreSeparado` la sesión inicial arranca en AsyncStorage
+// (el respaldo de antes) y `values` mira solo AsyncStorage; `setSecureFalla(true)` hace que
+// todas las operaciones de SecureStore tiren error.
+async function setup(platform = 'android', {secureStoreSeparado = false} = {}) {
+  const legacy = new Map();
+  const secure = new Map();
+  const mapDe = key => (!secureStoreSeparado && platform !== 'web' && CLAVES_SEGURAS.has(key) ? secure : legacy);
+  const values = {
+    get: key => mapDe(key).get(key),
+    set: (key, value) => { mapDe(key).set(key, value); return values; },
+    has: key => mapDe(key).has(key),
+    delete: key => mapDe(key).delete(key),
+    entries: () => [...secure.entries(), ...legacy.entries()][Symbol.iterator](),
+  };
+  values.set('becas_auth_token', 'old-token');
+  values.set('user_data', JSON.stringify({id: 7}));
   const storage = {
-    getItem: async key => values.get(key) ?? null,
-    setItem: async (key, value) => values.set(key, value),
-    removeItem: async key => values.delete(key),
+    getItem: async key => legacy.get(key) ?? null,
+    setItem: async (key, value) => { legacy.set(key, value); },
+    removeItem: async key => { legacy.delete(key); },
+  };
+  let secureFalla = false;
+  const secureOp = fn => async (...args) => {
+    if (secureFalla) throw new Error('Keystore no disponible');
+    return fn(...args);
+  };
+  const secureStore = {
+    getItemAsync: secureOp(async key => secure.get(key) ?? null),
+    setItemAsync: secureOp(async (key, value) => { secure.set(key, value); }),
+    deleteItemAsync: secureOp(async key => { secure.delete(key); }),
   };
   const sql = new DatabaseSync(':memory:');
   const db = {
@@ -45,7 +74,7 @@ async function setup(platform = 'android') {
   });
   const mocks = {
     '@react-native-async-storage/async-storage': {default: storage},
-    'expo-secure-store': {getItemAsync: storage.getItem, setItemAsync: storage.setItem, deleteItemAsync: storage.removeItem},
+    'expo-secure-store': secureStore,
     'react-native': {Platform: {OS: platform}},
     '../config/apiConfig': {API_CONFIG: {djangoBaseUrl: 'https://example.test'}},
     '@react-native-community/netinfo': {default: {fetch: async () => ({isConnected: online, isInternetReachable: online})}},
@@ -85,7 +114,7 @@ async function setup(platform = 'android') {
     VALUES ('remote_django_becas_1','1','now','now',?,1)`).run(JSON.stringify(campaign));
   const setPeriod = (start, end) => sql.prepare("UPDATE local_relevamientos SET payload_json=? WHERE local_id='remote_django_becas_1'")
     .run(JSON.stringify({...campaign, fecha_asignada: start, fecha_hasta: end}));
-  return {definition: load('./definicionFormulario'), attachments: load('./webAttachments'), images: load('./webImages'), location: load('./ubicacion'), conditions: load('./condiciones'), identity: load('./identityLookup'), modulos: load('./modulos'), api, service, dates: load('../utils/dates'), values, sql, setPeriod,
+  return {definition: load('./definicionFormulario'), attachments: load('./webAttachments'), images: load('./webImages'), location: load('./ubicacion'), conditions: load('./condiciones'), identity: load('./identityLookup'), modulos: load('./modulos'), api, service, dates: load('../utils/dates'), values, secure, legacy, setSecureFalla: value => {secureFalla = value;}, sql, setPeriod,
     setNow: value => {currentTime = new Date(value).getTime();}, setOnline: value => {online = value;}, setFetch: handler => {fetchHandler = handler;}, setLocation: handler => {locationHandler = handler;},
     setNavigator: value => {navigatorValue = value;}, setAppVersion: value => {appVersion = value;}, setFileInfo: handler => {fileInfoHandler = handler;}, load};
 }
