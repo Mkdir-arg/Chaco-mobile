@@ -16,7 +16,7 @@ import { getInspeccion, enviarResultado, getCargaRechazada } from '../services/d
 import {
   leerBorrador, guardarBorrador, borrarBorrador, copiarParaBorrador, borrarArchivoDelBorrador,
 } from '../services/dispositivosBorrador';
-import { prepararAsset, CRITICIDADES, direccionDe, describirEnvio, etiquetasDeCampos, textoEnEspera } from '../utils/dispositivos';
+import { prepararAsset, CRITICIDADES, direccionDe, combinarCargaPrevia, describirEnvio, etiquetasDeCampos, textoEnEspera } from '../utils/dispositivos';
 import { statusTones } from '../theme/statusBadges';
 import { keyboardDismissModeFor } from '../utils/teclado';
 import { fontSizes, radii } from '../theme';
@@ -56,28 +56,22 @@ export default function DispositivoCompletarScreen({ inspeccionId, onTerminar })
         setDetalle(result);
         const borrador = await leerBorrador(ownerId, inspeccionId);
         if (!activo) return;
-        if (borrador) {
-          setValores(borrador.valores || {});
-          setCriticidad(borrador.criticidad || '');
-          setObservaciones(borrador.observaciones || '');
-          setFotos(borrador.fotos || []);
-          showToast({ type: 'info', message: borrador.sinArchivos
-            ? 'Recuperamos lo que habías cargado. Las fotos y archivos hay que volver a adjuntarlos.'
-            : 'Recuperamos lo que habías cargado.' });
-        } else {
-          // El back rechazó el envío (formulario cambiado): lo ya respondido no se vuelve a pedir.
-          const previa = await getCargaRechazada(inspeccionId);
-          if (!activo) return;
-          if (previa) {
-            const existentes = new Set(camposDelDiseno(result.formulario?.definicion).map((campo) => campo.clave));
-            const conservar = (mapa) => Object.fromEntries(Object.entries(mapa).filter(([clave]) => existentes.has(clave)));
-            setValores({ ...conservar(previa.respuestas), ...conservar(previa.archivos) });
-            setCriticidad(previa.criticidad);
-            setObservaciones(previa.observaciones);
-            setFotos(previa.fotos);
-            setMarcarFaltantes(true);
-            showToast({ type: 'info', message: 'Recuperamos lo que ya habías respondido. Completá lo que falta.' });
-          }
+        // Lo cargado en un envío que el back rechazó (formulario cambiado) se recupera aunque haya
+        // borrador: en la PWA el borrador no guarda fotos ni archivos y se perderían al reenviar.
+        const previa = !borrador || borrador.sinArchivos ? await getCargaRechazada(inspeccionId) : null;
+        if (!activo) return;
+        const claves = camposDelDiseno(result.formulario?.definicion).map((campo) => campo.clave);
+        const carga = combinarCargaPrevia({ borrador, previa, claves });
+        if (carga) {
+          setValores(carga.valores);
+          setCriticidad(carga.criticidad);
+          setObservaciones(carga.observaciones);
+          setFotos(carga.fotos);
+          if (carga.marcarFaltantes) setMarcarFaltantes(true);
+          let mensaje = 'Recuperamos lo que habías cargado.';
+          if (carga.sinArchivos) mensaje = 'Recuperamos lo que habías cargado. Las fotos y archivos hay que volver a adjuntarlos.';
+          else if (!borrador) mensaje = 'Recuperamos lo que ya habías respondido. Completá lo que falta.';
+          showToast({ type: 'info', message: mensaje });
         }
       } catch (e) {
         if (activo) setError(e?.message || 'No se pudo cargar el relevamiento.');

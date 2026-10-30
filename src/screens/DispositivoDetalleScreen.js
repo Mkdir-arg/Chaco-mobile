@@ -44,12 +44,13 @@ export default function DispositivoDetalleScreen({ inspeccionId, onCompletar, on
     () => describirEnvio(envio, etiquetasDeCampos(detalle?.formulario), { formularioCambio }),
     [envio, detalle, formularioCambio]);
   const cerrada = ['REALIZADA', 'CANCELADA'].includes(String(detalle?.estado || '').toUpperCase());
-  const puedeCompletar = !!detalle && !cerrada && (!envio || (envio.estado === 'error' && !envio.descartada));
+  const puedeCompletar = !!detalle && !detalle.sin_detalle && !cerrada
+    && (!envio || (envio.estado === 'error' && !envio.descartada && envio.code !== 'ARCHIVO_RECHAZADO'));
 
   const reintentar = async () => {
     setReintentando(true);
     try {
-      await reintentarFallidas();
+      await reintentarFallidas(inspeccionId);
       await cargar(false);
     } catch (e) {
       showToast({ type: 'error', message: e?.message || 'No se pudo reintentar el envío.' });

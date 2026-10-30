@@ -47,7 +47,7 @@ test('las demas llamadas de la API tampoco mandan cookies en web', async () => {
 
 test('clave provisoria: el 403 con codigo no guarda token y muestra el detail del back', async () => {
   const r = await setup('web');
-  r.setFetch(async () => response(403, {codigo: 'debe_cambiar_contrasena', detail: 'Cambiá tu clave provisoria desde la web.'}));
+  r.setFetch(async () => response(403, {token: 'no-debe-guardarse', user_id: 9, username: 'tecnico', modulos: ['becas'], codigo: 'debe_cambiar_contrasena', detail: 'Cambiá tu clave provisoria desde la web.'}));
   await assert.rejects(r.api.loginBecas({username: 'tecnico', password: 'provisoria'}),
     (e) => e.message === 'Cambiá tu clave provisoria desde la web.' && e.code === 'DEBE_CAMBIAR_CONTRASENA');
   assert.equal(await r.api.getBecasToken(), 'old-token', 'no se guardó un token nuevo');

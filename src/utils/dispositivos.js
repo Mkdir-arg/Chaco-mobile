@@ -54,6 +54,8 @@ const TEXTO_POR_CODE = {
   ESTADO_NO_ADMITE: 'El relevamiento ya no admite cargas en su estado actual.',
   NO_ENCONTRADA: 'El relevamiento ya no está disponible para vos.',
   REINTENTOS_AGOTADOS: 'No se pudo enviar después de varios intentos.',
+  REABIERTA: 'Volvieron a asignarte este relevamiento. Lo que cargaste sigue guardado: completalo y enviá.',
+  ARCHIVO_RECHAZADO: 'El servidor rechazó un archivo adjunto. Probá reintentar el envío.',
   ARCHIVO_LOCAL_FALTANTE: 'Falta un archivo adjunto en el teléfono; volvé a cargarlo.',
   DATOS_INVALIDOS: 'El servidor rechazó los datos cargados. Corregí lo marcado y volvé a enviar.',
 };
@@ -131,4 +133,36 @@ export const prepararAsset = (asset = {}, { tipo = 'foto' } = {}) => {
     mimeType: MIME_POR_EXT[ext],
     size: size == null ? null : Number(size),
   };
+};
+
+// Arma lo que «Completar» muestra al abrir: el borrador local y/o lo cargado en un envío
+// rechazado (`previa`), quedándose solo con las claves que el formulario vigente todavía tiene.
+// En la PWA el borrador no guarda archivos (`sinArchivos`): los del envío rechazado se suman, para
+// que al reenviar no se pierdan fotos ni adjuntos. Devuelve null si no hay nada que recuperar.
+export const combinarCargaPrevia = ({ borrador = null, previa = null, claves = [] } = {}) => {
+  if (!borrador && !previa) return null;
+  const vigentes = new Set(claves);
+  const filtrar = (mapa = {}) => Object.fromEntries(Object.entries(mapa).filter(([clave]) => vigentes.has(clave)));
+  if (!previa) {
+    return { valores: borrador.valores || {}, criticidad: borrador.criticidad || '',
+      observaciones: borrador.observaciones || '', fotos: borrador.fotos || [],
+      sinArchivos: !!borrador.sinArchivos, deEnvio: false, marcarFaltantes: false };
+  }
+  if (!borrador) {
+    return { valores: { ...filtrar(previa.respuestas), ...filtrar(previa.archivos) },
+      criticidad: previa.criticidad || '', observaciones: previa.observaciones || '',
+      fotos: previa.fotos || [], sinArchivos: false, deEnvio: true, marcarFaltantes: true };
+  }
+  const valores = { ...(borrador.valores || {}) };
+  let fotos = borrador.fotos || [];
+  let sinArchivos = !!borrador.sinArchivos;
+  if (borrador.sinArchivos) {
+    const archivos = filtrar(previa.archivos);
+    for (const [clave, archivo] of Object.entries(archivos)) if (!valores[clave]?.uri) valores[clave] = archivo;
+    const usadas = new Set(fotos.map((foto) => foto.uri));
+    fotos = [...fotos, ...(previa.fotos || []).filter((foto) => !usadas.has(foto.uri))];
+    sinArchivos = false;
+  }
+  return { valores, criticidad: borrador.criticidad || '', observaciones: borrador.observaciones || '',
+    fotos, sinArchivos, deEnvio: !!borrador.sinArchivos, marcarFaltantes: !!borrador.sinArchivos };
 };

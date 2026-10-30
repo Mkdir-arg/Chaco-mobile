@@ -25,6 +25,14 @@ const BACKGROUND_SYNC_WAIT_MS = 1500;
 const PAUSED_RETRY_MS = 5 * 60 * 1000;
 const CRITICIDADES = ['BAJA', 'MEDIA', 'ALTA'];
 const CODES_DESCARTE_409 = ['YA_REALIZADA', 'CANCELADA', 'REASIGNADA', 'ESTADO_NO_ADMITE'];
+// Lo que el 409 de estos códigos deja en el teléfono se conserva y se muestra hasta que el
+// agente lo descarte. Los DISCARDED de versiones anteriores no llevan la marca `conservada`.
+const CODES_CONSERVADOS = ['CANCELADA', 'REASIGNADA', 'ESTADO_NO_ADMITE'];
+// Si el back vuelve a asignarle la inspección al agente, lo conservado por estos se reactiva.
+const CODES_REACTIVABLES = ['REASIGNADA', 'ESTADO_NO_ADMITE'];
+const ESTADOS_TRABAJABLES = ['ASIGNADA', 'EN_CURSO'];
+const MAX_CONSERVADOS_EN_LISTA = 20;
+const MARCA_CONSERVADA = '%"conservada":true%';
 const ERROR_ARCHIVO_LOCAL_FALTANTE = 'ARCHIVO_LOCAL_FALTANTE';
 
 let syncInFlightPromise = null;
@@ -307,6 +315,7 @@ const mapEnvio = (op) => op && ({
   estado: ESTADO_ENVIO[op.status] || 'pendiente',
   status: op.status,
   permanente: op.status === 'FAILED_PERMANENT' || op.status === 'DISCARDED',
+  conservada: op.last_error_info?.conservada === true,
   descartada: op.status === 'DISCARDED',
   code: op.last_error_code,
   detail: op.last_error_info?.detail ?? op.last_error,
@@ -354,12 +363,12 @@ const traerDetalle = async (ownerId, id) => {
 export const getInspecciones = async ({ refreshFromRemote = true } = {}) => {
   const ownerId = await getCurrentOwnerId();
   if (!ownerId) return [];
-  const envios = await enviosPorInspeccion(ownerId);
   if (refreshFromRemote && await getConnectivitySnapshot()) {
     try {
       const remoto = await becasRequest(INSPECCIONES_PATH);
       const items = Array.isArray(remoto) ? remoto : (remoto?.results || []);
       await guardarListadoCache(ownerId, items);
+      await reactivarVueltas(ownerId, items);
       // Deja el detalle listo para trabajar sin red: solo los que cambiaron de versión.
       for (const item of items) {
         const cached = await leerDetalleCache(ownerId, item.id);
@@ -376,9 +385,31 @@ export const getInspecciones = async ({ refreshFromRemote = true } = {}) => {
       if (!esFallaTransitoria(error) && !esSinModulo(error)) throw error;
     }
   }
+  const envios = await enviosPorInspeccion(ownerId);
   const listado = await leerListadoCache(ownerId);
   return listado.concat(await sinEntregarFueraDelListado(ownerId, listado, envios))
     .map((item) => conEnvio(item, envios));
+};
+
+// Si el back vuelve a listar como trabajable una inspección cuyo envío quedó guardado por un
+// 409 de reasignación, lo cargado vuelve a poder completarse y reenviarse.
+const reactivarVueltas = async (ownerId, items) => {
+  const ids = items.filter((item) => ESTADOS_TRABAJABLES.includes(String(item?.estado || '').toUpperCase()))
+    .map((item) => String(item.id));
+  if (!ids.length) return;
+  const envios = await enviosPorInspeccion(ownerId);
+  const db = await withDb();
+  for (const id of ids) {
+    const envio = envios.get(id);
+    if (!envio || envio.status !== 'DISCARDED' || !CODES_REACTIVABLES.includes(envio.code)) continue;
+    const info = { code: 'REABIERTA', message: 'Volvieron a asignarte este relevamiento.', conservada: false };
+    await db.runAsync(
+      `UPDATE ${SQLITE_OUTBOX_TABLE}
+       SET status = 'FAILED_PERMANENT', retry_count = 0, next_retry_at = NULL, last_error = ?,
+           last_error_code = ?, last_error_json = ?, updated_at = ?
+       WHERE op_id = ? AND status = 'DISCARDED'`,
+      info.message, info.code, JSON.stringify(info), nowIso(), envio.op_id);
+  }
 };
 
 // Lo cargado que el back ya no lista (cancelado, reasignado) sigue en el teléfono: se muestra
@@ -386,10 +417,17 @@ export const getInspecciones = async ({ refreshFromRemote = true } = {}) => {
 const sinEntregarFueraDelListado = async (ownerId, listado, envios) => {
   const enListado = new Set(listado.map((item) => String(item.id)));
   const items = [];
-  for (const [id, envio] of envios) {
+  let conservados = 0;
+  const ordenados = [...envios].sort(([, a], [, b]) => String(b.created_at).localeCompare(String(a.created_at)));
+  for (const [id, envio] of ordenados) {
     if (enListado.has(id) || envio.estado === 'enviado') continue;
+    // Un DISCARDED sin la marca es de una versión anterior (YA_REALIZADA, NO_ENCONTRADA...): no vuelve.
+    if (envio.status === 'DISCARDED') {
+      if (!envio.conservada || conservados >= MAX_CONSERVADOS_EN_LISTA) continue;
+      conservados += 1;
+    }
     const detalle = await leerDetalleCache(ownerId, id);
-    items.push({ ...(detalle || { id, edificio: {} }), fuera_del_listado: true });
+    items.push({ ...(detalle || { id, edificio: {}, sin_detalle: true }), fuera_del_listado: true });
   }
   return items;
 };
@@ -397,21 +435,26 @@ const sinEntregarFueraDelListado = async (ownerId, listado, envios) => {
 export const getInspeccion = async (id, { refreshFromRemote = true } = {}) => {
   const ownerId = await getCurrentOwnerId();
   if (!ownerId || id == null) return null;
-  const envios = await enviosPorInspeccion(ownerId);
+  let envios = await enviosPorInspeccion(ownerId);
   const cached = await leerDetalleCache(ownerId, id);
+  // Sin detalle guardado pero con algo cargado sin entregar: se abre con eso, para poder descartarlo.
+  const base = cached || (envios.has(String(id)) ? { id, edificio: {}, sin_detalle: true } : null);
   const listado = (await leerListadoCache(ownerId)).find((item) => String(item.id) === String(id));
   const versionCambio = !!listado && !!cached && versionDe(listado) !== versionDe(cached);
   if ((refreshFromRemote || !cached || versionCambio) && await getConnectivitySnapshot()) {
     try {
-      return conEnvio(await traerDetalle(ownerId, id), envios);
+      const remoto = await traerDetalle(ownerId, id);
+      await reactivarVueltas(ownerId, [remoto]);
+      envios = await enviosPorInspeccion(ownerId);
+      return conEnvio(remoto, envios);
     } catch (error) {
       if (esSinModulo(error)) notificarSinModulo(error);
       // Si ya no existe para este agente (404) pero hay algo cargado sin entregar, se muestra eso.
       const conservar = Number(error?.status) === 404 && envios.has(String(id));
-      if (!cached || !(esFallaTransitoria(error) || esSinModulo(error) || conservar)) throw error;
+      if (!base || !(esFallaTransitoria(error) || esSinModulo(error) || conservar)) throw error;
     }
   }
-  return cached ? conEnvio(cached, envios) : null;
+  return base ? conEnvio(base, envios) : null;
 };
 
 // Lo cargado en un envío que el back rechazó por los datos (400): para reabrirlo sin perder
@@ -421,7 +464,8 @@ export const getCargaRechazada = async (inspeccionId) => {
   if (!ownerId) return null;
   const ops = await readOperations(ownerId, 'inspeccion_id = ?', String(inspeccionId));
   const op = ops[ops.length - 1];
-  if (!op || op.status !== 'FAILED_PERMANENT') return null;
+  // Un archivo rechazado después de aceptado el resultado se reintenta, no se vuelve a cargar.
+  if (!op || op.status !== 'FAILED_PERMANENT' || op.last_error_code === 'ARCHIVO_RECHAZADO') return null;
   const { payload } = op;
   const respuestas = Object.fromEntries(Object.entries(payload.respuestas || {})
     .filter(([, valor]) => !valor?.archivo_adjunto));
@@ -477,7 +521,9 @@ export const getPendingCount = async () => {
   const db = await withDb();
   const row = await db.getFirstAsync(
     `SELECT COUNT(*) AS count FROM ${SQLITE_OUTBOX_TABLE}
-     WHERE owner_user_id = ? AND status IN ('PENDING', 'IN_FLIGHT', 'FAILED_PERMANENT')`, ownerId);
+     WHERE owner_user_id = ?
+       AND (status IN ('PENDING', 'IN_FLIGHT', 'FAILED_PERMANENT')
+            OR (status = 'DISCARDED' AND last_error_json LIKE ?))`, ownerId, MARCA_CONSERVADA);
   return Number(row?.count || 0);
 };
 
@@ -641,15 +687,20 @@ const ejecutarOperacion = async (operation, ownerId) => {
       if ((payload.hecho[campo] || []).includes(original.id)) continue;
       let item = original;
       try {
-        await subirItem(id, tipo, item);
+        try {
+          await subirItem(id, tipo, item);
+        } catch (error) {
+          const regenerable = Number(error?.status) === 409 && error?.payload?.code === 'UUID_EN_USO'
+            && !item.uuid_regenerado;
+          if (!regenerable) throw error;
+          // El identificador ya lo usa otro: se cambia una sola vez; si vuelve, es permanente.
+          item = { ...item, uuid_cliente: createUuid(), uuid_regenerado: true };
+          await guardar({ [campo]: payload[campo].map((it) => (it.id === item.id ? item : it)) });
+          await subirItem(id, tipo, item);
+        }
       } catch (error) {
-        const regenerable = Number(error?.status) === 409 && error?.payload?.code === 'UUID_EN_USO'
-          && !item.uuid_regenerado;
-        if (!regenerable) throw error;
-        // El identificador ya lo usa otro: se cambia una sola vez; si vuelve, es permanente.
-        item = { ...item, uuid_cliente: createUuid(), uuid_regenerado: true };
-        await guardar({ [campo]: payload[campo].map((it) => (it.id === item.id ? item : it)) });
-        await subirItem(id, tipo, item);
+        if (Number(error?.status) === 400) error.enSubida = true;
+        throw error;
       }
       await guardar({ hecho: { ...payload.hecho, [campo]: [...(payload.hecho[campo] || []), item.id] } });
     }
@@ -673,9 +724,13 @@ const clasificarError = (error) => {
   }
   if (status === 404) return { accion: 'descartar', info: { ...info, code: 'NO_ENCONTRADA' } };
   if (status === 409) {
-    if (CODES_DESCARTE_409.includes(code)) return { accion: 'descartar', info };
+    if (CODES_DESCARTE_409.includes(code)) {
+      return { accion: 'descartar', info: CODES_CONSERVADOS.includes(code) ? { ...info, conservada: true } : info };
+    }
     return { accion: 'permanente', info: { ...info, code: code || 'CONFLICTO' } };
   }
+  // Un 400 al subir un archivo (el resultado ya se aceptó) no es del formulario: se puede reintentar.
+  if (status === 400 && error?.enSubida) return { accion: 'permanente', info: { ...info, code: 'ARCHIVO_RECHAZADO' } };
   if (status === 400) return { accion: 'permanente', info: { ...info, code: 'DATOS_INVALIDOS' } };
   if (status === 403 || status >= 500 || status === 408 || !status) return { accion: 'reintento', info };
   return { accion: 'permanente', info: { ...info, code: code || 'RECHAZADA' } };
@@ -761,8 +816,10 @@ export const syncPendientes = async () => {
   }
 };
 
-// Las que quedaron en error vuelven a la cola con el contador a cero.
-export const reintentarFallidas = async () => {
+// Las que quedaron en error vuelven a la cola con el contador a cero. Con `inspeccionId` solo esa
+// (el agente lo pidió); sin él, no se reencolan los rechazos de datos (400): reenviar lo mismo
+// fallaría igual y esos se corrigen reabriendo el relevamiento.
+export const reintentarFallidas = async (inspeccionId = null) => {
   const ownerId = await getCurrentOwnerId();
   if (!ownerId) return { synced: 0, failed: 0, errors: [] };
   if (syncInFlightPromise) await syncInFlightPromise;
@@ -770,7 +827,9 @@ export const reintentarFallidas = async () => {
   await db.runAsync(
     `UPDATE ${SQLITE_OUTBOX_TABLE}
      SET status = 'PENDING', retry_count = 0, next_retry_at = NULL, started_at = NULL, updated_at = ?
-     WHERE owner_user_id = ? AND status = 'FAILED_PERMANENT'`, nowIso(), ownerId);
+     WHERE owner_user_id = ? AND status = 'FAILED_PERMANENT'
+       ${inspeccionId == null ? "AND (last_error_code IS NULL OR last_error_code <> 'DATOS_INVALIDOS')" : 'AND inspeccion_id = ?'}`,
+    nowIso(), ownerId, ...(inspeccionId == null ? [] : [String(inspeccionId)]));
   return syncPendientes();
 };
 
