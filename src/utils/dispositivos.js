@@ -48,8 +48,8 @@ export const ETIQUETA_ENVIO = {
 };
 
 const TEXTO_POR_CODE = {
-  REASIGNADA: 'Este relevamiento se reasignó a otra persona; lo cargado queda en el teléfono.',
-  CANCELADA: 'Este relevamiento se canceló; no hace falta enviarlo.',
+  REASIGNADA: 'Este relevamiento fue reasignado a otra persona. Lo que cargaste quedó guardado en el teléfono, sin enviar.',
+  CANCELADA: 'Este relevamiento fue cancelado. Lo que cargaste quedó guardado en el teléfono, sin enviar.',
   YA_REALIZADA: 'Este relevamiento ya figura como realizado; no se envió de nuevo.',
   ESTADO_NO_ADMITE: 'El relevamiento ya no admite cargas en su estado actual.',
   NO_ENCONTRADA: 'El relevamiento ya no está disponible para vos.',
@@ -60,16 +60,36 @@ const TEXTO_POR_CODE = {
 
 // Qué mostrarle al agente de un envío en error: título por `code` (nunca por el texto del
 // mensaje) y, en un 400, cada clave con la etiqueta del campo.
-export const describirEnvio = (envio, etiquetas = {}) => {
+// El back arma el texto de la clave con el nombre del campo adentro («X» es obligatorio):
+// si ya lo trae, repetir la etiqueta adelante es ruido.
+const textoDeClave = (etiqueta, texto) => (texto.includes(etiqueta) ? texto : `${etiqueta}: ${texto}`);
+
+// `formularioCambio`: el formulario del back ya no es el que se usó al cargar.
+export const describirEnvio = (envio, etiquetas = {}, { formularioCambio = false } = {}) => {
   if (!envio || envio.estado !== 'error') return null;
   const claves = envio.claves && typeof envio.claves === 'object'
-    ? Object.entries(envio.claves).map(([clave, texto]) => ({ clave, etiqueta: etiquetas[clave] || clave, texto: String(texto) }))
+    ? Object.entries(envio.claves).map(([clave, texto]) => {
+      const etiqueta = etiquetas[clave] || clave;
+      return { clave, etiqueta, texto: textoDeClave(etiqueta, String(texto)) };
+    })
     : [];
-  const titulo = TEXTO_POR_CODE[envio.code] || envio.detail || envio.code || 'No se pudo enviar.';
-  // El detail del back solo suma en un 400 sin claves: en lo demás manda el texto por code.
-  const detalle = envio.code === 'DATOS_INVALIDOS' && !claves.length ? envio.detail || '' : '';
-  return { titulo, detalle, claves, descartada: !!envio.descartada };
+  const rechazoDeDatos = envio.code === 'DATOS_INVALIDOS';
+  const titulo = rechazoDeDatos && formularioCambio
+    ? 'El formulario cambió: completá los campos nuevos.'
+    : TEXTO_POR_CODE[envio.code] || envio.detail || envio.code || 'No se pudo enviar.';
+  // El detail del back suma en un 400 sin claves y, en una cancelación, trae el motivo.
+  let detalle = '';
+  if (rechazoDeDatos && !claves.length && !formularioCambio) detalle = envio.detail || '';
+  if (envio.code === 'CANCELADA' && envio.detail) detalle = envio.detail;
+  // Un 400 no se arregla reenviando lo mismo: hay que reabrir y corregir.
+  const sinReintento = !!envio.descartada || rechazoDeDatos;
+  return { titulo, detalle, claves, descartada: !!envio.descartada, sinReintento };
 };
+
+// Texto de un envío que espera: la sesión vencida no es un problema de conexión.
+export const textoEnEspera = (envio) => (envio?.code === 'AUTH_REQUIRED'
+  ? 'Tu sesión venció. Iniciá sesión de nuevo y se envía.'
+  : 'Guardado en el teléfono. Se envía solo apenas haya conexión.');
 
 export const etiquetasDeCampos = (formulario) => {
   const mapa = {};

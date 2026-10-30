@@ -13,7 +13,7 @@ const ICONO_MODULO = { becas: 'school-outline', dispositivos: 'business-outline'
 export default function ModuloSelectorScreen() {
   const { theme, typography } = useTheme();
   const { user, modulos, elegirModulo, logout } = useAuth();
-  const displayName = user?.username || user?.nombre || 'Usuario';
+  const displayName = user?.nombre || user?.username || 'Usuario';
 
   return (
     <AuthVisualBackground>

@@ -77,6 +77,7 @@ export const AuthProvider = ({ children }) => {
       return {
         success: false,
         error: error?.message || 'No se pudo iniciar sesion.',
+        code: error?.code || null,
       };
     }
   };

@@ -311,6 +311,7 @@ const mapEnvio = (op) => op && ({
   code: op.last_error_code,
   detail: op.last_error_info?.detail ?? op.last_error,
   claves: op.last_error_info?.claves ?? null,
+  version_capturada: op.payload?.version_capturada ?? null,
   retry_count: op.retry_count,
   next_retry_at: op.next_retry_at,
   created_at: op.created_at,
@@ -375,7 +376,22 @@ export const getInspecciones = async ({ refreshFromRemote = true } = {}) => {
       if (!esFallaTransitoria(error) && !esSinModulo(error)) throw error;
     }
   }
-  return (await leerListadoCache(ownerId)).map((item) => conEnvio(item, envios));
+  const listado = await leerListadoCache(ownerId);
+  return listado.concat(await sinEntregarFueraDelListado(ownerId, listado, envios))
+    .map((item) => conEnvio(item, envios));
+};
+
+// Lo cargado que el back ya no lista (cancelado, reasignado) sigue en el teléfono: se muestra
+// hasta que el agente lo descarte, y nunca se pierde en silencio.
+const sinEntregarFueraDelListado = async (ownerId, listado, envios) => {
+  const enListado = new Set(listado.map((item) => String(item.id)));
+  const items = [];
+  for (const [id, envio] of envios) {
+    if (enListado.has(id) || envio.estado === 'enviado') continue;
+    const detalle = await leerDetalleCache(ownerId, id);
+    items.push({ ...(detalle || { id, edificio: {} }), fuera_del_listado: true });
+  }
+  return items;
 };
 
 export const getInspeccion = async (id, { refreshFromRemote = true } = {}) => {
@@ -390,10 +406,58 @@ export const getInspeccion = async (id, { refreshFromRemote = true } = {}) => {
       return conEnvio(await traerDetalle(ownerId, id), envios);
     } catch (error) {
       if (esSinModulo(error)) notificarSinModulo(error);
-      if (!cached || !(esFallaTransitoria(error) || esSinModulo(error))) throw error;
+      // Si ya no existe para este agente (404) pero hay algo cargado sin entregar, se muestra eso.
+      const conservar = Number(error?.status) === 404 && envios.has(String(id));
+      if (!cached || !(esFallaTransitoria(error) || esSinModulo(error) || conservar)) throw error;
     }
   }
   return cached ? conEnvio(cached, envios) : null;
+};
+
+// Lo cargado en un envío que el back rechazó por los datos (400): para reabrirlo sin perder
+// respuestas, archivos ni fotos. Los archivos vuelven como valor del campo, por clave.
+export const getCargaRechazada = async (inspeccionId) => {
+  const ownerId = await getCurrentOwnerId();
+  if (!ownerId) return null;
+  const ops = await readOperations(ownerId, 'inspeccion_id = ?', String(inspeccionId));
+  const op = ops[ops.length - 1];
+  if (!op || op.status !== 'FAILED_PERMANENT') return null;
+  const { payload } = op;
+  const respuestas = Object.fromEntries(Object.entries(payload.respuestas || {})
+    .filter(([, valor]) => !valor?.archivo_adjunto));
+  const archivos = Object.fromEntries((payload.archivos || []).filter((item) => item.clave)
+    .map((item) => [item.clave, { uri: item.uri, fileName: item.fileName, mimeType: item.mimeType, size: item.size }]));
+  const fotos = (payload.fotos || []).map((item) => ({
+    id: item.id, uri: item.uri, fileName: item.fileName, mimeType: item.mimeType, size: item.size,
+    descripcion: item.descripcion || '',
+  }));
+  return {
+    criticidad: payload.criticidad || '', observaciones: payload.observaciones || '',
+    respuestas, archivos, fotos, versionCapturada: payload.version_capturada ?? null,
+  };
+};
+
+// El agente decide soltar lo que quedó sin enviar (cancelado, reasignado, rechazado): se borran
+// las filas y los archivos locales. Un envío que sigue en cola no se toca.
+export const descartarEnvio = async (inspeccionId) => {
+  const ownerId = await getCurrentOwnerId();
+  if (!ownerId) return false;
+  const ops = (await readOperations(ownerId, 'inspeccion_id = ?', String(inspeccionId)))
+    .filter((op) => ['DISCARDED', 'FAILED_PERMANENT'].includes(op.status));
+  if (!ops.length) return false;
+  for (const op of ops) await borrarArchivosLocales(op.payload);
+  const db = await withDb();
+  await db.runAsync(
+    `DELETE FROM ${SQLITE_OUTBOX_TABLE}
+     WHERE owner_user_id = ? AND inspeccion_id = ? AND status IN ('DISCARDED', 'FAILED_PERMANENT')`,
+    ownerId, String(inspeccionId));
+  const listado = await leerListadoCache(ownerId);
+  if (!listado.some((item) => String(item.id) === String(inspeccionId))) {
+    await db.runAsync(
+      `DELETE FROM ${SQLITE_DETALLE_TABLE} WHERE owner_user_id = ? AND inspeccion_id = ?`,
+      ownerId, String(inspeccionId));
+  }
+  return true;
 };
 
 export const getEstadoEnvio = async (inspeccionId) => {
@@ -715,6 +779,8 @@ export default {
   getInspecciones,
   getInspeccion,
   getEstadoEnvio,
+  getCargaRechazada,
+  descartarEnvio,
   getEnvios,
   getPendingCount,
   enviarResultado,

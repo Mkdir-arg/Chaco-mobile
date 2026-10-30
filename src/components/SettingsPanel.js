@@ -26,7 +26,7 @@ export default function SettingsPanel({ visible, onClose, onLogout, onOpenAvisos
     // Start from -PANEL_WIDTH to slide from the left
     const slideAnim = useRef(new Animated.Value(-PANEL_WIDTH)).current;
     const [shouldRender, setShouldRender] = useState(visible);
-    const displayName = user?.username || user?.nombre || 'Usuario';
+    const displayName = user?.nombre || user?.username || 'Usuario';
     const initials = displayName
         .split(' ')
         .filter(Boolean)

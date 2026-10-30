@@ -408,3 +408,76 @@ test('aislamiento: el servicio solo pega a /api/dispositivos/inspecciones/ y las
   const tablas = r.sql.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%dispositivos%' OR name LIKE 'cache_inspecciones%'").all();
   assert.ok(tablas.length >= 3);
 });
+
+// ---- Errores de envío: lo cargado no se pierde y el motivo es veraz ----
+
+test('C-01: un 409 CANCELADA queda visible fuera del listado, con motivo, y se descarta a pedido', async () => {
+  const {r, d, enviar} = await preparar();
+  await enviar();
+  router(r, async () => response(409, {detail: 'El relevamiento fue cancelado: obra suspendida', code: 'CANCELADA', estado: 'CANCELADA'}));
+  await d.syncPendientes();
+  assert.equal(operacion(r).status, 'DISCARDED');
+  // El back ya no lo lista: el item sigue en la lista local porque tiene algo sin entregar.
+  router(r, async (call) => (call.url === BASE ? response(200, []) : response(404, {detail: 'No encontrado.'})));
+  const lista = await d.getInspecciones();
+  assert.deepEqual(lista.map((item) => item.id), [5]);
+  assert.equal(lista[0].envio.code, 'CANCELADA'); assert.equal(lista[0].envio.descartada, true);
+  // El detalle tampoco falla con 404: muestra lo guardado.
+  const abierto = await d.getInspeccion(5);
+  assert.equal(abierto.envio.detail, 'El relevamiento fue cancelado: obra suspendida');
+  // Los archivos siguen en el teléfono hasta que el agente decide.
+  assert.ok(payloadOf(r).archivos[0].uri.startsWith('file:///test/attachments/dispositivos/'));
+  assert.equal(await d.descartarEnvio(5), true);
+  assert.equal(r.sql.prepare('SELECT COUNT(*) AS n FROM outbox_dispositivos').get().n, 0);
+  assert.deepEqual(await d.getInspecciones({refreshFromRemote: false}), []);
+});
+
+test('C-02: un 400 con el formulario cambiado conserva lo respondido y lo reabre', async () => {
+  const {r, d, enviar} = await preparar();
+  await enviar();
+  router(r, async () => response(400, {detail: '«Extintores» es obligatorio.', claves: {'cp-nuevo': '«Extintores» es obligatorio.'}}));
+  await d.syncPendientes();
+  const envio = await d.getEstadoEnvio(5);
+  assert.equal(envio.version_capturada, 10);
+  const previa = await d.getCargaRechazada(5);
+  assert.equal(previa.criticidad, 'MEDIA'); assert.equal(previa.observaciones, 'Humedad');
+  assert.deepEqual(JSON.parse(JSON.stringify(previa.respuestas)), {'cp-techo': 'Bueno'});
+  assert.equal(previa.archivos['cp-plano'].fileName, 'plano.pdf');
+  assert.equal(previa.fotos.length, 1); assert.equal(previa.fotos[0].descripcion, 'Fachada');
+  // Reenviar reemplaza al rechazado y no pierde los archivos.
+  const nuevo = await d.enviarResultado(5, {criticidad: 'MEDIA', respuestas: previa.respuestas,
+    archivos: previa.archivos, fotos: previa.fotos}, {sincronizar: false});
+  assert.equal(nuevo.envio.estado, 'pendiente');
+  assert.equal(await d.getCargaRechazada(5), null);
+});
+
+test('C-03: el 401 deja el envío en espera con code AUTH_REQUIRED para no culpar a la conexión', async () => {
+  const {r, d, enviar} = await preparar({archivos: {}, fotos: []});
+  await enviar();
+  router(r, async () => response(401, {detail: 'Invalid token.'}));
+  await d.syncPendientes();
+  r.values.set('user_data', JSON.stringify({id: 7})); // el 401 cerró la sesión; el agente vuelve a entrar
+  const envio = await d.getEstadoEnvio(5);
+  assert.equal(envio.estado, 'pendiente'); assert.equal(envio.code, 'AUTH_REQUIRED');
+});
+
+test('C-01/C-02/C-03: textos de describirEnvio y textoEnEspera', async () => {
+  const fs2 = require('node:fs'); const vm = require('node:vm');
+  const codigo = fs2.readFileSync(path.join(__dirname, '..', 'src/utils/dispositivos.js'), 'utf8')
+    .replace(/export const /g, 'exports.').replace(/^import .*$/gm, '');
+  const exports = {}; vm.runInNewContext(codigo, {exports, String, Object, Number, Array});
+  const {describirEnvio, textoEnEspera} = exports;
+  const cancelada = describirEnvio({estado: 'error', code: 'CANCELADA', descartada: true, detail: 'El relevamiento fue cancelado: obra'});
+  assert.match(cancelada.titulo, /fue cancelado/); assert.equal(cancelada.sinReintento, true);
+  assert.equal(cancelada.detalle, 'El relevamiento fue cancelado: obra');
+  assert.match(describirEnvio({estado: 'error', code: 'REASIGNADA', descartada: true}).titulo, /reasignado a otra persona/);
+  const cambio = describirEnvio({estado: 'error', code: 'DATOS_INVALIDOS', claves: {a: '«Extintores» es obligatorio.'}},
+    {a: 'Extintores'}, {formularioCambio: true});
+  assert.equal(cambio.titulo, 'El formulario cambió: completá los campos nuevos.');
+  assert.equal(cambio.sinReintento, true);
+  assert.equal(cambio.claves[0].texto, '«Extintores» es obligatorio.', 'sin repetir la etiqueta');
+  const otra = describirEnvio({estado: 'error', code: 'DATOS_INVALIDOS', claves: {a: 'debe ser número'}}, {a: 'Metros'});
+  assert.equal(otra.claves[0].texto, 'Metros: debe ser número');
+  assert.match(textoEnEspera({code: 'AUTH_REQUIRED'}), /sesión venció/);
+  assert.match(textoEnEspera({code: null}), /apenas haya conexión/);
+});

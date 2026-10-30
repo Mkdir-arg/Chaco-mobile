@@ -122,7 +122,7 @@ test('Lista: separa pendientes (por vencimiento), vencidos y enviados / en cola'
     assert.ok(at('Escuela C') > at('Vencidos') && at('Escuela C') < at('Enviados / en cola'));
     for (const nombre of ['Escuela D', 'Escuela E', 'Escuela F']) assert.ok(at(nombre) > at('Enviados / en cola'), nombre);
     assert.ok(labels.includes('Enviado') && labels.includes('Enviando') && labels.includes('Con error'));
-    assert.ok(labels.includes('Este relevamiento se reasignó a otra persona; lo cargado queda en el teléfono.'));
+    assert.ok(labels.includes('Este relevamiento fue reasignado a otra persona. Lo que cargaste quedó guardado en el teléfono, sin enviar.'));
   } finally {await ui.close();}
 });
 
@@ -147,13 +147,13 @@ test('Detalle: un 409 REASIGNADA muestra el texto claro, sin reintentar', async 
   const ui = await mountDetalle(inspeccion(1, 'Escuela A', {
     envio: {op_id: 'x', estado: 'error', permanente: true, descartada: true, code: 'REASIGNADA', detail: 'El relevamiento se reasignó a otro agente.'}}));
   try {
-    assert.ok(ui.labels().includes('Este relevamiento se reasignó a otra persona; lo cargado queda en el teléfono.'));
+    assert.ok(ui.labels().includes('Este relevamiento fue reasignado a otra persona. Lo que cargaste quedó guardado en el teléfono, sin enviar.'));
     assert.equal(ui.button('Reintentar envío'), undefined);
     assert.ok(ui.labels().includes('Escuela A') && ui.labels().some(label => /Calle 123, Resistencia, Chaco/.test(label)));
   } finally {await ui.close();}
 });
 
-test('Detalle: un 400 muestra cada clave con la etiqueta del campo y permite reintentar y completar', async () => {
+test('Detalle: un 400 muestra cada clave con la etiqueta del campo y permite completar y descartar, sin reintentar', async () => {
   const ui = await mountDetalle(inspeccion(1, 'Escuela A', {
     formulario: FORMULARIO,
     envio: {op_id: 'x', estado: 'error', permanente: true, descartada: false, code: 'DATOS_INVALIDOS',
@@ -163,8 +163,9 @@ test('Detalle: un 400 muestra cada clave con la etiqueta del campo y permite rei
     assert.ok(labels.includes('Estado del techo: Elegí una de las opciones del formulario.'));
     assert.ok(labels.includes('cp-zzz: Campo viejo.'));
     assert.ok(ui.button('Completar relevamiento'));
-    await ui.pressButton('Reintentar envío');
-    assert.equal(ui.calls.reintentos, 1);
+    // Reenviar lo mismo no arregla un 400: solo se ofrece reabrir y corregir, o descartar.
+    assert.equal(ui.button('Reintentar envío'), undefined);
+    assert.ok(ui.button('Descartar lo cargado'));
   } finally {await ui.close();}
 });
 
