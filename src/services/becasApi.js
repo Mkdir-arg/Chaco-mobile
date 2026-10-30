@@ -15,6 +15,7 @@ import { ahoraCorregido, registrarHoraServidor } from './reloj';
 // porque ahi sostienen la sesion de Client Management de FortiWeb.
 const CREDENCIALES = Platform.OS === 'web' ? 'omit' : 'include';
 
+const CODIGO_CLAVE_PROVISORIA = 'debe_cambiar_contrasena';
 const TOKEN_KEY = 'becas_auth_token';
 const USER_DATA_KEY = 'user_data';
 const USER_ID_KEY = 'user_id';
@@ -232,6 +233,13 @@ export const loginBecas = async ({ username, password }) => {
   registrarHoraServidor(response.headers?.get?.('Date'));
   const payload = await parseResponse(response);
   if (!response.ok) {
+    // Clave provisoria: el back avisa con 403 y `codigo`. Es otra cosa que credenciales
+    // inválidas, y acá no se guarda ningún token.
+    if (response.status === 403 && payload?.codigo === CODIGO_CLAVE_PROVISORIA) {
+      throw Object.assign(
+        new Error(payload.detail || 'Tenés que cambiar la clave provisoria antes de entrar.'),
+        { code: 'DEBE_CAMBIAR_CONTRASENA' });
+    }
     throw new Error(payload?.detail || payload?.non_field_errors?.[0] || 'No se pudo iniciar sesion.');
   }
 
@@ -244,7 +252,9 @@ export const loginBecas = async ({ username, password }) => {
   const user = {
     id: payload.user_id,
     username: payload.username,
-    nombre: payload.username,
+    // El back puede mandar el nombre real; si no, se sigue mostrando el usuario.
+    nombre: [payload.first_name, payload.last_name].filter(Boolean).join(' ').trim()
+      || payload.nombre_completo || payload.username,
     grupos: [],
     es_admin: false,
     modulos,

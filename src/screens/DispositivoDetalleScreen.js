@@ -5,17 +5,17 @@ import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
 import CustomButton from '../components/CustomButton';
 import { statusTones } from '../theme/statusBadges';
-import { getInspeccion, reintentarFallidas } from '../services/dispositivosService';
-import { direccionDe, mapaUrl, describirEnvio, etiquetasDeCampos, ETIQUETA_ENVIO } from '../utils/dispositivos';
+import { getInspeccion, reintentarFallidas, descartarEnvio } from '../services/dispositivosService';
+import { direccionDe, mapaUrl, describirEnvio, etiquetasDeCampos, textoEnEspera, ETIQUETA_ENVIO } from '../utils/dispositivos';
 import { formatDate } from '../utils/dates';
 import { fontSizes, radii } from '../theme';
 
 const TONO_ENVIO = { pendiente: 'warning', en_cola: 'info', error: 'danger', enviado: 'success' };
 const ESTADO = { ASIGNADA: 'Asignada', EN_CURSO: 'En curso', REALIZADA: 'Realizada', CANCELADA: 'Cancelada' };
 
-export default function DispositivoDetalleScreen({ inspeccionId, onCompletar, syncTick = 0 }) {
+export default function DispositivoDetalleScreen({ inspeccionId, onCompletar, onSalir, syncTick = 0 }) {
   const { theme, typography } = useTheme();
-  const { showToast } = useToast();
+  const { showToast, showAlert } = useToast();
   const [detalle, setDetalle] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -37,14 +37,20 @@ export default function DispositivoDetalleScreen({ inspeccionId, onCompletar, sy
   useEffect(() => { if (syncTick) cargar(false); }, [syncTick, cargar]);
 
   const envio = detalle?.envio || null;
-  const motivo = useMemo(() => describirEnvio(envio, etiquetasDeCampos(detalle?.formulario)), [envio, detalle]);
+  // El formulario que bajó ahora no es el que se usó al cargar: los campos nuevos faltan.
+  const formularioCambio = envio?.version_capturada != null && detalle?.formulario?.version != null
+    && Number(envio.version_capturada) !== Number(detalle.formulario.version);
+  const motivo = useMemo(
+    () => describirEnvio(envio, etiquetasDeCampos(detalle?.formulario), { formularioCambio }),
+    [envio, detalle, formularioCambio]);
   const cerrada = ['REALIZADA', 'CANCELADA'].includes(String(detalle?.estado || '').toUpperCase());
-  const puedeCompletar = !!detalle && !cerrada && (!envio || envio.estado === 'error');
+  const puedeCompletar = !!detalle && !detalle.sin_detalle && !cerrada
+    && (!envio || (envio.estado === 'error' && !envio.descartada && envio.code !== 'ARCHIVO_RECHAZADO'));
 
   const reintentar = async () => {
     setReintentando(true);
     try {
-      await reintentarFallidas();
+      await reintentarFallidas(inspeccionId);
       await cargar(false);
     } catch (e) {
       showToast({ type: 'error', message: e?.message || 'No se pudo reintentar el envío.' });
@@ -52,6 +58,24 @@ export default function DispositivoDetalleScreen({ inspeccionId, onCompletar, sy
       setReintentando(false);
     }
   };
+
+  const descartar = () => showAlert(
+    'Descartar lo cargado',
+    'Se borra del teléfono lo que cargaste en este relevamiento, fotos incluidas. No se puede deshacer.', [
+      { text: 'Cancelar', style: 'cancel' },
+      {
+        text: 'Descartar',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await descartarEnvio(inspeccionId);
+            if (onSalir) onSalir();
+          } catch (e) {
+            showToast({ type: 'error', message: e?.message || 'No se pudo descartar.' });
+          }
+        },
+      },
+    ]);
 
   const abrirMapa = async () => {
     try {
@@ -108,17 +132,20 @@ export default function DispositivoDetalleScreen({ inspeccionId, onCompletar, sy
               {motivo.detalle ? <Text style={[styles.valor, { color: tono.tx, fontFamily: typography.medium }]}>{motivo.detalle}</Text> : null}
               {motivo.claves.map((item) => (
                 <Text key={item.clave} style={[styles.valor, { color: tono.tx, fontFamily: typography.medium }]}>
-                  {`${item.etiqueta}: ${item.texto}`}
+                  {item.texto}
                 </Text>
               ))}
-              {!motivo.descartada ? (
+              {!motivo.sinReintento ? (
                 <CustomButton title="Reintentar envío" variant="secondary" iconLeft="refresh" loading={reintentando}
                   disabled={reintentando} onPress={reintentar} />
+              ) : null}
+              {envio.permanente ? (
+                <CustomButton title="Descartar lo cargado" variant="secondary" iconLeft="trash-outline" onPress={descartar} />
               ) : null}
             </>
           ) : (
             <Text style={[styles.valor, { color: tono.tx, fontFamily: typography.medium }]}>
-              {envio.estado === 'enviado' ? 'El resultado ya se registró.' : 'Se envía solo apenas haya conexión.'}
+              {envio.estado === 'enviado' ? 'El resultado ya se registró.' : textoEnEspera(envio)}
             </Text>
           )}
         </View>

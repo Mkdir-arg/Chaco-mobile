@@ -22,7 +22,7 @@ export default function DispositivosApp({ onCambiarModulo }) {
   const { theme } = useTheme();
   const { showAlert, showToast } = useToast();
   const { user, logout } = useAuth();
-  const displayName = user?.username || user?.nombre || 'Usuario';
+  const displayName = user?.nombre || user?.username || 'Usuario';
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [pantalla, setPantalla] = useState({ vista: 'lista', id: null });
   const [syncStatus, setSyncStatus] = useState('synced');
@@ -130,6 +130,7 @@ export default function DispositivosApp({ onCambiarModulo }) {
         ) : null}
         {vista === 'detalle' ? (
           <DispositivoDetalleScreen inspeccionId={id} syncTick={syncTick}
+            onSalir={() => { setPantalla({ vista: 'lista', id: null }); refrescarEstado(); }}
             onCompletar={(abierto) => setPantalla({ vista: 'completar', id: abierto })} />
         ) : null}
         {vista === 'completar' ? (

@@ -141,7 +141,7 @@ test('reintentarFallidas devuelve la fallida a la cola con el contador en cero',
   router(r, async () => response(400, {detail: 'mal', claves: {}}));
   await d.syncPendientes();
   const calls = router(r, async (call) => OK_RESULTADO(call));
-  const resultado = await d.reintentarFallidas();
+  const resultado = await d.reintentarFallidas(5);
   assert.equal(resultado.synced, 1);
   assert.equal(calls.length, 1);
   assert.equal(operacion(r).status, 'DONE');
@@ -407,4 +407,233 @@ test('aislamiento: el servicio solo pega a /api/dispositivos/inspecciones/ y las
   assert.ok(!src('relevamientoService.js').includes('dispositivos_offline'));
   const tablas = r.sql.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%dispositivos%' OR name LIKE 'cache_inspecciones%'").all();
   assert.ok(tablas.length >= 3);
+});
+
+// ---- Errores de envío: lo cargado no se pierde y el motivo es veraz ----
+
+test('C-01: un 409 CANCELADA queda visible fuera del listado, con motivo, y se descarta a pedido', async () => {
+  const {r, d, enviar} = await preparar();
+  await enviar();
+  router(r, async () => response(409, {detail: 'El relevamiento fue cancelado: obra suspendida', code: 'CANCELADA', estado: 'CANCELADA'}));
+  await d.syncPendientes();
+  assert.equal(operacion(r).status, 'DISCARDED');
+  // El back ya no lo lista: el item sigue en la lista local porque tiene algo sin entregar.
+  router(r, async (call) => (call.url === BASE ? response(200, []) : response(404, {detail: 'No encontrado.'})));
+  const lista = await d.getInspecciones();
+  assert.deepEqual(lista.map((item) => item.id), [5]);
+  assert.equal(lista[0].envio.code, 'CANCELADA'); assert.equal(lista[0].envio.descartada, true);
+  // El detalle tampoco falla con 404: muestra lo guardado.
+  const abierto = await d.getInspeccion(5);
+  assert.equal(abierto.envio.detail, 'El relevamiento fue cancelado: obra suspendida');
+  // Los archivos siguen en el teléfono hasta que el agente decide.
+  assert.ok(payloadOf(r).archivos[0].uri.startsWith('file:///test/attachments/dispositivos/'));
+  assert.equal(await d.descartarEnvio(5), true);
+  assert.equal(r.sql.prepare('SELECT COUNT(*) AS n FROM outbox_dispositivos').get().n, 0);
+  assert.deepEqual(await d.getInspecciones({refreshFromRemote: false}), []);
+});
+
+test('C-02: un 400 con el formulario cambiado conserva lo respondido y lo reabre', async () => {
+  const {r, d, enviar} = await preparar();
+  await enviar();
+  router(r, async () => response(400, {detail: '«Extintores» es obligatorio.', claves: {'cp-nuevo': '«Extintores» es obligatorio.'}}));
+  await d.syncPendientes();
+  const envio = await d.getEstadoEnvio(5);
+  assert.equal(envio.version_capturada, 10);
+  const previa = await d.getCargaRechazada(5);
+  assert.equal(previa.criticidad, 'MEDIA'); assert.equal(previa.observaciones, 'Humedad');
+  assert.deepEqual(JSON.parse(JSON.stringify(previa.respuestas)), {'cp-techo': 'Bueno'});
+  assert.equal(previa.archivos['cp-plano'].fileName, 'plano.pdf');
+  assert.equal(previa.fotos.length, 1); assert.equal(previa.fotos[0].descripcion, 'Fachada');
+  // Reenviar reemplaza al rechazado y no pierde los archivos.
+  const nuevo = await d.enviarResultado(5, {criticidad: 'MEDIA', respuestas: previa.respuestas,
+    archivos: previa.archivos, fotos: previa.fotos}, {sincronizar: false});
+  assert.equal(nuevo.envio.estado, 'pendiente');
+  assert.equal(await d.getCargaRechazada(5), null);
+});
+
+test('C-03: el 401 deja el envío en espera con code AUTH_REQUIRED para no culpar a la conexión', async () => {
+  const {r, d, enviar} = await preparar({archivos: {}, fotos: []});
+  await enviar();
+  router(r, async () => response(401, {detail: 'Invalid token.'}));
+  await d.syncPendientes();
+  r.values.set('user_data', JSON.stringify({id: 7})); // el 401 cerró la sesión; el agente vuelve a entrar
+  const envio = await d.getEstadoEnvio(5);
+  assert.equal(envio.estado, 'pendiente'); assert.equal(envio.code, 'AUTH_REQUIRED');
+});
+
+test('C-01/C-02/C-03: textos de describirEnvio y textoEnEspera', async () => {
+  const fs2 = require('node:fs'); const vm = require('node:vm');
+  const codigo = fs2.readFileSync(path.join(__dirname, '..', 'src/utils/dispositivos.js'), 'utf8')
+    .replace(/export const /g, 'exports.').replace(/^import .*$/gm, '');
+  const exports = {}; vm.runInNewContext(codigo, {exports, String, Object, Number, Array});
+  const {describirEnvio, textoEnEspera} = exports;
+  const cancelada = describirEnvio({estado: 'error', code: 'CANCELADA', descartada: true, detail: 'El relevamiento fue cancelado: obra'});
+  assert.match(cancelada.titulo, /fue cancelado/); assert.equal(cancelada.sinReintento, true);
+  assert.equal(cancelada.detalle, 'El relevamiento fue cancelado: obra');
+  assert.match(describirEnvio({estado: 'error', code: 'REASIGNADA', descartada: true}).titulo, /reasignado a otra persona/);
+  const cambio = describirEnvio({estado: 'error', code: 'DATOS_INVALIDOS', claves: {a: '«Extintores» es obligatorio.'}},
+    {a: 'Extintores'}, {formularioCambio: true});
+  assert.equal(cambio.titulo, 'El formulario cambió: completá los campos nuevos.');
+  assert.equal(cambio.sinReintento, true);
+  assert.equal(cambio.claves[0].texto, '«Extintores» es obligatorio.', 'sin repetir la etiqueta');
+  const otra = describirEnvio({estado: 'error', code: 'DATOS_INVALIDOS', claves: {a: 'debe ser número'}}, {a: 'Metros'});
+  assert.equal(otra.claves[0].texto, 'Metros: debe ser número');
+  assert.match(textoEnEspera({code: 'AUTH_REQUIRED'}), /sesión venció/);
+  assert.match(textoEnEspera({code: null}), /apenas haya conexión/);
+});
+
+// ---- Ronda de revisión del PR #22 ----
+
+const utilidades = () => {
+  const vm = require('node:vm');
+  const codigo = fs.readFileSync(path.join(__dirname, '..', 'src/utils/dispositivos.js'), 'utf8')
+    .replace(/export const /g, 'exports.').replace(/^import .*$/gm, '');
+  const exports = {}; vm.runInNewContext(codigo, {exports, String, Object, Number, Array, Set, Error});
+  return exports;
+};
+const listaDel = (estado) => (call) => (call.url === BASE ? response(200, [{id: 5, estado, formulario_version: 10}]) : response(200, detalle({estado})));
+
+for (const code of ['REASIGNADA', 'ESTADO_NO_ADMITE']) {
+  test(`${code}: si el back vuelve a asignársela al agente, lo guardado se puede completar y reenviar`, async () => {
+    const {r, d, enviar} = await preparar();
+    await enviar();
+    router(r, async () => response(409, {detail: 'x', code}));
+    await d.syncPendientes();
+    assert.equal(operacion(r).status, 'DISCARDED');
+    // Mientras el back no la lista, sigue conservada.
+    router(r, async (call) => (call.url === BASE ? response(200, []) : response(404, {})));
+    assert.equal((await d.getInspecciones())[0].envio.descartada, true);
+    // El back la vuelve a listar como asignada: se reactiva con lo cargado.
+    router(r, async (call) => listaDel('ASIGNADA')(call));
+    const [item] = await d.getInspecciones();
+    assert.equal(item.envio.estado, 'error'); assert.equal(item.envio.descartada, false);
+    assert.equal(item.envio.code, 'REABIERTA');
+    const previa = await d.getCargaRechazada(5);
+    assert.equal(previa.criticidad, 'MEDIA'); assert.equal(previa.fotos.length, 1);
+    assert.equal(previa.archivos['cp-plano'].fileName, 'plano.pdf');
+    const nuevo = await d.enviarResultado(5, {criticidad: 'MEDIA', respuestas: previa.respuestas, archivos: previa.archivos, fotos: previa.fotos}, {sincronizar: false});
+    assert.equal(nuevo.envio.estado, 'pendiente');
+  });
+}
+
+test('REASIGNADA reactivada también desde el detalle abierto con red', async () => {
+  const {r, d, enviar} = await preparar({archivos: {}, fotos: []});
+  await enviar();
+  router(r, async () => response(409, {detail: 'x', code: 'REASIGNADA'}));
+  await d.syncPendientes();
+  router(r, async (call) => listaDel('EN_CURSO')(call));
+  const abierto = await d.getInspeccion(5);
+  assert.equal(abierto.envio.code, 'REABIERTA'); assert.equal(abierto.envio.descartada, false);
+});
+
+test('una CANCELADA no se reactiva aunque el back la liste', async () => {
+  const {r, d, enviar} = await preparar({archivos: {}, fotos: []});
+  await enviar();
+  router(r, async () => response(409, {detail: 'x', code: 'CANCELADA'}));
+  await d.syncPendientes();
+  router(r, async (call) => listaDel('ASIGNADA')(call));
+  assert.equal((await d.getInspecciones())[0].envio.descartada, true);
+});
+
+test('PWA: el borrador sin archivos recupera los de la carga rechazada', async () => {
+  const {combinarCargaPrevia} = utilidades();
+  const previa = {criticidad: 'MEDIA', observaciones: 'Humedad', respuestas: {'cp-techo': 'Bueno', 'cp-viejo': 'x'},
+    archivos: {'cp-plano': {uri: 'data:application/pdf;base64,AA==', fileName: 'plano.pdf'}, 'cp-viejo2': {uri: 'data:x', fileName: 'v.pdf'}},
+    fotos: [{id: 'f0', uri: 'data:image/jpeg;base64,AA==', fileName: 'fachada.jpg', descripcion: 'Fachada'}]};
+  const borrador = {criticidad: 'ALTA', observaciones: '', valores: {'cp-techo': 'Malo'}, fotos: [], sinArchivos: true};
+  const claves = ['cp-techo', 'cp-plano', 'cp-nuevo'];
+  const carga = combinarCargaPrevia({borrador, previa, claves});
+  assert.equal(carga.criticidad, 'ALTA'); assert.equal(carga.valores['cp-techo'], 'Malo', 'manda lo último tipeado');
+  assert.equal(carga.valores['cp-plano'].fileName, 'plano.pdf');
+  assert.ok(!('cp-viejo2' in carga.valores), 'las claves que ya no existen se descartan');
+  assert.equal(carga.fotos.length, 1); assert.equal(carga.marcarFaltantes, true);
+  // Sin carga rechazada, o con un borrador que sí tiene archivos, no se mezcla nada.
+  assert.equal(combinarCargaPrevia({borrador: null, previa: null, claves}), null);
+  const solo = combinarCargaPrevia({borrador: {...borrador, sinArchivos: false}, previa, claves});
+  assert.equal(solo.fotos.length, 0); assert.ok(!('cp-plano' in solo.valores));
+  // Sin borrador: solo las claves vigentes de lo respondido.
+  const limpia = combinarCargaPrevia({borrador: null, previa, claves});
+  assert.deepEqual(Object.keys(limpia.valores).sort(), ['cp-plano', 'cp-techo']);
+});
+
+test('PWA: reenviar con lo recuperado lleva archivos y fotos en el nuevo envío', async () => {
+  const {r, d, enviar} = await preparar();
+  await enviar();
+  router(r, async () => response(400, {detail: 'falta', claves: {'cp-nuevo': '«Nuevo» es obligatorio.'}}));
+  await d.syncPendientes();
+  const {combinarCargaPrevia} = utilidades();
+  const previa = await d.getCargaRechazada(5);
+  const carga = combinarCargaPrevia({borrador: {criticidad: 'MEDIA', valores: {}, fotos: [], sinArchivos: true}, previa,
+    claves: ['cp-techo', 'cp-plano']});
+  const archivos = {'cp-plano': carga.valores['cp-plano']};
+  await d.enviarResultado(5, {criticidad: carga.criticidad, respuestas: {'cp-techo': 'Bueno'}, archivos, fotos: carga.fotos}, {sincronizar: false});
+  const nuevo = payloadOf(r);
+  assert.equal(nuevo.archivos.length, 1); assert.equal(nuevo.fotos.length, 1);
+  assert.equal(nuevo.fotos[0].descripcion, 'Fachada');
+});
+
+test('lo conservado por un 409 cuenta como pendiente; los DISCARDED viejos no reaparecen', async () => {
+  const {r, d, enviar} = await preparar({archivos: {}, fotos: []});
+  await enviar();
+  router(r, async () => response(409, {detail: 'x', code: 'CANCELADA'}));
+  await d.syncPendientes();
+  assert.equal(await d.getPendingCount(), 1);
+  // Un descarte de una versión anterior (sin la marca) no cuenta ni vuelve a la lista.
+  r.sql.prepare('UPDATE outbox_dispositivos SET last_error_json = \'{"code":"CANCELADA"}\'').run();
+  assert.equal(await d.getPendingCount(), 0);
+  router(r, async (call) => (call.url === BASE ? response(200, []) : response(404, {})));
+  assert.deepEqual(await d.getInspecciones(), []);
+});
+
+test('un YA_REALIZADA no se conserva en la lista', async () => {
+  const {r, d, enviar} = await preparar({archivos: {}, fotos: []});
+  await enviar();
+  router(r, async () => response(409, {detail: 'x', code: 'YA_REALIZADA'}));
+  await d.syncPendientes();
+  router(r, async (call) => (call.url === BASE ? response(200, []) : response(404, {})));
+  assert.deepEqual(await d.getInspecciones(), []);
+  assert.equal(await d.getPendingCount(), 0);
+});
+
+test('un huérfano sin detalle guardado se abre con lo que hay y se puede descartar', async () => {
+  const {r, d, enviar} = await preparar({archivos: {}, fotos: []});
+  await enviar();
+  router(r, async () => response(409, {detail: 'x', code: 'CANCELADA'}));
+  await d.syncPendientes();
+  r.sql.prepare('DELETE FROM cache_inspecciones_detalle').run();
+  router(r, async () => response(404, {detail: 'No encontrado.'}));
+  const abierto = await d.getInspeccion(5);
+  assert.equal(abierto.sin_detalle, true); assert.equal(abierto.envio.code, 'CANCELADA');
+  r.setOnline(false);
+  assert.equal((await d.getInspeccion(5)).sin_detalle, true, 'también sin red');
+  assert.equal((await d.getInspecciones({refreshFromRemote: false})).length, 1);
+  assert.equal(await d.descartarEnvio(5), true);
+});
+
+test('un 400 al subir un adjunto (resultado ya aceptado) es ARCHIVO_RECHAZADO y se reintenta solo la subida', async () => {
+  const {r, d, enviar} = await preparar();
+  await enviar();
+  router(r, async (call) => (sufijo(call) === 'resultado/' ? OK_RESULTADO(call) : response(400, {detail: 'Archivo no válido.'})));
+  await d.syncPendientes();
+  assert.equal(operacion(r).status, 'FAILED_PERMANENT'); assert.equal(operacion(r).last_error_code, 'ARCHIVO_RECHAZADO');
+  assert.equal(await d.getCargaRechazada(5), null, 'no se reabre el formulario por un archivo');
+  const calls = router(r, async (call) => OK_ARCHIVO(call));
+  assert.equal((await d.reintentarFallidas(5)).synced, 1);
+  assert.deepEqual(escritos(calls).map(sufijo), ['adjuntos/', 'fotos/']);
+  const {describirEnvio} = utilidades();
+  const motivo = describirEnvio({estado: 'error', code: 'ARCHIVO_RECHAZADO'}, {}, {formularioCambio: true});
+  assert.doesNotMatch(motivo.titulo, /formulario cambió/); assert.equal(motivo.sinReintento, false);
+});
+
+test('reintentarFallidas sin inspección no reencola los 400; con inspección, solo esa', async () => {
+  const {r, d, enviar} = await preparar({archivos: {}, fotos: []});
+  await enviar();
+  router(r, async () => response(400, {detail: 'mal', claves: {}}));
+  await d.syncPendientes();
+  const calls = router(r, async (call) => OK_RESULTADO(call));
+  assert.equal((await d.reintentarFallidas()).synced, 0);
+  assert.equal(calls.length, 0); assert.equal(operacion(r).status, 'FAILED_PERMANENT');
+  assert.equal((await d.reintentarFallidas(99)).synced, 0);
+  assert.equal(operacion(r).status, 'FAILED_PERMANENT');
+  assert.equal((await d.reintentarFallidas(5)).synced, 1);
 });

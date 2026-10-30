@@ -25,7 +25,7 @@ export default function BecasApp({ onCambiarModulo }) {
   const { showAlert, showToast } = useToast();
   const Alert = { alert: showAlert };
   const { user, logout } = useAuth();
-  const displayName = user?.username || user?.nombre || 'Usuario';
+  const displayName = user?.nombre || user?.username || 'Usuario';
 
   const [isPageLoading, setIsPageLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('Inicio');

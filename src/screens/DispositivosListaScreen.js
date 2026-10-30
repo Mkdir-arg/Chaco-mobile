@@ -48,7 +48,7 @@ export default function DispositivosListaScreen({ onAbrir, syncTick = 0 }) {
     const envio = item.envio;
     const motivo = envio?.estado === 'error' ? describirEnvio(envio) : null;
     const tono = statusTones[envio ? TONO_ENVIO[envio.estado] || 'gray' : (vencido ? 'danger' : 'gray')];
-    const direccion = direccionDe(item.edificio);
+    const direccion = direccionDe(item.edificio || {});
     return (
       <Pressable key={item.id} accessibilityRole="button"
         accessibilityLabel={`Abrir relevamiento de ${item.edificio?.nombre || item.id}`}
@@ -120,7 +120,7 @@ export default function DispositivosListaScreen({ onAbrir, syncTick = 0 }) {
           {seccion('Pendientes', pendientes)}
           {seccion('Vencidos', vencidos, { vencido: true })}
           {seccion('Enviados / en cola', enviados)}
-          {!items.length ? (
+          {!items.length && !error ? (
             <View style={styles.centro}>
               <Ionicons name="file-tray-outline" size={30} color={theme.colors.textSoft} />
               <Text style={[styles.meta, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>

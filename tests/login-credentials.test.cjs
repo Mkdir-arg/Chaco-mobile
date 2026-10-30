@@ -44,3 +44,21 @@ test('las demas llamadas de la API tampoco mandan cookies en web', async () => {
   await r.api.becasUploadFile('/api/becas/adjuntos/', {fileUri: 'data:image/jpeg;base64,aW1hZ2U=', fileName: 'dni.jpg'});
   assert.deepEqual(credenciales, ['omit', 'omit']);
 });
+
+test('clave provisoria: el 403 con codigo no guarda token y muestra el detail del back', async () => {
+  const r = await setup('web');
+  r.setFetch(async () => response(403, {token: 'no-debe-guardarse', user_id: 9, username: 'tecnico', modulos: ['becas'], codigo: 'debe_cambiar_contrasena', detail: 'Cambiá tu clave provisoria desde la web.'}));
+  await assert.rejects(r.api.loginBecas({username: 'tecnico', password: 'provisoria'}),
+    (e) => e.message === 'Cambiá tu clave provisoria desde la web.' && e.code === 'DEBE_CAMBIAR_CONTRASENA');
+  assert.equal(await r.api.getBecasToken(), 'old-token', 'no se guardó un token nuevo');
+});
+
+test('un 403 sin codigo (sin acceso) y un 400 de credenciales siguen igual', async () => {
+  const r = await setup('web');
+  r.setFetch(async () => response(403, {detail: 'El usuario no tiene acceso a la app de campo.'}));
+  await assert.rejects(r.api.loginBecas({username: 'tecnico', password: 'x'}),
+    (e) => e.message === 'El usuario no tiene acceso a la app de campo.' && !e.code);
+  r.setFetch(async () => response(400, {non_field_errors: ['No puede iniciar sesión.']}));
+  await assert.rejects(r.api.loginBecas({username: 'tecnico', password: 'x'}), /No puede iniciar sesión/);
+  assert.equal(await r.api.getBecasToken(), 'old-token', 'no se guardó un token nuevo');
+});

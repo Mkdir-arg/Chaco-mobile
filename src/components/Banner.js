@@ -41,7 +41,7 @@ export default function Banner({
                                     style={styles.backBtn}
                                 />
                             ) : null}
-                            <Text numberOfLines={1} style={[styles.title, { color: '#FFF', fontFamily: typography.bold }]}>
+                            <Text numberOfLines={2} style={[styles.title, String(title || '').length > 18 && styles.titleLargo, { color: '#FFF', fontFamily: typography.bold }]}>
                                 {title}
                             </Text>
                         </View>
@@ -150,6 +150,11 @@ const styles = StyleSheet.create({
         lineHeight: 27,
         letterSpacing: 0,
         flexShrink: 1,
+    },
+    // Un título largo baja de tamaño y puede pasar a dos renglones en vez de cortarse con «…».
+    titleLargo: {
+        fontSize: 18,
+        lineHeight: 22,
     },
     iconButton: {
         width: 48,

@@ -11,12 +11,12 @@ import CampoFormulario from '../components/formulario/CampoFormulario';
 import GrupoFormulario from '../components/formulario/GrupoFormulario';
 import * as ImagePicker from '../services/imagePicker';
 import * as DocumentPicker from '../services/documentPicker';
-import { evaluarDiseno, problemasDelDiseno } from '../services/definicionFormulario';
-import { getInspeccion, enviarResultado } from '../services/dispositivosService';
+import { evaluarDiseno, problemasDelDiseno, camposDelDiseno } from '../services/definicionFormulario';
+import { getInspeccion, enviarResultado, getCargaRechazada } from '../services/dispositivosService';
 import {
   leerBorrador, guardarBorrador, borrarBorrador, copiarParaBorrador, borrarArchivoDelBorrador,
 } from '../services/dispositivosBorrador';
-import { prepararAsset, CRITICIDADES, direccionDe } from '../utils/dispositivos';
+import { prepararAsset, CRITICIDADES, direccionDe, combinarCargaPrevia, describirEnvio, etiquetasDeCampos, textoEnEspera } from '../utils/dispositivos';
 import { statusTones } from '../theme/statusBadges';
 import { keyboardDismissModeFor } from '../utils/teclado';
 import { fontSizes, radii } from '../theme';
@@ -39,6 +39,7 @@ export default function DispositivoCompletarScreen({ inspeccionId, onTerminar })
   const [busqueda, setBusqueda] = useState({});
   const [faltantes, setFaltantes] = useState([]);
   const [enviando, setEnviando] = useState(false);
+  const [marcarFaltantes, setMarcarFaltantes] = useState(false);
   const [vista, setVista] = useState(null);
   const capturadoEn = useRef(new Date()).current;
   const cargado = useRef(false);
@@ -55,14 +56,22 @@ export default function DispositivoCompletarScreen({ inspeccionId, onTerminar })
         setDetalle(result);
         const borrador = await leerBorrador(ownerId, inspeccionId);
         if (!activo) return;
-        if (borrador) {
-          setValores(borrador.valores || {});
-          setCriticidad(borrador.criticidad || '');
-          setObservaciones(borrador.observaciones || '');
-          setFotos(borrador.fotos || []);
-          showToast({ type: 'info', message: borrador.sinArchivos
-            ? 'Recuperamos lo que habías cargado. Las fotos y archivos hay que volver a adjuntarlos.'
-            : 'Recuperamos lo que habías cargado.' });
+        // Lo cargado en un envío que el back rechazó (formulario cambiado) se recupera aunque haya
+        // borrador: en la PWA el borrador no guarda fotos ni archivos y se perderían al reenviar.
+        const previa = !borrador || borrador.sinArchivos ? await getCargaRechazada(inspeccionId) : null;
+        if (!activo) return;
+        const claves = camposDelDiseno(result.formulario?.definicion).map((campo) => campo.clave);
+        const carga = combinarCargaPrevia({ borrador, previa, claves });
+        if (carga) {
+          setValores(carga.valores);
+          setCriticidad(carga.criticidad);
+          setObservaciones(carga.observaciones);
+          setFotos(carga.fotos);
+          if (carga.marcarFaltantes) setMarcarFaltantes(true);
+          let mensaje = 'Recuperamos lo que habías cargado.';
+          if (carga.sinArchivos) mensaje = 'Recuperamos lo que habías cargado. Las fotos y archivos hay que volver a adjuntarlos.';
+          else if (!borrador) mensaje = 'Recuperamos lo que ya habías respondido. Completá lo que falta.';
+          showToast({ type: 'info', message: mensaje });
         }
       } catch (e) {
         if (activo) setError(e?.message || 'No se pudo cargar el relevamiento.');
@@ -108,6 +117,13 @@ export default function DispositivoCompletarScreen({ inspeccionId, onTerminar })
   const diseno = useMemo(
     () => (formulario ? evaluarDiseno(formulario.definicion, { valores }, capturadoEn) : null),
     [formulario, valores]);
+
+  // Tras recuperar una carga rechazada se marca de entrada lo que sigue faltando.
+  useEffect(() => {
+    if (!marcarFaltantes || !diseno) return;
+    setMarcarFaltantes(false);
+    setFaltantes(calcularFaltantes());
+  }, [marcarFaltantes, diseno]);
 
   const ponerValor = (clave, valor) => setValores((prev) => ({ ...prev, [clave]: valor }));
 
@@ -232,8 +248,10 @@ export default function DispositivoCompletarScreen({ inspeccionId, onTerminar })
       await borrarBorrador(ownerId, inspeccionId, ultimo.current || instantanea());
       const estado = resultado?.envio?.estado;
       if (estado === 'enviado') showToast({ type: 'success', message: 'Relevamiento enviado.' });
-      else if (estado === 'error') showToast({ type: 'warning', message: 'El envío tuvo un problema; mirá el detalle del relevamiento.' });
-      else showToast({ type: 'info', message: 'Guardado en el teléfono. Se envía solo apenas haya conexión.' });
+      else if (estado === 'error') {
+        const motivo = describirEnvio(resultado.envio, etiquetasDeCampos(formulario));
+        showToast({ type: 'warning', message: motivo?.titulo || 'El envío tuvo un problema; mirá el detalle del relevamiento.' });
+      } else showToast({ type: 'info', message: textoEnEspera(resultado?.envio) });
       if (onTerminar) onTerminar(resultado);
     } catch (e) {
       showAlert('No se pudo enviar', e?.message || 'Probá de nuevo.');
