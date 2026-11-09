@@ -260,7 +260,11 @@ async function mountCompletar(detalle, options = {}) {
     },
     '../services/dispositivosService': {
       getInspeccion: async () => detalle,
-      enviarResultado: async (id, datos) => { calls.enviados.push([id, datos]); return {success: true, envio: {estado: 'enviado'}}; },
+      enviarResultado: async (id, datos) => {
+        calls.enviados.push([id, datos]);
+        if (options.esperarEnvio) await options.esperarEnvio;
+        return {success: true, envio: {estado: 'enviado'}};
+      },
     },
   });
   const Screen = loadScreen('src/screens/DispositivoCompletarScreen.js', mocks);
@@ -318,6 +322,42 @@ test('Completar: el envío lleva las respuestas del formulario, la versión y bo
     assert.equal(ui.calls.borrados, 1);
     assert.equal(ui.calls.terminados, 1);
     assert.ok(ui.toasts.some(value => value && value.type === 'success'));
+  } finally {await ui.close();}
+});
+
+async function completar(ui) {
+  await ui.press('Alta');
+  await ui.press('Malo');
+  await ui.escribir('Cantidad de baños', '3');
+  await ui.escribir('Detalle del daño', 'Filtración');
+}
+
+test('Completar: si la pantalla se cerró durante el envío, onTerminar no corre (no saca al agente de otro relevamiento)', async () => {
+  let liberar;
+  const esperarEnvio = new Promise((resolve) => { liberar = resolve; });
+  const ui = await mountCompletar(inspeccion(1, 'Escuela A', {formulario: FORMULARIO}), {esperarEnvio});
+  await completar(ui);
+  // Se dispara sin envolver en act: un act asíncrono abierto diferiría el desmontaje.
+  const enVuelo = ui.button('Confirmar y enviar').props.onPress();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(ui.calls.enviados.length, 1);
+  await renderer.act(async () => { ui.tree.unmount(); });
+  liberar();
+  await enVuelo;
+  assert.equal(ui.calls.terminados, 0);
+});
+
+test('Completar: con la pantalla montada, onTerminar corre al resolver un envío demorado', async () => {
+  let liberar;
+  const esperarEnvio = new Promise((resolve) => { liberar = resolve; });
+  const ui = await mountCompletar(inspeccion(1, 'Escuela A', {formulario: FORMULARIO}), {esperarEnvio});
+  try {
+    await completar(ui);
+    const enVuelo = ui.button('Confirmar y enviar').props.onPress();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    liberar();
+    await enVuelo;
+    assert.equal(ui.calls.terminados, 1);
   } finally {await ui.close();}
 });
 

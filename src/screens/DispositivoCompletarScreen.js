@@ -46,6 +46,7 @@ export default function DispositivoCompletarScreen({ inspeccionId, onTerminar })
   const capturadoEn = useRef(new Date()).current;
   const cargado = useRef(false);
   const enviado = useRef(false);
+  const montado = useRef(true);
   const ultimo = useRef(null);
 
   useEffect(() => {
@@ -109,6 +110,13 @@ export default function DispositivoCompletarScreen({ inspeccionId, onTerminar })
     const timer = setTimeout(() => guardarBorrador(ownerId, inspeccionId, datos), AUTOGUARDADO_MS);
     return () => clearTimeout(timer);
   }, [valores, criticidad, observaciones, fotos]);
+
+  // El envío puede esperar hasta ~31 s y el banner deja volver: si la pantalla ya se cerró, lo que
+  // termina después no debe tocar la navegación (sacaría al agente de otro relevamiento).
+  useEffect(() => {
+    montado.current = true;
+    return () => { montado.current = false; };
+  }, []);
 
   // Lo último tipeado no espera al temporizador si se cierra la pantalla.
   useEffect(() => () => {
@@ -254,11 +262,11 @@ export default function DispositivoCompletarScreen({ inspeccionId, onTerminar })
         const motivo = describirEnvio(resultado.envio, etiquetasDeCampos(formulario));
         showToast({ type: 'warning', message: motivo?.titulo || 'El envío tuvo un problema; mirá el detalle del relevamiento.' });
       } else showToast({ type: 'info', message: textoEnEspera(resultado?.envio) });
-      if (onTerminar) onTerminar(resultado);
+      if (onTerminar && montado.current) onTerminar(resultado);
     } catch (e) {
-      showAlert('No se pudo enviar', e?.message || 'Probá de nuevo.');
+      if (montado.current) showAlert('No se pudo enviar', e?.message || 'Probá de nuevo.');
     } finally {
-      setEnviando(false);
+      if (montado.current) setEnviando(false);
     }
   };
 

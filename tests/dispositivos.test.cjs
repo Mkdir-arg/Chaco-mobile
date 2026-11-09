@@ -681,6 +681,31 @@ test('B5b: sin conexión, o con la sesión vencida, el envío queda en la cola y
   assert.equal(op.status, 'PENDING'); assert.equal(op.retry_count, 1);
 });
 
+test('B5b: con la sesión vencida (token nulo) el envío queda en la cola y el aviso sigue siendo el de la cola', async () => {
+  const {r, d} = await preparar({archivos: {}, fotos: []});
+  const calls = router(r, async (call) => OK_RESULTADO(call));
+  r.values.delete('becas_auth_token');
+  const {envio} = await d.enviarResultado(5, {criticidad: 'ALTA', respuestas: {'cp-techo': 'Malo'}});
+  assert.equal(envio.estado, 'pendiente');
+  assert.equal(operacion(r).status, 'PENDING');
+  assert.equal(escritos(calls).length, 0, 'sin token no sale ningún POST');
+});
+
+test('B5b: si SQLite falla al leer la cola tras la espera corta, el envío ya encolado no tira (sigue «en_cola»)', async () => {
+  const {r, d} = await preparar({archivos: {}, fotos: []});
+  const prepare = r.sql.prepare.bind(r.sql);
+  let romper = false;
+  r.sql.prepare = (query) => {
+    // Falla una sola vez: la primera lectura por op_id tras la espera corta (la del chequeo IN_FLIGHT).
+    if (romper && query.includes('op_id = ?')) { romper = false; throw new Error('disk I/O error'); }
+    return prepare(query);
+  };
+  router(r, async (call) => { romper = true; await new Promise((resolve) => setTimeout(resolve, 1800)); return OK_RESULTADO(call); });
+  const {envio} = await d.enviarResultado(5, {criticidad: 'ALTA', respuestas: {'cp-techo': 'Malo'}});
+  r.sql.prepare = prepare;
+  assert.equal(envio.estado, 'en_cola');
+});
+
 test('B5b: tras una falla transitoria no se reintenta dentro de la misma llamada', async () => {
   const {r, d} = await preparar({archivos: {}, fotos: []});
   const calls = router(r, async () => response(503, {detail: 'caido'}));

@@ -553,6 +553,8 @@ const correrHasta = async (trabajo, ms) => {
 const sincronizarEnvio = async (ownerId, opId) => {
   const pasada = () => syncPendientes().catch((error) => ({ synced: 0, failed: 0, errors: [{ message: error?.message }] }));
   const operacionDe = async () => (await readOperations(ownerId, 'op_id = ?', opId))[0];
+  // Fuera de `trabajo` no hay catch propio: si SQLite falla aquí la op ya está encolada y no debe tirar.
+  const operacionSegura = () => operacionDe().catch(() => null);
   const trabajo = (async () => {
     let resultado = await pasada();
     // Nunca se intentó y no está demorado: la pasada compartida no lo alcanzó, va una propia.
@@ -562,7 +564,7 @@ const sincronizarEnvio = async (ownerId, opId) => {
   })().catch((error) => ({ synced: 0, failed: 0, errors: [{ message: error?.message }] }));
   let resultado = await correrHasta(trabajo, BACKGROUND_SYNC_WAIT_MS);
   // Ya se está enviando: se espera a que termine (el botón muestra el progreso) en vez de avisar de más.
-  if (resultado === ESPERA_AGOTADA && (await operacionDe())?.status === 'IN_FLIGHT') {
+  if (resultado === ESPERA_AGOTADA && (await operacionSegura())?.status === 'IN_FLIGHT') {
     resultado = await correrHasta(trabajo, SYNC_EN_VUELO_MAX_MS);
   }
   return resultado === ESPERA_AGOTADA ? { synced: 0, failed: 0, background: true } : resultado;
