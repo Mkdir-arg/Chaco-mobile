@@ -637,3 +637,79 @@ test('reintentarFallidas sin inspección no reencola los 400; con inspección, s
   assert.equal(operacion(r).status, 'FAILED_PERMANENT');
   assert.equal((await d.reintentarFallidas(5)).synced, 1);
 });
+
+// ---- Aviso tras enviar con conexión (B5b, QA 1.2.8) ----
+
+test('B5b: si ya corría una pasada que leyó la cola antes del envío, el envío nuevo igual sale en esa llamada', async () => {
+  const {r, d} = await preparar({archivos: {}, fotos: []});
+  // Un envío de otro relevamiento ya está en la cola y su pasada de fondo está en vuelo.
+  await d.enviarResultado(6, {criticidad: 'BAJA', respuestas: {}}, {sincronizar: false});
+  let liberar;
+  const gate = new Promise((resolve) => { liberar = resolve; });
+  const calls = router(r, async (call) => {
+    if (call.url.includes('/6/')) await gate;
+    return OK_RESULTADO(call);
+  });
+  const fondo = d.syncPendientes();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const enviando = d.enviarResultado(5, {criticidad: 'ALTA', respuestas: {'cp-techo': 'Malo'}});
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  liberar();
+  const {envio} = await enviando;
+  await fondo;
+  assert.equal(envio.estado, 'enviado', 'el POST respondió OK: no es «guardado en el teléfono»');
+  assert.deepEqual(escritos(calls).map((call) => call.url), [`${BASE}6/resultado/`, `${BASE}5/resultado/`]);
+});
+
+test('B5b: un envío que tarda más que dos esperas cortas, pero termina, se informa como enviado', async () => {
+  const {r, d} = await preparar({archivos: {}, fotos: []});
+  router(r, async (call) => { await new Promise((resolve) => setTimeout(resolve, 3200)); return OK_RESULTADO(call); });
+  const {envio} = await d.enviarResultado(5, {criticidad: 'ALTA', respuestas: {'cp-techo': 'Malo'}});
+  assert.equal(envio.estado, 'enviado');
+});
+
+test('B5b: sin conexión, o con la sesión vencida, el envío queda en la cola y sigue «pendiente»', async () => {
+  const {r, d} = await preparar({archivos: {}, fotos: []});
+  r.setOnline(false);
+  const sinRed = await d.enviarResultado(5, {criticidad: 'ALTA', respuestas: {'cp-techo': 'Malo'}});
+  assert.equal(sinRed.envio.estado, 'pendiente');
+  assert.equal(operacion(r).status, 'PENDING');
+  r.setOnline(true);
+  router(r, async () => response(503, {detail: 'caido'}));
+  await d.syncPendientes();
+  const [op] = [operacion(r)];
+  assert.equal(op.status, 'PENDING'); assert.equal(op.retry_count, 1);
+});
+
+test('B5b: con la sesión vencida (token nulo) el envío queda en la cola y el aviso sigue siendo el de la cola', async () => {
+  const {r, d} = await preparar({archivos: {}, fotos: []});
+  const calls = router(r, async (call) => OK_RESULTADO(call));
+  r.values.delete('becas_auth_token');
+  const {envio} = await d.enviarResultado(5, {criticidad: 'ALTA', respuestas: {'cp-techo': 'Malo'}});
+  assert.equal(envio.estado, 'pendiente');
+  assert.equal(operacion(r).status, 'PENDING');
+  assert.equal(escritos(calls).length, 0, 'sin token no sale ningún POST');
+});
+
+test('B5b: si SQLite falla al leer la cola tras la espera corta, el envío ya encolado no tira (sigue «en_cola»)', async () => {
+  const {r, d} = await preparar({archivos: {}, fotos: []});
+  const prepare = r.sql.prepare.bind(r.sql);
+  let romper = false;
+  r.sql.prepare = (query) => {
+    // Falla una sola vez: la primera lectura por op_id tras la espera corta (la del chequeo IN_FLIGHT).
+    if (romper && query.includes('op_id = ?')) { romper = false; throw new Error('disk I/O error'); }
+    return prepare(query);
+  };
+  router(r, async (call) => { romper = true; await new Promise((resolve) => setTimeout(resolve, 1800)); return OK_RESULTADO(call); });
+  const {envio} = await d.enviarResultado(5, {criticidad: 'ALTA', respuestas: {'cp-techo': 'Malo'}});
+  r.sql.prepare = prepare;
+  assert.equal(envio.estado, 'en_cola');
+});
+
+test('B5b: tras una falla transitoria no se reintenta dentro de la misma llamada', async () => {
+  const {r, d} = await preparar({archivos: {}, fotos: []});
+  const calls = router(r, async () => response(503, {detail: 'caido'}));
+  const {envio} = await d.enviarResultado(5, {criticidad: 'ALTA', respuestas: {'cp-techo': 'Malo'}});
+  assert.equal(envio.estado, 'pendiente');
+  assert.equal(escritos(calls).length, 1, 'una sola pasada: el reintento espera su backoff');
+});

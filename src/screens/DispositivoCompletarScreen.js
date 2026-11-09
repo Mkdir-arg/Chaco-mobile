@@ -37,13 +37,16 @@ export default function DispositivoCompletarScreen({ inspeccionId, onTerminar })
   const [observaciones, setObservaciones] = useState('');
   const [fotos, setFotos] = useState([]);
   const [busqueda, setBusqueda] = useState({});
-  const [faltantes, setFaltantes] = useState([]);
+  // Una vez que se intentó enviar (o se recuperó una carga rechazada) el resumen queda a la vista,
+  // pero su contenido se recalcula en cada render con lo que hay cargado.
+  const [verFaltantes, setVerFaltantes] = useState(false);
   const [enviando, setEnviando] = useState(false);
   const [marcarFaltantes, setMarcarFaltantes] = useState(false);
   const [vista, setVista] = useState(null);
   const capturadoEn = useRef(new Date()).current;
   const cargado = useRef(false);
   const enviado = useRef(false);
+  const montado = useRef(true);
   const ultimo = useRef(null);
 
   useEffect(() => {
@@ -108,6 +111,13 @@ export default function DispositivoCompletarScreen({ inspeccionId, onTerminar })
     return () => clearTimeout(timer);
   }, [valores, criticidad, observaciones, fotos]);
 
+  // El envío puede esperar hasta ~31 s y el banner deja volver: si la pantalla ya se cerró, lo que
+  // termina después no debe tocar la navegación (sacaría al agente de otro relevamiento).
+  useEffect(() => {
+    montado.current = true;
+    return () => { montado.current = false; };
+  }, []);
+
   // Lo último tipeado no espera al temporizador si se cierra la pantalla.
   useEffect(() => () => {
     if (cargado.current && !enviado.current && ultimo.current) guardarBorrador(ownerId, inspeccionId, ultimo.current);
@@ -122,7 +132,7 @@ export default function DispositivoCompletarScreen({ inspeccionId, onTerminar })
   useEffect(() => {
     if (!marcarFaltantes || !diseno) return;
     setMarcarFaltantes(false);
-    setFaltantes(calcularFaltantes());
+    setVerFaltantes(true);
   }, [marcarFaltantes, diseno]);
 
   const ponerValor = (clave, valor) => setValores((prev) => ({ ...prev, [clave]: valor }));
@@ -236,7 +246,7 @@ export default function DispositivoCompletarScreen({ inspeccionId, onTerminar })
 
   const enviar = async () => {
     const faltan = calcularFaltantes();
-    setFaltantes(faltan);
+    setVerFaltantes(true);
     if (faltan.length) {
       showToast({ type: 'warning', message: `Faltan ${faltan.length} dato${faltan.length === 1 ? '' : 's'} para poder enviar.` });
       return;
@@ -252,11 +262,11 @@ export default function DispositivoCompletarScreen({ inspeccionId, onTerminar })
         const motivo = describirEnvio(resultado.envio, etiquetasDeCampos(formulario));
         showToast({ type: 'warning', message: motivo?.titulo || 'El envío tuvo un problema; mirá el detalle del relevamiento.' });
       } else showToast({ type: 'info', message: textoEnEspera(resultado?.envio) });
-      if (onTerminar) onTerminar(resultado);
+      if (onTerminar && montado.current) onTerminar(resultado);
     } catch (e) {
-      showAlert('No se pudo enviar', e?.message || 'Probá de nuevo.');
+      if (montado.current) showAlert('No se pudo enviar', e?.message || 'Probá de nuevo.');
     } finally {
-      setEnviando(false);
+      if (montado.current) setEnviando(false);
     }
   };
 
@@ -272,6 +282,7 @@ export default function DispositivoCompletarScreen({ inspeccionId, onTerminar })
   const tarjeta = [styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }];
   const titulo = [styles.titulo, { color: theme.colors.text, fontFamily: typography.bold }];
   const edificio = detalle.edificio || {};
+  const faltantes = verFaltantes ? calcularFaltantes() : [];
 
   const renderCampo = (field) => (
     <CampoFormulario key={field.id} field={field} value={valores[field.clave] ?? ''}
