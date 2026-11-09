@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, RefreshControl } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import NetInfo from '@react-native-community/netinfo';
@@ -19,8 +19,11 @@ export default function DispositivosListaScreen({ onAbrir, syncTick = 0 }) {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [sinRed, setSinRed] = useState(false);
+  // Cargas en curso: la lectura local (syncTick) puede volver, con el caché vacío, antes que la de red.
+  const enCurso = useRef(0);
 
   const cargar = useCallback(async ({ remoto = true, silencioso = false } = {}) => {
+    enCurso.current += 1;
     if (silencioso) setRefreshing(true);
     try {
       const red = await NetInfo.fetch();
@@ -34,7 +37,8 @@ export default function DispositivosListaScreen({ onAbrir, syncTick = 0 }) {
     } catch (e) {
       setError(e?.message || 'No se pudo cargar la lista.');
     } finally {
-      setLoading(false);
+      enCurso.current -= 1;
+      if (enCurso.current === 0) setLoading(false);
       setRefreshing(false);
     }
   }, []);
@@ -113,7 +117,7 @@ export default function DispositivosListaScreen({ onAbrir, syncTick = 0 }) {
         </View>
       ) : null}
 
-      {loading ? (
+      {loading && !items.length ? (
         <View style={styles.centro}><ActivityIndicator size="large" color={theme.colors.primary} /></View>
       ) : (
         <>

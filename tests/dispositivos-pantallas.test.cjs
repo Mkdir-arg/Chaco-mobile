@@ -126,6 +126,66 @@ test('Lista: separa pendientes (por vencimiento), vencidos y enviados / en cola'
   } finally {await ui.close();}
 });
 
+// B5a: al entrar, la lectura local (syncTick) termina antes que la de red y trae el caché vacío.
+async function mountListaLenta(respuestas) {
+  const {mocks} = await baseMocks();
+  const pedidos = [];
+  Object.assign(mocks, {
+    '@react-native-community/netinfo': {__esModule: true, default: {fetch: async () => ({isConnected: true, isInternetReachable: true})}},
+    '../services/dispositivosService': {getInspecciones: (opciones) => { pedidos.push(opciones); return respuestas[pedidos.length - 1](); }},
+  });
+  const Screen = loadScreen('src/screens/DispositivosListaScreen.js', mocks);
+  const ui = await render(Screen, {onAbrir() {}, syncTick: 0});
+  const tick = (syncTick) => renderer.act(async () => ui.tree.update(React.createElement(Screen, {onAbrir() {}, syncTick})));
+  return {...ui, tick, pedidos};
+}
+const VACIO = 'No tenés relevamientos asignados.';
+
+test('Lista: mientras la primera carga de red no termina, una lectura local vacía no muestra «sin relevamientos»', async () => {
+  let traer;
+  const red = new Promise((resolve) => { traer = resolve; });
+  const ui = await mountListaLenta([() => red, async () => []]);
+  try {
+    await ui.tick(1); // la sincronización de fondo terminó y la lectura local volvió vacía
+    assert.equal(ui.pedidos.length, 2);
+    assert.equal(ui.labels().includes(VACIO), false, 'falso vacío');
+    assert.equal(ui.tree.root.findAllByType('ActivityIndicator').length, 1, 'sigue el estado de carga');
+    await renderer.act(async () => traer([inspeccion(1, 'Escuela A')]));
+    assert.ok(ui.labels().includes('Escuela A'));
+    assert.equal(ui.labels().includes(VACIO), false);
+    assert.equal(ui.tree.root.findAllByType('ActivityIndicator').length, 0);
+  } finally {await ui.close();}
+});
+
+test('Lista: si la lectura local trae algo mientras la red carga, se muestra sin esperar', async () => {
+  const red = new Promise(() => {});
+  const ui = await mountListaLenta([() => red, async () => [inspeccion(1, 'Escuela A')]]);
+  try {
+    await ui.tick(1);
+    assert.ok(ui.labels().includes('Escuela A'));
+    assert.equal(ui.tree.root.findAllByType('ActivityIndicator').length, 0);
+  } finally {await ui.close();}
+});
+
+test('Lista: el vacío sale cuando todas las cargas terminaron y no trajeron nada', async () => {
+  const ui = await mountListaLenta([async () => [], async () => []]);
+  try {
+    assert.ok(ui.labels().includes(VACIO));
+    await ui.tick(1);
+    assert.ok(ui.labels().includes(VACIO));
+    assert.equal(ui.tree.root.findAllByType('ActivityIndicator').length, 0);
+  } finally {await ui.close();}
+});
+
+test('Lista: si la carga falla, muestra el error y no el vacío ni la carga', async () => {
+  const ui = await mountListaLenta([async () => { throw new Error('No se pudo cargar la lista.'); }]);
+  try {
+    assert.ok(ui.labels().includes('No se pudo cargar la lista.'));
+    assert.equal(ui.labels().includes(VACIO), false);
+    assert.equal(ui.tree.root.findAllByType('ActivityIndicator').length, 0);
+  } finally {await ui.close();}
+});
+
 // ---- Detalle ----
 
 async function mountDetalle(detalle, extra = {}) {
@@ -315,4 +375,46 @@ test('Utilidades: validación de fotos, dirección y mapa', () => {
   assert.equal(direccionDe(edificio('X', {piso_departamento: '2B', codigo_postal: '3500'})), 'Calle 123 (2B), Resistencia, Chaco, CP 3500');
   assert.equal(mapaUrl({latitud: null, longitud: null}), null);
   assert.match(mapaUrl({latitud: -27.4, longitud: -58.9}), /query=-27\.4%2C-58\.9$/);
+});
+
+// B5c: el resumen «Falta completar» sigue el estado actual del formulario, no el del último intento.
+test('Completar: al elegir la criticidad desaparece su faltante sin volver a enviar', async () => {
+  const ui = await mountCompletar(inspeccion(1, 'Escuela A', {formulario: FORMULARIO}));
+  try {
+    assert.equal(ui.labels().includes('Falta completar'), false, 'antes de intentar enviar no se muestra');
+    await ui.pressButton('Confirmar y enviar');
+    assert.ok(ui.labels().some(label => label.startsWith('• Criticidad')));
+    await ui.press('Alta');
+    assert.equal(ui.labels().some(label => label.startsWith('• Criticidad')), false);
+    assert.ok(ui.labels().includes('Falta completar'), 'siguen faltando los obligatorios');
+    assert.ok(ui.labels().includes('• Estado del techo: Este campo es obligatorio.'));
+    assert.equal(ui.calls.enviados.length, 0);
+  } finally {await ui.close();}
+});
+
+test('Completar: el panel «Falta completar» se va cuando se completa lo último que faltaba', async () => {
+  const ui = await mountCompletar(inspeccion(1, 'Escuela A', {formulario: FORMULARIO}));
+  try {
+    await ui.pressButton('Confirmar y enviar');
+    await ui.press('Media');
+    await ui.press('Bueno');
+    assert.equal(ui.labels().includes('• Estado del techo: Este campo es obligatorio.'), false);
+    assert.ok(ui.labels().includes('Falta completar'), 'falta la cantidad de baños');
+    await ui.escribir('Cantidad de baños', '3');
+    assert.equal(ui.labels().includes('Falta completar'), false);
+    assert.equal(ui.labels().some(label => label.startsWith('•')), false);
+  } finally {await ui.close();}
+});
+
+test('Completar: un campo que vuelve a quedar vacío vuelve a figurar como faltante', async () => {
+  const ui = await mountCompletar(inspeccion(1, 'Escuela A', {formulario: FORMULARIO}));
+  try {
+    await ui.pressButton('Confirmar y enviar');
+    await ui.press('Alta');
+    await ui.press('Bueno');
+    await ui.escribir('Cantidad de baños', '3');
+    assert.equal(ui.labels().includes('Falta completar'), false);
+    await ui.escribir('Cantidad de baños', '');
+    assert.ok(ui.labels().includes('• Cantidad de baños: Este campo es obligatorio.'));
+  } finally {await ui.close();}
 });

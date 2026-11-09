@@ -22,6 +22,9 @@ const MAX_RETRY_COUNT = 8;
 // Todo paso confirmado queda marcado y el back es idempotente por uuid_cliente.
 const OUTBOX_IN_FLIGHT_TIMEOUT_MS = 30 * 1000;
 const BACKGROUND_SYNC_WAIT_MS = 1500;
+// Tope de espera cuando el envío ya salió y está subiendo (fotos y adjuntos incluidos).
+const SYNC_EN_VUELO_MAX_MS = 30000;
+const ESPERA_AGOTADA = Symbol('espera_agotada');
 const PAUSED_RETRY_MS = 5 * 60 * 1000;
 const CRITICIDADES = ['BAJA', 'MEDIA', 'ALTA'];
 const CODES_DESCARTE_409 = ['YA_REALIZADA', 'CANCELADA', 'REASIGNADA', 'ESTADO_NO_ADMITE'];
@@ -529,6 +532,42 @@ export const getPendingCount = async () => {
 
 // ---- Encolar ----
 
+// Gana la carrera con ESPERA_AGOTADA a los `ms`; `cancelar` suelta el temporizador.
+const limite = (ms) => {
+  let id;
+  const promesa = new Promise((resolve) => { id = setTimeout(() => resolve(ESPERA_AGOTADA), ms); });
+  return { promesa, cancelar: () => clearTimeout(id) };
+};
+const correrHasta = async (trabajo, ms) => {
+  const tope = limite(ms);
+  try {
+    return await Promise.race([trabajo, tope.promesa]);
+  } finally {
+    tope.cancelar();
+  }
+};
+
+// Sincroniza y espera lo justo para saber si el envío salió. Dos cosas hacían decir «guardado en el
+// teléfono» con el POST ya aceptado: la pasada que se sumó leyó la cola antes de este envío (y no
+// lo vio), y la espera corta vencía con el envío en vuelo.
+const sincronizarEnvio = async (ownerId, opId) => {
+  const pasada = () => syncPendientes().catch((error) => ({ synced: 0, failed: 0, errors: [{ message: error?.message }] }));
+  const operacionDe = async () => (await readOperations(ownerId, 'op_id = ?', opId))[0];
+  const trabajo = (async () => {
+    let resultado = await pasada();
+    // Nunca se intentó y no está demorado: la pasada compartida no lo alcanzó, va una propia.
+    const op = await operacionDe();
+    if (op?.status === 'PENDING' && !op.last_error_code && !op.next_retry_at) resultado = await pasada();
+    return resultado;
+  })().catch((error) => ({ synced: 0, failed: 0, errors: [{ message: error?.message }] }));
+  let resultado = await correrHasta(trabajo, BACKGROUND_SYNC_WAIT_MS);
+  // Ya se está enviando: se espera a que termine (el botón muestra el progreso) en vez de avisar de más.
+  if (resultado === ESPERA_AGOTADA && (await operacionDe())?.status === 'IN_FLIGHT') {
+    resultado = await correrHasta(trabajo, SYNC_EN_VUELO_MAX_MS);
+  }
+  return resultado === ESPERA_AGOTADA ? { synced: 0, failed: 0, background: true } : resultado;
+};
+
 export const enviarResultado = async (inspeccionId, {
   criticidad, observaciones = '', respuestas, archivos = {}, fotos = [], versionCapturada,
 } = {}, { sincronizar = true } = {}) => {
@@ -594,17 +633,7 @@ export const enviarResultado = async (inspeccionId, {
       opId, ownerId, String(inspeccionId), JSON.stringify(payload), stamp, stamp);
   });
 
-  let syncResult = null;
-  if (sincronizar) {
-    let timer;
-    syncResult = await Promise.race([
-      syncPendientes().catch((error) => ({ synced: 0, failed: 0, errors: [{ message: error?.message }] })),
-      new Promise((resolve) => {
-        timer = setTimeout(() => resolve({ synced: 0, failed: 0, background: true }), BACKGROUND_SYNC_WAIT_MS);
-      }),
-    ]);
-    clearTimeout(timer);
-  }
+  const syncResult = sincronizar ? await sincronizarEnvio(ownerId, opId) : null;
   const [operacion] = await readOperations(ownerId, 'op_id = ?', opId);
   return { success: true, op_id: opId, envio: mapEnvio(operacion), syncResult };
 };
