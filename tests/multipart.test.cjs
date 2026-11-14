@@ -141,3 +141,12 @@ test('becasUploadFile mantiene su contrato: campos, archivo por defecto y POST',
   assert.equal(uno.init.headers.Authorization, 'Token old-token');
   assert.equal(uno.init.headers['Content-Type'], undefined);
 });
+
+test('becasUploadFile con argumentos inválidos rechaza (promesa), no tira sincrónico, y no pide nada', async () => {
+  const r = await setup();
+  const pedidos = capturar(r);
+  let promesa;
+  assert.doesNotThrow(() => { promesa = r.api.becasUploadFile('/x/', null); });
+  await assert.rejects(promesa, (error) => error.name === 'TypeError');
+  assert.equal(pedidos.length, 0);
+});

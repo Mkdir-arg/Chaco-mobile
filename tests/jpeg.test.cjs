@@ -17,7 +17,7 @@ const primeros = async (blob) => [...new Uint8Array(await blob.slice(0, 3).array
 
 // Canvas simulado: el JPEG pesa `ancho * alto * calidad * factor` bytes.
 function navegador(r, {ancho = 4000, alto = 3000, factor = 1, decodifica = true, toBlobNulo = false} = {}) {
-  const registro = {decodificadas: 0, codificadas: [], fondos: 0, cerradas: 0};
+  const registro = {decodificadas: 0, codificadas: [], fondos: 0, cerradas: 0, canvases: []};
   r.setGlobal('createImageBitmap', async () => {
     registro.decodificadas += 1;
     if (!decodifica) throw new DOMException('The source image could not be decoded.');
@@ -26,6 +26,7 @@ function navegador(r, {ancho = 4000, alto = 3000, factor = 1, decodifica = true,
   r.setGlobal('document', {createElement: (tipo) => {
     assert.equal(tipo, 'canvas');
     const canvas = {width: 0, height: 0};
+    registro.canvases.push(canvas);
     canvas.getContext = () => ({fillRect: () => { registro.fondos += 1; }, drawImage() {}});
     canvas.toBlob = (callback, type, calidad) => {
       registro.codificadas.push({ancho: canvas.width, alto: canvas.height, calidad, type});
@@ -127,29 +128,44 @@ test('web: sin poder leer el archivo o sin poder codificarlo, error JPEG_NO_CONV
   await assert.rejects(aJpeg({file: archivo(PNG, 100, 'x.png', 'image/png')}), (error) => error.code === ERROR_NO_CONVERTIBLE);
 });
 
-// Nativo: el manipulador guarda archivos cuyo peso es ancho * alto * calidad * factor.
-function nativo({ancho = 4000, alto = 3000, factor = 1, inicio = 'iVBO', tamanoOriginal = 9 * MB, falla = false} = {}) {
-  const registro = {manipulados: [], guardados: [], liberados: 0};
+// Nativo: el manipulador guarda archivos cuyo peso es ancho * alto * calidad * factor. Registra
+// cada contexto y cada ImageRef para comprobar que se liberan, y de dónde se decodificó cada uno.
+function nativo({ancho = 4000, alto = 3000, factor = 1, inicio = 'iVBO', tamanoOriginal = 9 * MB, falla = false, fallaGuardar = false} = {}) {
+  const registro = {manipulados: [], guardados: [], contextos: [], refs: [], liberados: 0};
   const tamanos = new Map([['file:///original', tamanoOriginal]]);
-  const ref = (w, h) => ({
-    width: w, height: h,
-    saveAsync: async ({compress, format}) => {
-      const uri = `file:///cache/${registro.guardados.length}.jpg`;
-      registro.guardados.push({ancho: w, alto: h, compress, format});
-      tamanos.set(uri, Math.round(w * h * compress * factor));
-      return {uri, width: w, height: h};
-    },
-    release: () => { registro.liberados += 1; },
-  });
+  const ref = (w, h) => {
+    const imagen = {
+      width: w, height: h, liberada: false,
+      saveAsync: async ({compress, format}) => {
+        if (imagen.liberada) throw new Error('ImageRef ya liberada');
+        if (fallaGuardar) throw new Error('disco lleno');
+        const uri = `file:///cache/${registro.guardados.length}.jpg`;
+        registro.guardados.push({ancho: w, alto: h, compress, format});
+        tamanos.set(uri, Math.round(w * h * compress * factor));
+        return {uri, width: w, height: h};
+      },
+      release: () => { imagen.liberada = true; registro.liberados += 1; },
+    };
+    registro.refs.push(imagen);
+    return imagen;
+  };
   const manipulator = {
     SaveFormat: {JPEG: 'jpeg'},
-    ImageManipulator: {manipulate: (uri) => {
-      registro.manipulados.push(uri);
-      let medidas = {w: ancho, h: alto};
+    ImageManipulator: {manipulate: (fuente) => {
+      registro.manipulados.push(typeof fuente === 'string' ? fuente : 'ref');
+      if (typeof fuente !== 'string' && fuente.liberada) throw new Error('fuente ya liberada');
+      let medidas = typeof fuente === 'string' ? {w: ancho, h: alto} : {w: fuente.width, h: fuente.height};
       const contexto = {
-        resize: ({width, height}) => { medidas = {w: width, h: height}; return contexto; },
+        liberado: false,
+        resize: ({width, height}) => {
+          const {w, h} = medidas;
+          medidas = {w: width ?? Math.round(w * height / h), h: height ?? Math.round(h * width / w)};
+          return contexto;
+        },
         renderAsync: async () => { if (falla) throw new Error('formato no soportado'); return ref(medidas.w, medidas.h); },
+        release: () => { contexto.liberado = true; },
       };
+      registro.contextos.push(contexto);
       return contexto;
     }},
   };
@@ -163,6 +179,13 @@ function nativo({ancho = 4000, alto = 3000, factor = 1, inicio = 'iVBO', tamanoO
   };
   return {registro, mocks: {'expo-image-manipulator': manipulator, 'expo-file-system/legacy': fileSystem}};
 }
+
+const desdeUri = (registro) => registro.manipulados.filter((fuente) => fuente !== 'ref').length;
+const todoLiberado = (registro) => {
+  assert.ok(registro.contextos.length > 0);
+  assert.ok(registro.contextos.every(({liberado}) => liberado), 'quedó un contexto sin liberar');
+  assert.ok(registro.refs.every(({liberada}) => liberada), 'quedó un ImageRef sin liberar');
+};
 
 test('nativo: HEIC grande sale JPEG ≤ 3 MB con expo-image-manipulator, en pasos', async () => {
   const {registro, mocks} = nativo({factor: 3});
@@ -178,6 +201,57 @@ test('nativo: HEIC grande sale JPEG ≤ 3 MB con expo-image-manipulator, en paso
   assert.equal(asset.width, registro.guardados.at(-1).ancho);
   assert.deepEqual({...registro.lectura}, {encoding: 'base64', position: 0, length: 3});
   assert.ok(registro.liberados >= 1);
+});
+
+test('nativo: con las medidas del selector decodifica la uri una vez, ya achicada, y libera todo', async () => {
+  const {registro, mocks} = nativo({factor: 3});
+  const r = await setup('android', {mocks});
+  const {aJpeg} = r.load('../utils/jpeg');
+  await aJpeg({uri: 'file:///original', fileName: 'IMG.HEIC', width: 4000, height: 3000});
+  assert.equal(desdeUri(registro), 1);
+  // Nunca se cargó el original de 4000 px: la primera imagen ya sale con el lado máximo.
+  assert.equal(registro.refs[0].width, 2048);
+  assert.ok(registro.refs.every(({width, height}) => Math.max(width, height) <= 2048));
+  assert.ok(registro.manipulados.length > 1, 'los pasos siguientes salen de la imagen cargada');
+  todoLiberado(registro);
+});
+
+test('nativo: medidas del selector giradas no deforman la foto', async () => {
+  const {registro, mocks} = nativo({ancho: 3000, alto: 4000, factor: 3});
+  const r = await setup('android', {mocks});
+  const {aJpeg} = r.load('../utils/jpeg');
+  const asset = await aJpeg({uri: 'file:///original', width: 4000, height: 3000});
+  assert.equal(desdeUri(registro), 1);
+  assert.ok(Math.max(asset.width, asset.height) <= 2048);
+  assert.ok(Math.abs(asset.width / asset.height - 3 / 4) < 0.01, `${asset.width}x${asset.height}`);
+  todoLiberado(registro);
+});
+
+test('nativo: sin medidas del selector, una sola decodificación de la uri y todo liberado', async () => {
+  const {registro, mocks} = nativo({factor: 3});
+  const r = await setup('ios', {mocks});
+  const {aJpeg} = r.load('../utils/jpeg');
+  const asset = await aJpeg({uri: 'file:///original', fileName: 'IMG.HEIC'});
+  assert.ok(asset.fileSize <= 3 * MB);
+  assert.equal(desdeUri(registro), 1);
+  assert.ok(registro.manipulados.length > 1);
+  todoLiberado(registro);
+});
+
+test('nativo: en error (no entra, no guarda) también se libera todo', async () => {
+  for (const [opciones, code] of [[{factor: 1000}, 'JPEG_EXCEDE'], [{fallaGuardar: true}, 'JPEG_NO_CONVERTIBLE']]) {
+    const {registro, mocks} = nativo(opciones);
+    const r = await setup('android', {mocks});
+    const {aJpeg} = r.load('../utils/jpeg');
+    await assert.rejects(aJpeg({uri: 'file:///original', width: 4000, height: 3000}), (error) => error.code === code);
+    assert.equal(desdeUri(registro), 1);
+    todoLiberado(registro);
+  }
+  const {registro, mocks} = nativo({falla: true});
+  const r = await setup('android', {mocks});
+  const {aJpeg} = r.load('../utils/jpeg');
+  await assert.rejects(aJpeg({uri: 'file:///original'}), (error) => error.code === 'JPEG_NO_CONVERTIBLE');
+  todoLiberado(registro);
 });
 
 test('nativo: un JPEG real que ya entra no pasa por el manipulador', async () => {
@@ -226,4 +300,41 @@ test('los pasos de lado no agrandan una foto chica ni se repiten', async () => {
   const {pasosDeLado} = r.load('../utils/jpeg');
   assert.deepEqual(JSON.parse(JSON.stringify(pasosDeLado(800, 600))), [{ancho: 800, alto: 600}, {ancho: 717, alto: 538}]);
   assert.deepEqual([...pasosDeLado(4000, 3000).map(({ancho}) => ancho)], [2048, 1536, 1024, 717]);
+});
+
+test('web: liberarJpeg revoca la blob: URL que creó aJpeg y la olvida; la del selector no la toca', async () => {
+  const r = await setup('web');
+  navegador(r, {ancho: 800, alto: 600});
+  const revocadas = [];
+  const URLReal = URL;
+  r.setGlobal('URL', Object.assign(function () {}, {
+    createObjectURL: (blob) => URLReal.createObjectURL(blob),
+    revokeObjectURL: (uri) => { revocadas.push(uri); URLReal.revokeObjectURL(uri); },
+  }));
+  const {aJpeg, liberarJpeg} = r.load('../utils/jpeg');
+  const attachments = r.load('./webAttachments');
+  const original = {uri: 'blob:https://app.test/png', file: archivo(PNG, 2000, 'c.png', 'image/png')};
+  const asset = await aJpeg(original);
+  assert.equal(await attachments.readWebBlob(asset.uri), asset.file);
+  assert.equal(liberarJpeg(asset), true);
+  assert.deepEqual(revocadas, [asset.uri]);
+  await assert.rejects(attachments.readWebBlob(asset.uri));
+  assert.equal(liberarJpeg(asset), false);
+  assert.equal(liberarJpeg(original), false);
+  assert.equal(liberarJpeg(null), false);
+  assert.deepEqual(revocadas, [asset.uri]);
+  // Un JPEG que ya entraba vuelve con la uri del selector: no es de aJpeg, no se revoca.
+  const jpg = await aJpeg({uri: 'blob:https://app.test/j', file: archivo(JPEG, 1000, 'a.jpg', 'image/jpeg')});
+  assert.equal(liberarJpeg(jpg), false);
+});
+
+test('web: cada canvas se suelta (0x0) después de codificar', async () => {
+  const r = await setup('web');
+  const registro = navegador(r, {ancho: 4000, alto: 3000, factor: 3});
+  const {aJpeg} = r.load('../utils/jpeg');
+  const asset = await aJpeg({file: archivo(PNG, 100, 'x.png', 'image/png')});
+  assert.ok(asset.fileSize <= 3 * MB);
+  assert.ok(registro.canvases.length > 1);
+  assert.equal(registro.canvases.length, registro.codificadas.length);
+  assert.ok(registro.canvases.every(({width, height}) => width === 0 && height === 0));
 });

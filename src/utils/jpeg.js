@@ -8,7 +8,7 @@
 import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
-import { readWebBlob, rememberWebFile } from '../services/webAttachments';
+import { forgetWebFile, readWebBlob, rememberWebFile } from '../services/webAttachments';
 import { dibujarJpeg, esJpegReal, medidasReducidas, nombreJpg } from '../services/webImages';
 
 export const MAX_BYTES = 3 * 1024 * 1024;
@@ -24,6 +24,9 @@ export const ERROR_EXCEDE = 'JPEG_EXCEDE';
 const errorJpeg = (code, cause) => Object.assign(new Error(code === ERROR_EXCEDE
   ? 'La foto sigue pesando demasiado después de comprimirla. Probá con otra foto.'
   : 'No se pudo convertir la foto a JPEG. Probá sacarla de nuevo con la cámara.'), { code, cause });
+
+// blob: URLs que creó aJpegWeb; solo esas las revoca liberarJpeg (la del selector es de quien la eligió).
+const urlsPropias = new Set();
 
 const nombreJpeg = (nombre) => (/\.jpe?g$/i.test(String(nombre || '')) ? String(nombre) : nombreJpg(nombre));
 
@@ -80,6 +83,7 @@ const aJpegWeb = async (asset, { maxBytes, maxLado }) => {
         if (blob.size <= maxBytes) {
           const file = new File([blob], nombre, { type: 'image/jpeg', lastModified: original.lastModified });
           const uri = URL.createObjectURL(file);
+          urlsPropias.add(uri);
           // Para que persistWebAttachment y la subida lo lean sin fetch (CSP de ECOM).
           rememberWebFile({ uri, file });
           return resultado(asset, { uri, file, nombre, size: file.size, ancho, alto });
@@ -113,14 +117,35 @@ const esJpegNativo = async (uri) => {
   }
 };
 
-const liberar = (ref) => {
+const liberar = (objeto) => {
   try {
-    ref?.release?.();
+    objeto?.release?.();
   } catch {
     // Liberar es una optimización de memoria; no cambia el resultado.
   }
 };
 
+// Cada contexto (SharedObject) retiene el bitmap hasta `release`: se libera apenas devuelve la
+// imagen, que es un ImageRef independiente.
+const renderizar = async (fuente, medidas) => {
+  let contexto;
+  try {
+    contexto = ImageManipulator.manipulate(fuente);
+    if (medidas) contexto.resize(medidas);
+    return await contexto.renderAsync();
+  } catch (error) {
+    throw errorJpeg(ERROR_NO_CONVERTIBLE, error);
+  } finally {
+    liberar(contexto);
+  }
+};
+
+const medida = (valor) => (Number.isFinite(valor) && valor > 0 ? valor : null);
+
+// La foto se decodifica desde la uri una sola vez. Con las medidas del selector se la abre ya
+// achicada al lado máximo (solo el lado largo: si el selector las diera giradas, la proporción
+// se conserva igual) y no se carga el original entero; sin medidas, se abre entera. Los pasos
+// siguientes se achican desde esa imagen cargada.
 const aJpegNativo = async (asset, { maxBytes, maxLado }) => {
   const uri = asset?.uri;
   const nombre = nombreJpeg(asset?.fileName || asset?.name || String(uri || '').split('/').pop());
@@ -128,23 +153,17 @@ const aJpegNativo = async (asset, { maxBytes, maxLado }) => {
     const size = await tamanoNativo(uri);
     if (size != null && size <= maxBytes) return resultado(asset, { uri, nombre, size });
   }
-  let base;
-  try {
-    base = await ImageManipulator.manipulate(uri).renderAsync();
-  } catch (error) {
-    throw errorJpeg(ERROR_NO_CONVERTIBLE, error);
+  const anchoAsset = medida(asset?.width);
+  const altoAsset = medida(asset?.height);
+  let inicial = null;
+  if (anchoAsset && altoAsset && Math.max(anchoAsset, altoAsset) > maxLado) {
+    inicial = anchoAsset >= altoAsset ? { width: maxLado } : { height: maxLado };
   }
+  const base = await renderizar(uri, inicial);
   try {
     for (const { ancho, alto } of pasosDeLado(base.width, base.height, maxLado)) {
       const mismoTamano = ancho === base.width && alto === base.height;
-      let ref = base;
-      if (!mismoTamano) {
-        try {
-          ref = await ImageManipulator.manipulate(uri).resize({ width: ancho, height: alto }).renderAsync();
-        } catch (error) {
-          throw errorJpeg(ERROR_NO_CONVERTIBLE, error);
-        }
-      }
+      const ref = mismoTamano ? base : await renderizar(base, { width: ancho, height: alto });
       try {
         for (const calidad of CALIDADES) {
           let guardada;
@@ -174,8 +193,27 @@ const aJpegNativo = async (asset, { maxBytes, maxLado }) => {
 // `mimeType: 'image/jpeg'`; en web, además, `file` con los bytes. Si la foto ya es un JPEG que
 // entra, la devuelve sin recomprimir. Errores: `code` JPEG_NO_CONVERTIBLE (no se pudo leer o
 // decodificar) o JPEG_EXCEDE (no entra ni con el lado y la calidad más bajos).
+//
+// En web el JPEG nuevo vive en una blob: URL que retiene sus bytes: la pantalla tiene que llamar
+// a liberarJpeg(asset) cuando descarta la foto o cuando ya la envió o la persistió (después,
+// la uri deja de poder leerse).
 export const aJpeg = (asset, { maxBytes = MAX_BYTES, maxLado = MAX_LADO } = {}) => (
   Platform.OS === 'web'
     ? aJpegWeb(asset, { maxBytes, maxLado })
     : aJpegNativo(asset, { maxBytes, maxLado })
 );
+
+// Suelta la blob: URL que creó aJpeg en web (y el File registrado para leerla). Con cualquier
+// otro asset (el original del selector, uno de nativo, null) no hace nada. Devuelve si liberó.
+export const liberarJpeg = (asset) => {
+  const uri = asset?.uri;
+  if (!urlsPropias.has(uri)) return false;
+  urlsPropias.delete(uri);
+  forgetWebFile(uri);
+  try {
+    URL.revokeObjectURL(uri);
+  } catch {
+    // Revocar solo libera memoria.
+  }
+  return true;
+};

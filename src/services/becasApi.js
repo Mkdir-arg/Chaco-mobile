@@ -356,7 +356,8 @@ export const uploadMultipart = async (path, { method = 'POST', fields = {}, file
 
 // Sube un archivo real (multipart) a un endpoint de la API de Becas — a diferencia
 // de becasRequest, no serializa el body a JSON. Es un uploadMultipart de un solo archivo.
-export const becasUploadFile = (path, { fileUri, fileField = 'archivo', fileName, mimeType = 'image/jpeg', fields = {} } = {}) => (
+// async: con argumentos inválidos (p. ej. null) rechaza en vez de tirar sincrónico.
+export const becasUploadFile = async (path, { fileUri, fileField = 'archivo', fileName, mimeType = 'image/jpeg', fields = {} } = {}) => (
   uploadMultipart(path, {
     fields,
     files: [{ campo: fileField, uri: fileUri, nombre: fileName || 'archivo.jpg', tipo: mimeType }],

@@ -196,6 +196,20 @@ JPEG** de hasta 5 MB: `src/utils/jpeg.js` (`aJpeg`) convierte cualquier foto a J
 hasta 3 MB, con canvas en web y `expo-image-manipulator` en nativo. Becas y
 Dispositivos no cambian.
 
+- En web, el JPEG que arma `aJpeg` vive en una `blob:` URL que retiene los bytes. La
+  pantalla que lo use tiene que llamar a `liberarJpeg(asset)` cuando descarta la foto o
+  cuando ya la envió o la guardó (después, esa uri deja de poder leerse). Con el asset
+  original del selector o uno de nativo no hace nada.
+- `enviarCaso` normaliza `relevado_en` (`Date` → ISO 8601 con el offset del teléfono; un
+  texto pasa tal cual) y `fecha_nacimiento` (`DD/MM/AAAA`, `AAAA-MM-DD` o `Date` →
+  `AAAA-MM-DD`). Una fecha inválida rechaza con `code: 'FECHA_INVALIDA'` y `campo`, sin
+  mandar nada.
+
+> **Despliegue:** `expo-image-manipulator` es un módulo nativo. El día que una pantalla
+> importe `src/utils/jpeg.js`, Android/iOS necesitan **un build nuevo** (EAS, ver
+> «Compilación nativa opcional»): la app no tiene `expo-updates`, y un instalador viejo
+> no trae el módulo. En la PWA (web) no aplica: usa canvas y sale con `npm run build:web`.
+
 ## Desarrollo local
 
 Requisitos: Node.js 22.14.0 o superior dentro de la rama 22, npm y acceso al backend

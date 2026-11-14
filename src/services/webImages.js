@@ -28,7 +28,12 @@ export const dibujarJpeg = async (bitmap, ancho, alto, calidad, { fondo = null }
     contexto.fillRect(0, 0, ancho, alto);
   }
   contexto.drawImage(bitmap, 0, 0, ancho, alto);
-  return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', calidad));
+  // Achicar el canvas a 0 suelta su memoria ya, sin esperar al recolector: aJpeg prueba varios.
+  return new Promise((resolve) => canvas.toBlob((blob) => {
+    canvas.width = 0;
+    canvas.height = 0;
+    resolve(blob);
+  }, 'image/jpeg', calidad));
 };
 
 // JPEG de verdad: los tres primeros bytes son FF D8 FF, diga lo que diga la extensión.

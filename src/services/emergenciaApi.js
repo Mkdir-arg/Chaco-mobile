@@ -9,6 +9,7 @@
 import { becasRequest, uploadMultipart } from './becasApi';
 import { verificarSinModulo } from './emergenciaPerfil';
 import { consultarIdentidad } from './identityLookup';
+import { normalizeDateText } from '../utils/dni';
 import { nombreJpg } from './webImages';
 
 export const BASE = '/api/emergencia/';
@@ -64,6 +65,53 @@ export const archivoJpeg = (campo, asset) => {
   };
 };
 
+const dos = (n) => String(n).padStart(2, '0');
+
+export const ERROR_FECHA_INVALIDA = 'FECHA_INVALIDA';
+
+const errorFecha = (campo, valor) => Object.assign(
+  new Error(campo === 'relevado_en'
+    ? 'La hora del relevamiento no es válida.'
+    : 'La fecha de nacimiento no es válida: tiene que ser DD/MM/AAAA.'),
+  { code: ERROR_FECHA_INVALIDA, campo, valor });
+
+// Sin instanceof: un Date de otro realm (iframe, vm) también cuenta.
+const esDate = (valor) => Object.prototype.toString.call(valor) === '[object Date]';
+const esFechaValida = (fecha) => esDate(fecha) && !Number.isNaN(fecha.getTime());
+
+// `Date` → ISO 8601 con el offset local del teléfono (2026-11-14T10:20:30-03:00); un texto se
+// manda tal cual (se supone ya ISO con zona). §6 «Hora del relevamiento».
+export const relevadoEnIso = (valor) => {
+  if (!esDate(valor)) return valor;
+  if (!esFechaValida(valor)) throw errorFecha('relevado_en', valor);
+  const minutos = -valor.getTimezoneOffset();
+  const signo = minutos >= 0 ? '+' : '-';
+  const offset = `${signo}${dos(Math.floor(Math.abs(minutos) / 60))}:${dos(Math.abs(minutos) % 60)}`;
+  return `${valor.getFullYear()}-${dos(valor.getMonth() + 1)}-${dos(valor.getDate())}T${dos(valor.getHours())}:`
+    + `${dos(valor.getMinutes())}:${dos(valor.getSeconds())}${offset}`;
+};
+
+const diaReal = (anio, mes, dia) => {
+  const fecha = new Date(anio, mes - 1, dia);
+  return fecha.getFullYear() === anio && fecha.getMonth() === mes - 1 && fecha.getDate() === dia;
+};
+
+// §6 pide `AAAA-MM-DD`. Acepta `Date` (fecha local), `AAAA-MM-DD` y lo que entiende
+// normalizeDateText (la pantalla guarda DD/MM/AAAA). Una fecha que no existe o no se entiende
+// es un error FECHA_INVALIDA antes de mandar nada: el alta mínima no puede quedar con otra fecha.
+export const fechaNacimientoIso = (valor) => {
+  if (esDate(valor)) {
+    if (!esFechaValida(valor)) throw errorFecha('fecha_nacimiento', valor);
+    return `${valor.getFullYear()}-${dos(valor.getMonth() + 1)}-${dos(valor.getDate())}`;
+  }
+  const texto = String(valor).trim();
+  const iso = texto.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const local = iso ? null : normalizeDateText(texto).match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  const [anio, mes, dia] = iso ? [iso[1], iso[2], iso[3]] : local ? [local[3], local[2], local[1]] : [];
+  if (!anio || !diaReal(Number(anio), Number(mes), Number(dia))) throw errorFecha('fecha_nacimiento', valor);
+  return `${anio}-${mes}-${dia}`;
+};
+
 const exigirUuid = (uuid) => {
   if (!presente(uuid)) throw new Error('Falta uuid_cliente: se genera al abrir el formulario.');
 };
@@ -78,13 +126,16 @@ export const consultarPersona = ({ dni, sexo }) => conVerificacion(() => consult
 
 // §6. `datos` con las claves de CAMPOS_CASO (las demás no se mandan); `fotos` con
 // `foto_vivienda` y `foto_acceso` como assets de aJpeg, opcionales. Latitud y longitud van
-// juntas: si falta una, no se manda ninguna. 201 creado o 200 ya existía, mismo cuerpo.
+// juntas: si falta una, no se manda ninguna. `relevado_en` y `fecha_nacimiento` se normalizan
+// (relevadoEnIso, fechaNacimientoIso). 201 creado o 200 ya existía, mismo cuerpo.
 export const enviarCaso = async (datos = {}, fotos = {}, { timeoutMs } = {}) => {
   exigirUuid(datos.uuid_cliente);
   const fields = {};
   CAMPOS_CASO.forEach((campo) => {
     if (presente(datos[campo])) fields[campo] = datos[campo];
   });
+  if (presente(fields.relevado_en)) fields.relevado_en = relevadoEnIso(fields.relevado_en);
+  if (presente(fields.fecha_nacimiento)) fields.fecha_nacimiento = fechaNacimientoIso(fields.fecha_nacimiento);
   if (!presente(fields.latitud) || !presente(fields.longitud)) {
     delete fields.latitud;
     delete fields.longitud;

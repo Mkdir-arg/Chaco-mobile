@@ -212,3 +212,44 @@ test('otro error no pasa por el perfil', async () => {
   assert.equal(error.verificacionSinModulo, undefined);
   assert.equal(calls.length, 1);
 });
+
+// §6: relevado_en ISO 8601 con zona; fecha_nacimiento AAAA-MM-DD.
+process.env.TZ = 'America/Argentina/Buenos_Aires';
+const enviado = (calls, campo) => Object.fromEntries(campos(calls[0]))[campo];
+const BASE_CASO = {uuid_cliente: 'u', traslado: 'BOMBEROS', dni: '30111222', direccion: 'x', adultos_f: 1};
+
+test('enviarCaso: relevado_en Date sale ISO con el offset del teléfono; un texto ISO pasa tal cual', async () => {
+  const {r, e} = await preparar();
+  const calls = router(r, async () => response(201, {id: 1}));
+  const cuando = new Date(Date.UTC(2026, 10, 14, 13, 5, 9));
+  await e.enviarCaso({...BASE_CASO, relevado_en: cuando});
+  assert.equal(enviado(calls, 'relevado_en'), '2026-11-14T10:05:09-03:00');
+  assert.equal(new Date(enviado(calls, 'relevado_en')).getTime(), cuando.getTime());
+  await e.enviarCaso({...BASE_CASO, relevado_en: '2026-11-14T10:00:00Z'});
+  assert.equal(Object.fromEntries(campos(calls[1])).relevado_en, '2026-11-14T10:00:00Z');
+});
+
+test('enviarCaso: fecha_nacimiento DD/MM/AAAA, Date y AAAA-MM-DD salen AAAA-MM-DD', async () => {
+  const {r, e} = await preparar();
+  const calls = router(r, async () => response(201, {id: 1}));
+  for (const [entrada, esperado] of [
+    ['02/03/1984', '1984-03-02'], ['1984-03-02', '1984-03-02'], ['1970-01-01', '1970-01-01'],
+    [new Date(1984, 2, 2, 23, 59), '1984-03-02'], ['29/02/2024', '2024-02-29'],
+  ]) {
+    calls.length = 0;
+    await e.enviarCaso({...BASE_CASO, fecha_nacimiento: entrada});
+    assert.equal(enviado(calls, 'fecha_nacimiento'), esperado, String(entrada));
+  }
+});
+
+test('enviarCaso: una fecha inválida es FECHA_INVALIDA con el campo, antes de pedir nada', async () => {
+  const {r, e} = await preparar();
+  const calls = router(r, async () => response(201, {id: 1}));
+  for (const fecha of ['31/02/1990', '1990-13-01', 'ayer', new Date('x')]) {
+    await assert.rejects(e.enviarCaso({...BASE_CASO, fecha_nacimiento: fecha}),
+      (error) => error.code === e.ERROR_FECHA_INVALIDA && error.campo === 'fecha_nacimiento' && /fecha de nacimiento/.test(error.message));
+  }
+  await assert.rejects(e.enviarCaso({...BASE_CASO, relevado_en: new Date(NaN)}),
+    (error) => error.code === e.ERROR_FECHA_INVALIDA && error.campo === 'relevado_en');
+  assert.equal(calls.length, 0);
+});
