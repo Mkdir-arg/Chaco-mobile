@@ -50,7 +50,7 @@ const conVerificacion = async (pedido) => {
   }
 };
 
-const presente = (valor) => valor !== null && valor !== undefined && valor !== '';
+const presente = (valor) => valor !== null && valor !== undefined && !(typeof valor === 'string' && valor.trim() === '');
 
 // Un asset ya convertido con aJpeg → el archivo del multipart. El back exige extensión .jpg/.jpeg.
 export const archivoJpeg = (campo, asset) => {

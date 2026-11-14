@@ -172,6 +172,7 @@ function nativo({ancho = 4000, alto = 3000, factor = 1, inicio = 'iVBO', tamanoO
   const fileSystem = {
     EncodingType: {Base64: 'base64'},
     getInfoAsync: async (uri) => (tamanos.has(uri) ? {exists: true, size: tamanos.get(uri)} : {exists: false}),
+    deleteAsync: async (uri) => { (registro.borrados ||= []).push(uri); },
     readAsStringAsync: async (uri, opciones) => {
       registro.lectura = opciones;
       return uri === 'file:///original' ? inicio : '';
@@ -201,6 +202,9 @@ test('nativo: HEIC grande sale JPEG ≤ 3 MB con expo-image-manipulator, en paso
   assert.equal(asset.width, registro.guardados.at(-1).ancho);
   assert.deepEqual({...registro.lectura}, {encoding: 'base64', position: 0, length: 3});
   assert.ok(registro.liberados >= 1);
+  // Los intentos que no entraron se borran de la caché; el devuelto, no.
+  assert.equal((registro.borrados || []).length, registro.guardados.length - 1);
+  assert.ok(!registro.borrados.includes(asset.uri));
 });
 
 test('nativo: con las medidas del selector decodifica la uri una vez, ya achicada, y libera todo', async () => {
@@ -209,7 +213,7 @@ test('nativo: con las medidas del selector decodifica la uri una vez, ya achicad
   const {aJpeg} = r.load('../utils/jpeg');
   await aJpeg({uri: 'file:///original', fileName: 'IMG.HEIC', width: 4000, height: 3000});
   assert.equal(desdeUri(registro), 1);
-  // Nunca se cargó el original de 4000 px: la primera imagen ya sale con el lado máximo.
+  // La uri se abre una sola vez y la primera imagen ya sale con el lado máximo (el original no queda retenido).
   assert.equal(registro.refs[0].width, 2048);
   assert.ok(registro.refs.every(({width, height}) => Math.max(width, height) <= 2048));
   assert.ok(registro.manipulados.length > 1, 'los pasos siguientes salen de la imagen cargada');

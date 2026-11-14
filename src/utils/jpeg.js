@@ -142,10 +142,12 @@ const renderizar = async (fuente, medidas) => {
 
 const medida = (valor) => (Number.isFinite(valor) && valor > 0 ? valor : null);
 
-// La foto se decodifica desde la uri una sola vez. Con las medidas del selector se la abre ya
-// achicada al lado máximo (solo el lado largo: si el selector las diera giradas, la proporción
-// se conserva igual) y no se carga el original entero; sin medidas, se abre entera. Los pasos
-// siguientes se achican desde esa imagen cargada.
+// La foto se decodifica desde la uri una sola vez y el original no queda retenido: con las
+// medidas del selector se la abre ya achicada al lado máximo (solo el lado largo: si el selector
+// las diera giradas, la proporción se conserva y el bucle la acota igual); sin medidas, se abre
+// entera. El pico de memoria de esa primera decodificación sigue siendo el original (Glide en
+// Android y UIImage en iOS lo cargan completo): esta API no permite evitarlo. Los pasos
+// siguientes se achican desde esa imagen ya cargada.
 const aJpegNativo = async (asset, { maxBytes, maxLado }) => {
   const uri = asset?.uri;
   const nombre = nombreJpeg(asset?.fileName || asset?.name || String(uri || '').split('/').pop());
@@ -178,6 +180,8 @@ const aJpegNativo = async (asset, { maxBytes, maxLado }) => {
           if (size <= maxBytes) {
             return resultado(asset, { uri: guardada.uri, nombre, size, ancho: guardada.width, alto: guardada.height });
           }
+          // El intento que no entra no queda en la caché.
+          await FileSystem.deleteAsync(guardada.uri, { idempotent: true }).catch(() => {});
         }
       } finally {
         if (ref !== base) liberar(ref);
