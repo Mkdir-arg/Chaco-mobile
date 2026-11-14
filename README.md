@@ -184,6 +184,10 @@ se conecta directamente a esas integraciones externas.
 | `GET/POST /api/becas/formularios/{id}/adjuntos/` | Adjuntos |
 | `POST /api/becas/personas/consultar/` | Consulta de identidad |
 | `GET /api/emergencia/perfil/` | Accesos del módulo Emergencia |
+| `POST /api/emergencia/personas/consultar/` | Consulta de identidad de Emergencia |
+| `GET /api/emergencia/localidades/` | Localidades del Formulario 1 |
+| `POST /api/emergencia/casos/` | Enviar una familia (multipart, idempotente) |
+| `GET /api/emergencia/casos/mios/` | «Mis envíos» |
 
 Los adjuntos se envían como multipart; los demás cuerpos normalmente como JSON.
 
@@ -205,10 +209,42 @@ Dispositivos no cambian.
   `AAAA-MM-DD`). Una fecha inválida rechaza con `code: 'FECHA_INVALIDA'` y `campo`, sin
   mandar nada.
 
-> **Despliegue:** `expo-image-manipulator` es un módulo nativo. El día que una pantalla
-> importe `src/utils/jpeg.js`, Android/iOS necesitan **un build nuevo** (EAS, ver
-> «Compilación nativa opcional»): la app no tiene `expo-updates`, y un instalador viejo
-> no trae el módulo. En la PWA (web) no aplica: usa canvas y sale con `npm run build:web`.
+#### M1 · Ingreso de familias (desde 1.2.13)
+
+El acceso «Ingreso de familias» (perfil con `relevar`) abre «Mis envíos» y, desde ahí,
+el Formulario 1 (`EmergenciaFormulario1Screen`) en cuatro bloques: traslado y
+responsable (DNI escaneado o consultado en `personas/consultar/`, alta mínima si no
+figura), personas que ingresan juntas, quiénes necesitan asistencia, y ubicación y
+fotos (dirección, localidad, GPS opcional y hasta dos fotos JPEG). Funciona sin señal:
+
+- `src/services/emergenciaCola.js` usa su propia base `emergencia_offline.db` (no
+  toca las de Becas ni Dispositivos). El borrador vive ahí y sobrevive a cerrar la
+  app; su `uuid_cliente` nace con él y no cambia nunca. Las fotos pasan por `aJpeg`
+  y se guardan como data URL en web o en `attachments/emergencia` en nativo; se
+  borran al entregar o descartar.
+- «Enviar» toma `relevado_en` en ese momento y pasa el borrador a la cola
+  (`PENDING` → `IN_FLIGHT` → `DONE`). 201 y 200 cierran el envío y guardan el
+  número de caso. Un 400 `VALIDACION` lo devuelve a borrador, con el mismo uuid y los
+  errores por campo, para corregir y reenviar. Un 409 `UUID_EN_USO` queda como error
+  permanente (no se reintenta ni se cambia el uuid). Un 403 `SIN_MODULO` vuelve a
+  pedir el perfil y queda guardado sin reintentarse solo. 401 conserva la cola hasta
+  volver a entrar; 429, 5xx, timeout y falta de red reintentan con backoff (hasta 8
+  veces) respetando `Retry-After`. Un `IN_FLIGHT` de más de 2 minutos (proceso
+  cerrado a mitad de envío) vuelve a la cola.
+- La cola se sincroniza al entrar al módulo, cada 8 s y al recuperar conexión, solo
+  mientras Emergencia está abierto; el Banner muestra los pendientes y su botón
+  reintenta. Cerrar sesión desde Emergencia con envíos sin entregar avisa antes.
+- La lista de localidades se guarda al entrar al módulo y se refresca una vez por día;
+  el buscador funciona sin red. «Mis envíos» guarda la última lista del servidor para
+  verla sin red.
+- Las reglas de cliente (`src/utils/emergencia.js`) solo ayudan a cargar bien: las que
+  valen son las del back.
+
+> **Despliegue:** `expo-image-manipulator` es un módulo nativo. Desde 1.2.13 el
+> Formulario 1 importa `src/utils/jpeg.js`: Android/iOS necesitan **un build nuevo**
+> (EAS, ver «Compilación nativa opcional»): la app no tiene `expo-updates`, y un
+> instalador viejo no trae el módulo. En la PWA (web) no aplica: usa canvas y sale con
+> `npm run build:web`.
 
 ## Desarrollo local
 

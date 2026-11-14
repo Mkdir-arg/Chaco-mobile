@@ -14,7 +14,7 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
 (async () => {
   const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
   try {
-    fs.writeFileSync(entry, original + `\nimport service from './src/services/relevamientoService';\nimport * as api from './src/services/becasApi';\nimport { API_CONFIG } from './src/config/apiConfig';\nwindow.__pwaTest = {service, api, config: API_CONFIG};\n`);
+    fs.writeFileSync(entry, original + `\nimport service from './src/services/relevamientoService';\nimport * as api from './src/services/becasApi';\nimport * as emergencia from './src/services/emergenciaCola';\nimport { API_CONFIG } from './src/config/apiConfig';\nwindow.__pwaTest = {service, api, emergencia, config: API_CONFIG};\n`);
     try {
       run(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['expo','export','--clear','--platform','web','--output-dir','dist-browser']);
       // Runtime setting intentionally differs from the Expo build-time URL.
@@ -29,7 +29,7 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
     }
     const campaign = {id:1,nombre:'Prueba PWA',estado:'EN_CURSO',fecha_asignada:'2020-01-01T00:00:00-03:00',
       fecha_hasta:'2099-12-31T23:59:59-03:00',definicion_formulario:{version:3,globales:[],requisitos:[]}};
-    let posts=0, uploads=0, rejectUpload=true;
+    let posts=0, uploads=0, rejectUpload=true, casos=0, localidades=0;
     const launch = async () => {
       const ctx = await chromium.launchPersistentContext(profile, {headless:true,
         ...(process.env.CHROME_PATH ? {executablePath:process.env.CHROME_PATH} : {})});
@@ -43,6 +43,15 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
           assert.ok(req.postDataBuffer().includes(Buffer.from('offline-bytes')));
           status = rejectUpload ? 401 : 201; body = rejectUpload ? {detail:'Invalid token.'} : {id:55};
         } else if(req.method()==='POST' && url.endsWith('/formularios/')) {posts++;status=201;body={id:99};}
+        else if(req.method()==='POST' && url.endsWith('/api/emergencia/casos/')) {
+          casos++;
+          assert.match(req.headers()['content-type'], /multipart\/form-data; boundary=/);
+          const datos=req.postDataBuffer();
+          for (const parte of ['name="uuid_cliente"','name="relevado_en"','name="traslado"','name="foto_vivienda"; filename="vivienda.jpg"','emergencia-bytes'])
+            assert.ok(datos.includes(Buffer.from(parte)), parte);
+          status=casos===1?201:200; body={id:184,numero:'2026-000184',prioridad:'MEDIA',total_declarado:1};
+        }
+        else if(url.endsWith('/api/emergencia/localidades/')) {localidades++;body=[{id:12,nombre:'Barranqueras'}];}
         else if(url.endsWith('/relevamientos/')) body=[campaign];
         else if(url.endsWith('/relevamientos/1/')) body=campaign;
         await route.fulfill({status,contentType:'application/json',headers:{'Access-Control-Allow-Origin':'http://localhost:4174','Access-Control-Allow-Credentials':'true','Access-Control-Allow-Headers':'authorization,content-type','Access-Control-Allow-Methods':'GET,POST,OPTIONS'},body:JSON.stringify(body)});
@@ -139,6 +148,44 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
     assert.equal(uploads,2);
     assert.deepEqual(errors,[]);
     console.log('PASS: offline capture + attachment, reload, browser restart, multipart, 401 recovery, no duplicate capture.');
+    // Emergencia M1: localidades guardadas y una familia relevada sin señal, que sobrevive a
+    // recargar y se envía una sola vez al volver la red.
+    await page.evaluate(()=>window.__pwaTest.emergencia.getLocalidadesGuardadas());
+    assert.equal(localidades,1);
+    await context.setOffline(true);
+    const uuidM1=await page.evaluate(async()=>{
+      const cola=window.__pwaTest.emergencia;
+      const borrador=await cola.abrirBorrador();
+      await cola.guardarBorrador(borrador.uuid_cliente,{...borrador.datos,traslado:'BOMBEROS',dni:'30111222',
+        nombre:'Rosa',apellido:'Benitez',adultos_f:1,direccion:'Av. 9 de Julio 1200',localidad:12});
+      await cola.ponerFoto(borrador.uuid_cliente,'foto_vivienda',{uri:'data:image/jpeg;base64,'+btoa('emergencia-bytes'),
+        fileName:'vivienda.jpg',mimeType:'image/jpeg',size:16});
+      const res=await cola.encolarCaso(borrador.uuid_cliente,{},{sincronizar:false});
+      if(res.envio.estado!=='pendiente') throw new Error('M1 no quedó pendiente: '+res.envio.estado);
+      return borrador.uuid_cliente;
+    });
+    await page.reload(); await page.waitForFunction(()=>window.__pwaTest);
+    const offlineM1=await page.evaluate(async()=>({pending:await window.__pwaTest.emergencia.getPendingCount(),
+      localidades:(await window.__pwaTest.emergencia.getLocalidadesGuardadas()).localidades.length,
+      sync:await window.__pwaTest.emergencia.syncPendientes()}));
+    assert.equal(offlineM1.pending,1,'M1 sobrevive a recargar sin red');
+    assert.equal(offlineM1.localidades,1,'localidades sin red');
+    assert.equal(offlineM1.sync.offline,true);
+    assert.equal(casos,0);
+    await context.setOffline(false);
+    const onlineM1=await page.evaluate(async uuid=>{
+      const cola=window.__pwaTest.emergencia;
+      const sync=await cola.syncPendientes();
+      await cola.syncPendientes();
+      return {sync,pending:await cola.getPendingCount(),envio:await cola.getEnvio(uuid)};
+    },uuidM1);
+    assert.equal(onlineM1.sync.synced,1);
+    assert.equal(onlineM1.pending,0);
+    assert.equal(onlineM1.envio.estado,'enviado');
+    assert.equal(onlineM1.envio.resultado.numero,'2026-000184');
+    assert.equal(casos,1,'M1 se envía una sola vez');
+    assert.deepEqual(errors,[]);
+    console.log('PASS: Emergencia M1 offline -> reload -> online, multipart with photo, single send, cached localidades.');
   } finally {
     fs.writeFileSync(entry,original);
     await context?.close(); server?.kill(); fs.rmSync(profile,{recursive:true,force:true});
