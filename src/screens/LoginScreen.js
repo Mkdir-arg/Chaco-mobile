@@ -1,5 +1,5 @@
 import TextInput, { FormInputContainer } from '../components/FormInput';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -25,15 +25,21 @@ import { versionActual } from '../services/versionApp';
 export default function LoginScreen({ onNavigateToRegister }) {
   const { theme, typography, branding } = useTheme();
   const version = versionActual();
-  const { login } = useAuth();
+  const { login, avisoSesion, limpiarAvisoSesion } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
+  // La sesión se cerró sola (p. ej. el back sacó el último módulo): se dice por qué.
+  useEffect(() => {
+    if (avisoSesion) setError(avisoSesion);
+  }, [avisoSesion]);
+
   const handleLogin = async () => {
     setError('');
+    if (avisoSesion && limpiarAvisoSesion) limpiarAvisoSesion();
 
     const trimmedUsername = username.trim();
     const trimmedPassword = password.trim();

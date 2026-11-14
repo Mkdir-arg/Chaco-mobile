@@ -120,3 +120,28 @@ test('si el 403 deja al usuario sin modulos, se borra la sesion guardada', async
   assert.equal(await r.api.getStoredBecasUser(), null);
   assert.equal(await r.api.getBecasToken(), null);
 });
+
+test('un usuario solo de Emergencia entra directo a Emergencia', async () => {
+  const {r, user} = await login({modulos: ['emergencia']});
+  assert.deepEqual([...user.modulos], ['emergencia']);
+  assert.deepEqual([...(await r.api.getStoredBecasUser()).modulos], ['emergencia']);
+  assert.equal(r.modulos.moduloInicial(user.modulos, null), 'emergencia');
+  assert.equal(r.modulos.NOMBRE_MODULO.emergencia, 'Emergencia');
+});
+
+test('con los tres modulos quedan en orden y se pide elegir; los desconocidos se descartan', async () => {
+  const {user} = await login({modulos: ['emergencia', 'otro', 'dispositivos', 'becas', 'mesa']});
+  assert.deepEqual([...user.modulos], ['becas', 'dispositivos', 'emergencia']);
+  const {r} = await login({modulos: ['becas', 'dispositivos', 'emergencia']});
+  assert.equal(r.modulos.moduloInicial(user.modulos, null), null);
+  assert.equal(r.modulos.moduloInicial(user.modulos, 'emergencia'), 'emergencia');
+  assert.equal(r.modulos.moduloInicial(['becas', 'emergencia'], 'dispositivos'), null, 'un modulo perdido no se recuerda');
+});
+
+test('quitar Emergencia deja los otros modulos', async () => {
+  const {r} = await login({modulos: ['becas', 'emergencia']});
+  await r.api.setModuloActivo('emergencia');
+  const user = await r.api.quitarModuloLocal('emergencia', 'nuevo');
+  assert.deepEqual([...user.modulos], ['becas']);
+  assert.equal(await r.api.getModuloActivo(), null);
+});

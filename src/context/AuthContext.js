@@ -8,7 +8,8 @@ import {
   setModuloActivo as guardarModuloActivo,
   subscribeBecasSessionExpired,
 } from '../services/becasApi';
-import { subscribeSinModulo } from '../services/dispositivosService';
+import { subscribeSinModulo } from '../services/sinModulo';
+import { olvidarPerfilGuardado } from '../services/emergenciaPerfil';
 import { moduloInicial } from '../services/modulos';
 
 const AuthContext = createContext({});
@@ -17,6 +18,8 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [moduloActivo, setModuloActivoState] = useState(null);
   const [loading, setLoading] = useState(true);
+  // Por qué se cerró la sesión sin que la persona lo pidiera; lo muestra LoginScreen.
+  const [avisoSesion, setAvisoSesion] = useState(null);
 
   useEffect(() => {
     let mounted = true;
@@ -29,12 +32,13 @@ export const AuthProvider = ({ children }) => {
       }
     });
     // El back dejó de admitir un módulo: se actualiza la sesión; sin módulos, se sale.
-    const unsubscribeSinModulo = subscribeSinModulo(async (modulo, tokenDelPedido) => {
+    const unsubscribeSinModulo = subscribeSinModulo(async (modulo, tokenDelPedido, detalle) => {
       try {
         const next = await quitarModuloLocal(modulo, tokenDelPedido);
         if (!mounted || !next) return;
         // Sin módulos, quitarModuloLocal ya borró la sesión guardada.
         if (!next.modulos.length) {
+          setAvisoSesion(detalle || 'Tu usuario ya no tiene acceso a la app.');
           setUser(null);
           setModuloActivoState(null);
           return;
@@ -70,6 +74,7 @@ export const AuthProvider = ({ children }) => {
   const login = async (username, password) => {
     try {
       const nextUser = await loginBecas({ username, password });
+      setAvisoSesion(null);
       setUser(nextUser);
       setModuloActivoState(moduloInicial(nextUser.modulos, null));
       return { success: true };
@@ -83,7 +88,10 @@ export const AuthProvider = ({ children }) => {
   };
 
   const logout = async () => {
+    const ownerId = user?.id;
     await clearBecasSession();
+    await olvidarPerfilGuardado(ownerId);
+    setAvisoSesion(null);
     setUser(null);
     setModuloActivoState(null);
   };
@@ -104,6 +112,8 @@ export const AuthProvider = ({ children }) => {
         elegirModulo,
         login,
         logout,
+        avisoSesion,
+        limpiarAvisoSesion: () => setAvisoSesion(null),
       }}
     >
       {children}

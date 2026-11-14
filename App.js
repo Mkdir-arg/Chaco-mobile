@@ -13,6 +13,7 @@ import LoginScreen from './src/screens/LoginScreen';
 import ModuloSelectorScreen from './src/screens/ModuloSelectorScreen';
 import BecasApp from './src/navigation/BecasApp';
 import DispositivosApp from './src/navigation/DispositivosApp';
+import EmergenciaApp from './src/navigation/EmergenciaApp';
 import { requiereActualizacionGuardada, versionActual } from './src/services/versionApp';
 import { getStoredBecasUser } from './src/services/becasApi';
 import { evaluarBloqueoVersion } from './src/navigation/bloqueoVersion';
@@ -94,6 +95,7 @@ function AppContent() {
     );
     if (moduloActivo === 'becas') return <BecasApp onCambiarModulo={onCambiarModulo} />;
     if (moduloActivo === 'dispositivos') return <DispositivosApp onCambiarModulo={onCambiarModulo} />;
+    if (moduloActivo === 'emergencia') return <EmergenciaApp onCambiarModulo={onCambiarModulo} />;
     return <ModuloSelectorScreen />;
   };
 
