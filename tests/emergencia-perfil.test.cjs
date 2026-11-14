@@ -47,7 +47,7 @@ test('el perfil con relevar, llegadas y kits muestra los tres accesos en orden',
   const {perfil, desdeCache} = await e.cargarPerfil();
   assert.equal(calls[0].url, PERFIL);
   assert.equal(desdeCache, false);
-  assert.deepEqual(titulos(e, perfil), ['Relevar familias', 'Llegada de familias', 'Recepción de kits']);
+  assert.deepEqual(titulos(e, perfil), ['Ingreso de familias', 'Llegada de familias', 'Recepción de kits']);
 });
 
 test('cada bandera del perfil habilita solo su acceso', async () => {

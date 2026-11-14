@@ -82,7 +82,7 @@ async function montarInicio(handler, {antes} = {}) {
 test('Inicio: con el perfil completo muestra los tres accesos y cada uno avisa al tocarlo', async () => {
   const ui = await montarInicio(() => response(200, {relevar: true, dispositivo: true, llegadas: true, kits: true}));
   try {
-    assert.deepEqual(ui.accesos(), ['Relevar familias', 'Llegada de familias', 'Recepción de kits']);
+    assert.deepEqual(ui.accesos(), ['Ingreso de familias', 'Llegada de familias', 'Recepción de kits']);
     assert.ok(ui.pedidos[0].endsWith('/api/emergencia/perfil/'));
     await ui.press('Recepción de kits');
     assert.deepEqual(ui.abiertos, ['kits']);
@@ -92,7 +92,7 @@ test('Inicio: con el perfil completo muestra los tres accesos y cada uno avisa a
 
 test('Inicio: solo relevar, y con perfil viejo `dispositivo` da llegadas y kits', async () => {
   let ui = await montarInicio(() => response(200, {relevar: true, dispositivo: false}));
-  try { assert.deepEqual(ui.accesos(), ['Relevar familias']); } finally { await ui.close(); }
+  try { assert.deepEqual(ui.accesos(), ['Ingreso de familias']); } finally { await ui.close(); }
   ui = await montarInicio(() => response(200, {relevar: false, dispositivo: true}));
   try { assert.deepEqual(ui.accesos(), ['Llegada de familias', 'Recepción de kits']); } finally { await ui.close(); }
 });
@@ -113,7 +113,7 @@ test('Inicio: sin red arranca con el perfil guardado y lo avisa', async () => {
     },
   });
   try {
-    assert.deepEqual(ui.accesos(), ['Relevar familias']);
+    assert.deepEqual(ui.accesos(), ['Ingreso de familias']);
     assert.ok(ui.labels().includes('Sin conexión: se muestran tus accesos guardados.'));
   } finally { await ui.close(); }
 });
@@ -131,7 +131,7 @@ test('Inicio: sin red y sin nada guardado ofrece reintentar', async () => {
     assert.ok(reintentar);
     red = true;
     await renderer.act(async () => { await reintentar.props.onPress(); });
-    assert.deepEqual(ui.accesos(), ['Relevar familias']);
+    assert.deepEqual(ui.accesos(), ['Ingreso de familias']);
   } finally { await ui.close(); }
 });
 
@@ -139,7 +139,7 @@ test('Inicio: cuando otra pantalla re-pide el perfil (403 parcial), los accesos 
   let perfil = {relevar: true, dispositivo: true};
   const ui = await montarInicio(() => response(200, perfil));
   try {
-    assert.deepEqual(ui.accesos(), ['Relevar familias', 'Llegada de familias', 'Recepción de kits']);
+    assert.deepEqual(ui.accesos(), ['Ingreso de familias', 'Llegada de familias', 'Recepción de kits']);
     perfil = {relevar: false, dispositivo: true, llegadas: true, kits: false};
     await renderer.act(async () => {
       await ui.perfil.verificarSinModulo({status: 403, payload: {code: 'SIN_MODULO'}});

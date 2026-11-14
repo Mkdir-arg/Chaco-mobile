@@ -9,7 +9,7 @@ export const PERFIL_PATH = '/api/emergencia/perfil/';
 const CACHE_KEY = 'emergencia_perfil';
 
 export const ACCESOS = [
-  { clave: 'relevar', titulo: 'Relevar familias', icono: 'people-outline' },
+  { clave: 'relevar', titulo: 'Ingreso de familias', icono: 'people-outline' },
   { clave: 'llegadas', titulo: 'Llegada de familias', icono: 'home-outline' },
   { clave: 'kits', titulo: 'Recepción de kits', icono: 'cube-outline' },
 ];

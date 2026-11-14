@@ -152,7 +152,7 @@ activo que entre a algún módulo de la app y responde con `token`, `user_id`,
 |---|---|---|
 | `becas` | Relevamientos de Becas | Territorial con `becas.campo` |
 | `dispositivos` | Relevamiento edilicio de Dispositivos | Agente con `inspeccion.relevar` en el programa Dispositivos |
-| `emergencia` | Relevar familias, llegada de familias y recepción de kits | Agente territorial (`emergencia.relevar`), guardia de un dispositivo o administrador del programa Dispositivos |
+| `emergencia` | Ingreso de familias, llegada de familias y recepción de kits | Agente territorial (`emergencia.relevar`), guardia de un dispositivo o administrador del programa Dispositivos |
 
 Con un solo módulo se entra directo; con varios, la app muestra un selector y se
 puede cambiar desde el menú. Un 403 `SIN_MODULO` saca el módulo de la sesión local.
