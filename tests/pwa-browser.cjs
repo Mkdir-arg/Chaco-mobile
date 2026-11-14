@@ -173,13 +173,22 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
     assert.equal(offlineM1.sync.offline,true);
     assert.equal(casos,0);
     await context.setOffline(false);
+    // Volver la red no es instantáneo para el navegador: se espera a que la app la vea antes de
+    // sincronizar, y después se repite la sincronización para comprobar que no se reenvía.
+    await page.waitForFunction(()=>navigator.onLine===true);
     const onlineM1=await page.evaluate(async uuid=>{
       const cola=window.__pwaTest.emergencia;
-      const sync=await cola.syncPendientes();
-      await cola.syncPendientes();
-      return {sync,pending:await cola.getPendingCount(),envio:await cola.getEnvio(uuid)};
+      let synced=0;
+      for(let intento=0;intento<10&&await cola.getPendingCount()>0;intento+=1){
+        const sync=await cola.syncPendientes();
+        synced+=sync.synced||0;
+        if(sync.offline) await new Promise(resolve=>setTimeout(resolve,200));
+      }
+      const otra=await cola.syncPendientes();
+      return {synced,otra,pending:await cola.getPendingCount(),envio:await cola.getEnvio(uuid)};
     },uuidM1);
-    assert.equal(onlineM1.sync.synced,1);
+    assert.equal(onlineM1.synced,1,'se envía una vez al volver la red');
+    assert.equal(onlineM1.otra.synced,0,'una segunda sincronización no reenvía');
     assert.equal(onlineM1.pending,0);
     assert.equal(onlineM1.envio.estado,'enviado');
     assert.equal(onlineM1.envio.resultado.numero,'2026-000184');
