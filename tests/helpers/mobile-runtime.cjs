@@ -13,7 +13,8 @@ const CLAVES_SEGURAS = new Set(['becas_auth_token', 'user_data', 'user_id', 'mod
 // resto en AsyncStorage. Con `secureStoreSeparado` la sesión inicial arranca en AsyncStorage
 // (el respaldo de antes) y `values` mira solo AsyncStorage; `setSecureFalla(true)` hace que
 // todas las operaciones de SecureStore tiren error.
-async function setup(platform = 'android', {secureStoreSeparado = false} = {}) {
+// `mocks` suma o pisa módulos externos (p. ej. expo-image-manipulator) para un test.
+async function setup(platform = 'android', {secureStoreSeparado = false, mocks: mocksExtra = {}} = {}) {
   const legacy = new Map();
   const secure = new Map();
   const mapDe = key => (!secureStoreSeparado && platform !== 'web' && CLAVES_SEGURAS.has(key) ? secure : legacy);
@@ -70,7 +71,7 @@ async function setup(platform = 'android', {secureStoreSeparado = false} = {}) {
       : platform === 'web' ? Promise.reject(new TypeError('Refused to connect: violates Content Security Policy'))
       : Promise.resolve({ok: true, blob: async () => new Blob(['image'], {type: 'image/jpeg'})}),
     get navigator() { return navigatorValue; },
-    atob, btoa, Blob, FormData: class {constructor() {this.fields = [];} append(...args) {this.fields.push(args);}},
+    atob, btoa, Blob, File, URL, TextDecoder, FormData: class {constructor() {this.fields = [];} append(...args) {this.fields.push(args);}},
   });
   const mocks = {
     '@react-native-async-storage/async-storage': {default: storage},
@@ -83,6 +84,8 @@ async function setup(platform = 'android', {secureStoreSeparado = false} = {}) {
     'expo-location': {getCurrentPositionAsync: (...args) => locationHandler(...args)},
     'expo-crypto': {randomUUID: () => require('node:crypto').randomUUID()},
     'expo-constants': {default: {get expoConfig() { return {version: appVersion}; }}},
+    'expo-image-manipulator': {ImageManipulator: {manipulate() { throw new Error('Sin mock de expo-image-manipulator'); }}, SaveFormat: {JPEG: 'jpeg'}},
+    ...mocksExtra,
   };
   const modules = new Map();
   function load(name) {
@@ -97,6 +100,7 @@ async function setup(platform = 'android', {secureStoreSeparado = false} = {}) {
     modules.set(name, module.exports);
     const requireMock = specifier => {
       if (specifier.startsWith('./') || specifier.startsWith('../utils/')) return load(specifier);
+      if (specifier.startsWith('../services/')) return load(`./${specifier.slice('../services/'.length)}`);
       assert.ok(mocks[specifier], `Missing mock ${specifier}`);
       return {__esModule: true, ...mocks[specifier]};
     };
@@ -116,7 +120,7 @@ async function setup(platform = 'android', {secureStoreSeparado = false} = {}) {
     .run(JSON.stringify({...campaign, fecha_asignada: start, fecha_hasta: end}));
   return {definition: load('./definicionFormulario'), attachments: load('./webAttachments'), images: load('./webImages'), location: load('./ubicacion'), conditions: load('./condiciones'), identity: load('./identityLookup'), modulos: load('./modulos'), api, service, dates: load('../utils/dates'), values, secure, legacy, setSecureFalla: value => {secureFalla = value;}, sql, setPeriod,
     setNow: value => {currentTime = new Date(value).getTime();}, setOnline: value => {online = value;}, setFetch: handler => {fetchHandler = handler;}, setLocation: handler => {locationHandler = handler;},
-    setNavigator: value => {navigatorValue = value;}, setAppVersion: value => {appVersion = value;}, setFileInfo: handler => {fileInfoHandler = handler;}, load};
+    setNavigator: value => {navigatorValue = value;}, setGlobal: (name, value) => {context[name] = value;}, setAppVersion: value => {appVersion = value;}, setFileInfo: handler => {fileInfoHandler = handler;}, load};
 }
 // `headers` permite simular `Date` o `Retry-After`; sin él solo responde content-type,
 // como antes (cualquier otro header devuelve null, igual que fetch).

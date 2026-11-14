@@ -4,11 +4,16 @@ export const DECEASED_MESSAGE = 'La persona figura como fallecida en la Base de 
 export const identityKey = (dni, sexo) => `${String(dni || '').replace(/\D/g, '')}:${String(sexo || '').trim().toUpperCase()}`;
 export const isValidatedIdentity = origin => ['padron', 'personas', 'scan'].includes(origin);
 
-export async function consultarIdentidad({dni, sexo, relevamiento}) {
-  const payload = await becasRequest('/api/becas/personas/consultar/', {
+export const RUTA_CONSULTA_BECAS = '/api/becas/personas/consultar/';
+export const ORIGENES_BECAS = ['padron', 'personas'];
+
+// `ruta` y `origenes` (las fuentes que se aceptan como válidas) son de Becas por defecto.
+// Emergencia usa su propia ruta, que consulta solo Base de Personas (ver emergenciaApi).
+export async function consultarIdentidad({dni, sexo, relevamiento}, {ruta = RUTA_CONSULTA_BECAS, origenes = ORIGENES_BECAS} = {}) {
+  const payload = await becasRequest(ruta, {
     method: 'POST', body: {dni, sexo, relevamiento},
   });
-  if (!payload?.success || !['padron', 'personas'].includes(payload.origen)) {
+  if (!payload?.success || !origenes.includes(payload.origen)) {
     throw new Error(payload?.error || 'La consulta no devolvió una fuente de identidad válida.');
   }
   return payload;

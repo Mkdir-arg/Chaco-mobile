@@ -1,0 +1,127 @@
+// Llamadas a /api/emergencia/ que usan M1 (ingreso de familias) y M3 (recepción de kits). El
+// contrato es docs/internal/contrato-app-emergencia.md de Chaco-Back; los nombres de campos son
+// los de ahí, sin traducir. El perfil vive en emergenciaPerfil.js.
+//
+// Todas pasan el 403 SIN_MODULO por verificarSinModulo: en Emergencia ese código también
+// significa «falta un permiso parcial», así que se vuelve a pedir el perfil antes de sacar el
+// módulo. El resultado ('quitado', 'actualizado' o 'sin_verificar') queda en
+// `error.verificacionSinModulo`, y el error sale igual.
+import { becasRequest, uploadMultipart } from './becasApi';
+import { verificarSinModulo } from './emergenciaPerfil';
+import { consultarIdentidad } from './identityLookup';
+import { nombreJpg } from './webImages';
+
+export const BASE = '/api/emergencia/';
+export const RUTAS = {
+  indice: BASE,
+  personasConsultar: `${BASE}personas/consultar/`,
+  localidades: `${BASE}localidades/`,
+  casos: `${BASE}casos/`,
+  casosMios: `${BASE}casos/mios/`,
+  misDispositivos: `${BASE}mis-dispositivos/`,
+  entregasDispositivo: (id) => `${BASE}dispositivos/${encodeURIComponent(id)}/entregas/`,
+  entrega: (id) => `${BASE}entregas/${encodeURIComponent(id)}/`,
+  recibirEntrega: (id) => `${BASE}entregas/${encodeURIComponent(id)}/recibir/`,
+};
+
+// §4: Emergencia no tiene padrones; consulta solo Base de Personas.
+export const ORIGENES_IDENTIDAD = ['personas'];
+
+// §6, en el orden de la tabla. Cualquier otra clave se ignora en el back (`total` y `prioridad`
+// los calcula el servidor): acá no se mandan.
+export const CAMPOS_CASO = [
+  'uuid_cliente', 'relevado_en', 'traslado', 'traslado_otro', 'dni', 'nombre', 'apellido',
+  'fecha_nacimiento', 'telefono', 'documento_extraviado',
+  'menores_f', 'menores_m', 'adultos_f', 'adultos_m', 'mayores_f', 'mayores_m',
+  'dependientes', 'mayores_dependientes', 'lactantes',
+  'embarazo', 'electrodependiente', 'medicacion_critica', 'mascotas',
+  'direccion', 'localidad', 'latitud', 'longitud', 'precision_m', 'observaciones',
+];
+export const FOTOS_CASO = ['foto_vivienda', 'foto_acceso'];
+
+const conVerificacion = async (pedido) => {
+  try {
+    return await pedido();
+  } catch (error) {
+    const verificacion = await verificarSinModulo(error);
+    if (verificacion) error.verificacionSinModulo = verificacion;
+    throw error;
+  }
+};
+
+const presente = (valor) => valor !== null && valor !== undefined && valor !== '';
+
+// Un asset ya convertido con aJpeg → el archivo del multipart. El back exige extensión .jpg/.jpeg.
+export const archivoJpeg = (campo, asset) => {
+  if (!asset?.uri && !asset?.file) return null;
+  const nombre = String(asset.fileName || asset.name || '');
+  return {
+    campo,
+    uri: asset.uri,
+    nombre: /\.jpe?g$/i.test(nombre) ? nombre : nombreJpg(nombre || campo),
+    tipo: 'image/jpeg',
+    webData: asset.file,
+  };
+};
+
+const exigirUuid = (uuid) => {
+  if (!presente(uuid)) throw new Error('Falta uuid_cliente: se genera al abrir el formulario.');
+};
+
+export const getIndice = () => conVerificacion(() => becasRequest(RUTAS.indice));
+
+export const getLocalidades = () => conVerificacion(() => becasRequest(RUTAS.localidades));
+
+// §4. Mismo cuerpo y códigos que la consulta de Becas (identityFailure sirve igual).
+export const consultarPersona = ({ dni, sexo }) => conVerificacion(() => consultarIdentidad(
+  { dni, sexo }, { ruta: RUTAS.personasConsultar, origenes: ORIGENES_IDENTIDAD }));
+
+// §6. `datos` con las claves de CAMPOS_CASO (las demás no se mandan); `fotos` con
+// `foto_vivienda` y `foto_acceso` como assets de aJpeg, opcionales. Latitud y longitud van
+// juntas: si falta una, no se manda ninguna. 201 creado o 200 ya existía, mismo cuerpo.
+export const enviarCaso = async (datos = {}, fotos = {}, { timeoutMs } = {}) => {
+  exigirUuid(datos.uuid_cliente);
+  const fields = {};
+  CAMPOS_CASO.forEach((campo) => {
+    if (presente(datos[campo])) fields[campo] = datos[campo];
+  });
+  if (!presente(fields.latitud) || !presente(fields.longitud)) {
+    delete fields.latitud;
+    delete fields.longitud;
+  }
+  const files = FOTOS_CASO.map((campo) => archivoJpeg(campo, fotos[campo])).filter(Boolean);
+  return conVerificacion(() => uploadMultipart(RUTAS.casos, { fields, files, timeoutMs }));
+};
+
+export const getMisCasos = () => conVerificacion(() => becasRequest(RUTAS.casosMios));
+
+export const getMisDispositivos = () => conVerificacion(() => becasRequest(RUTAS.misDispositivos));
+
+// §10. Con `pendientes`, las que esperan recepción (la lista de M3-1).
+export const getEntregasDispositivo = (dispositivoId, { pendientes = false } = {}) => conVerificacion(
+  () => becasRequest(`${RUTAS.entregasDispositivo(dispositivoId)}${pendientes ? '?pendientes=1' : ''}`));
+
+export const getEntrega = (entregaId) => conVerificacion(() => becasRequest(RUTAS.entrega(entregaId)));
+
+// §12. `cantidades` es { <id del ítem>: cantidad }, una por línea aunque sea 0; va como
+// `cantidades[<id>]`. `remito` es el asset de aJpeg. Requiere conexión: no se encola.
+export const recibirEntrega = async (entregaId, { uuid_cliente, cantidades = {}, remito, observacion } = {}, { timeoutMs } = {}) => {
+  exigirUuid(uuid_cliente);
+  const fields = { uuid_cliente };
+  Object.entries(cantidades || {}).forEach(([item, cantidad]) => {
+    if (presente(cantidad)) fields[`cantidades[${item}]`] = cantidad;
+  });
+  if (presente(observacion)) fields.observacion = observacion;
+  const files = [archivoJpeg('remito', remito)].filter(Boolean);
+  return conVerificacion(() => uploadMultipart(RUTAS.recibirEntrega(entregaId), { fields, files, timeoutMs }));
+};
+
+const es409 = (error) => Number(error?.status) === 409 && !error?.unexpectedHtml;
+
+// 409 con `estado_actual` (§2, §12, §13): otra guardia, la mesa o el backoffice ya cambió el
+// estado. Se muestra `detail` y se recarga según `estado_actual`.
+export const esConflictoDeEstado = (error) => es409(error)
+  && typeof error?.payload?.estado_actual === 'string' && error.payload.estado_actual !== '';
+
+// 409 `UUID_EN_USO`: ese uuid_cliente ya es de otro caso u otra recepción. No se reintenta con él.
+export const esUuidEnUso = (error) => es409(error) && error?.payload?.code === 'UUID_EN_USO';

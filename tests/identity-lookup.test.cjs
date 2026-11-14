@@ -39,3 +39,22 @@ test('Una fuente desconocida no se transforma silenciosamente en personas', asyn
   assert.equal(identity.isValidatedIdentity('manual'), false);
   assert.equal(identity.identityKey('30.111.222', 'f'), identity.identityKey('30111222', 'F'));
 });
+test('Con ruta y orígenes propios (Emergencia) consulta esa ruta y valida contra esos orígenes', async () => {
+  const {identity, setFetch} = await setup();
+  let pedido;
+  setFetch(async (url, options) => {
+    pedido = {url, body: JSON.parse(options.body)};
+    return response(200, {success:true, origen:'personas', data:{nombre:'Rosa'}, datos_api:{}});
+  });
+  const opciones = {ruta:'/api/emergencia/personas/consultar/', origenes:['personas']};
+  const result = await identity.consultarIdentidad({dni:'30111222', sexo:'F'}, opciones);
+  assert.equal(result.origen, 'personas');
+  assert.equal(pedido.url, 'https://example.test/api/emergencia/personas/consultar/');
+  assert.deepEqual(pedido.body, {dni:'30111222', sexo:'F'});
+  setFetch(async () => response(200, {success:true, origen:'padron', data:{}}));
+  await assert.rejects(identity.consultarIdentidad({dni:'30111222', sexo:'F'}, opciones));
+  // Sin opciones sigue siendo Becas, con padrón válido.
+  setFetch(async (url) => { pedido = {url}; return response(200, {success:true, origen:'padron', data:{}}); });
+  assert.equal((await identity.consultarIdentidad({dni:'30111222', sexo:'F', relevamiento:1})).origen, 'padron');
+  assert.equal(pedido.url, 'https://example.test/api/becas/personas/consultar/');
+});
