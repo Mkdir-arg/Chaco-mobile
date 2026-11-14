@@ -128,6 +128,8 @@ test('Inicio: sin red y sin nada guardado ofrece reintentar', async () => {
   try {
     assert.deepEqual(ui.accesos(), []);
     assert.ok(!ui.labels().includes(SIN_TAREAS), 'sin perfil no se dice que no tiene tareas');
+    assert.ok(ui.labels().includes('Sin conexión: no se pudo cargar tu perfil.'), 'sin red, un texto claro y no el error tecnico');
+    assert.ok(!ui.labels().some(t => /Network request failed|Load failed/.test(t)));
     const reintentar = ui.tree.root.findAllByType('CustomButton').find(node => node.props.title === 'Reintentar');
     assert.ok(reintentar);
     red = true;

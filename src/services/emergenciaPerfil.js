@@ -58,9 +58,9 @@ const ownerActual = async () => {
 };
 
 // Solo el perfil del usuario con sesión: el teléfono puede ser compartido.
-export const getPerfilGuardado = async () => {
+export const getPerfilGuardado = async (dueno) => {
   try {
-    const owner = await ownerActual();
+    const owner = dueno ?? await ownerActual();
     const raw = owner ? await AsyncStorage.getItem(cacheKey(owner)) : null;
     const guardado = raw ? JSON.parse(raw) : null;
     if (!guardado || guardado.owner_user_id !== owner) return null;
@@ -150,7 +150,7 @@ export const cargarPerfil = async () => {
       }
       if (Number(error?.status) === 401) throw error;
       if (!await sigueLaSesion()) throw errorObsoleto();
-      const guardado = await getPerfilGuardado();
+      const guardado = await getPerfilGuardado(owner);
       if (guardado) return { perfil: guardado, desdeCache: true, sinRed: !!error?.network && !error?.timeout };
       throw error;
     }

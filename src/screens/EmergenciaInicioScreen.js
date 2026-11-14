@@ -41,7 +41,9 @@ export default function EmergenciaInicioScreen({ onAbrir, recarga = 0, onCargand
     } catch (e) {
       // Pedido de una sesión anterior: la pantalla de la sesión nueva pide el suyo.
       if (!montado.current || e?.obsoleto) return;
-      setError(e?.message || 'No se pudo cargar tu perfil.');
+      setError(e?.network && !e?.timeout
+        ? 'Sin conexión: no se pudo cargar tu perfil.'
+        : (e?.message || 'No se pudo cargar tu perfil.'));
     } finally {
       if (montado.current) {
         setLoading(false);
@@ -99,7 +101,8 @@ export default function EmergenciaInicioScreen({ onAbrir, recarga = 0, onCargand
       ) : null}
 
       {loading && !perfil ? (
-        <View style={styles.centro}><ActivityIndicator size="large" color={theme.colors.primary} /></View>
+        <View style={styles.centro}><ActivityIndicator size="large" color={theme.colors.primary}
+          accessibilityLabel="Cargando tus accesos" /></View>
       ) : null}
 
       {accesos.map((acceso) => (
