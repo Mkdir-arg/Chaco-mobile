@@ -114,6 +114,7 @@ async function mountDetail(options = {}) {
     '../hooks/useAssignmentClock': {__esModule: true, default: () => new Date()},
     '../utils/dates': runtime.dates,
     '../utils/teclado': options.tecladoReal ? loadTeclado() : {keyboardDismissModeFor: () => 'on-drag'},
+    '../utils/dni': runtime.load('../utils/dni'),
     '../services/reloj': {ahoraCorregido: () => options.ahora || new Date()},
     '../services/documentPicker': {getDocumentAsync: options.getDocumentAsync || (async () => ({canceled: true}))},
     '../services/imagePicker': {}, '../services/ubicacion': {posicionActual: async () => { throw new Error('sin GPS en tests'); }},

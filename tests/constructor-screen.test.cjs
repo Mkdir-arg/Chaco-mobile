@@ -44,6 +44,7 @@ async function mount(items, options = {}) {
     '../hooks/useAssignmentClock': {__esModule: true, default: () => new Date()},
     '../utils/dates': runtime.dates,
     '../utils/teclado': {keyboardDismissModeFor: () => 'on-drag'},
+    '../utils/dni': runtime.load('../utils/dni'),
     '@expo/vector-icons': {Ionicons: 'Ionicons'},
     '@react-native-community/netinfo': {__esModule: true, default: {fetch: async () => ({isConnected: true, isInternetReachable: true})}},
     '@react-native-community/datetimepicker': {__esModule: true, default: 'DateTimePicker', DateTimePickerAndroid: {open() {}}},

@@ -279,39 +279,90 @@ const fetchConRedMarcada = async (url, init) => {
   }
 };
 
-// Sube un archivo real (multipart) a un endpoint de la API de Becas — a diferencia
-// de becasRequest, no serializa el body a JSON: FormData con {uri, name, type}
-// es el formato que espera fetch de React Native para adjuntar un archivo local.
-export const becasUploadFile = async (path, { fileUri, fileField = 'archivo', fileName, mimeType = 'image/jpeg', fields = {} } = {}) => {
-  const token = await getBecasToken();
-  const formData = new FormData();
-  Object.entries(fields).forEach(([key, value]) => {
-    if (value !== null && value !== undefined) formData.append(key, String(value));
-  });
-  const name = fileName || 'archivo.jpg';
-  if (Platform.OS === 'web') {
-    formData.append(fileField, await readWebBlob(fileUri), name);
-  } else {
-    formData.append(fileField, { uri: fileUri, name, type: mimeType });
-  }
+const errorPorTiempo = () => Object.assign(
+  new Error('El servidor tardó demasiado en responder.'), { network: true, timeout: true });
 
-  const response = await fetchConRedMarcada(buildUrl(path), {
-    method: 'POST',
-    credentials: CREDENCIALES,
-    headers: {
-      Accept: 'application/json',
-      ...(token ? { Authorization: `Token ${token}` } : {}),
-    },
-    body: formData,
+// Hace el pedido y lee la respuesta; con `timeoutMs`, aborta el fetch a ese tiempo y sale con un
+// error `network` + `timeout`. La carrera libera al que espera aunque el fetch no respete la
+// señal. Sin `timeoutMs` no hay límite (lo de siempre).
+const pedirYLeer = async (url, init, timeoutMs) => {
+  const leer = async (signal) => {
+    const response = await fetchConRedMarcada(url, signal ? { ...init, signal } : init);
+    registrarHoraServidor(response.headers?.get?.('Date'));
+    return { response, payload: await parseResponse(response) };
+  };
+  if (!(Number(timeoutMs) > 0)) return leer(init.signal);
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  let timer;
+  const limite = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      controller?.abort();
+      reject(errorPorTiempo());
+    }, Number(timeoutMs));
   });
-  registrarHoraServidor(response.headers?.get?.('Date'));
-  const payload = await parseResponse(response);
+  const pedido = leer(controller?.signal ?? init.signal)
+    .catch((error) => { throw controller?.signal.aborted ? errorPorTiempo() : error; });
+  return Promise.race([pedido, limite]).finally(() => clearTimeout(timer));
+};
+
+const responderOFallar = async ({ response, payload }, token) => {
   if (!response.ok) {
     if (response.status === 401) await invalidateRejectedSession(token);
     throw buildResponseError(response, payload, `Error HTTP ${response.status}`, token);
   }
   return payload;
 };
+
+// Los campos van como texto: un booleano sale `true`/`false`, y null/undefined no se mandan.
+const agregarCampos = (formData, fields) => {
+  Object.entries(fields || {}).forEach(([key, value]) => {
+    if (value !== null && value !== undefined) formData.append(key, String(value));
+  });
+};
+
+// En web, `webData` (Blob/File) evita leer la URI; si no viene, se lee sin fetch (webAttachments).
+// En nativo, FormData con {uri, name, type} es lo que espera el fetch de React Native.
+const agregarArchivo = async (formData, { campo, uri, nombre, tipo = 'image/jpeg', webData }) => {
+  if (Platform.OS === 'web') {
+    formData.append(campo, webData || await readWebBlob(uri), nombre);
+  } else {
+    formData.append(campo, { uri, name: nombre, type: tipo });
+  }
+};
+
+// Un multipart con campos y varios archivos, con el mismo manejo de sesión y errores que
+// becasRequest (401 invalida la sesión; el error trae status, payload, retryAfter, network,
+// unexpectedHtml y requestToken). Cada archivo: { campo, uri, nombre, tipo, webData? }; una
+// entrada null se saltea (fotos opcionales). `timeoutMs` es opcional y por defecto no hay límite.
+export const uploadMultipart = async (path, { method = 'POST', fields = {}, files = [], timeoutMs = null } = {}) => {
+  const token = await getBecasToken();
+  const formData = new FormData();
+  agregarCampos(formData, fields);
+  for (const archivo of files || []) {
+    if (archivo) await agregarArchivo(formData, archivo);
+  }
+  const leido = await pedirYLeer(buildUrl(path), {
+    method,
+    credentials: CREDENCIALES,
+    // Sin Content-Type: el boundary lo pone fetch.
+    headers: {
+      Accept: 'application/json',
+      ...(token ? { Authorization: `Token ${token}` } : {}),
+    },
+    body: formData,
+  }, timeoutMs);
+  return responderOFallar(leido, token);
+};
+
+// Sube un archivo real (multipart) a un endpoint de la API de Becas — a diferencia
+// de becasRequest, no serializa el body a JSON. Es un uploadMultipart de un solo archivo.
+// async: con argumentos inválidos (p. ej. null) rechaza en vez de tirar sincrónico.
+export const becasUploadFile = async (path, { fileUri, fileField = 'archivo', fileName, mimeType = 'image/jpeg', fields = {} } = {}) => (
+  uploadMultipart(path, {
+    fields,
+    files: [{ campo: fileField, uri: fileUri, nombre: fileName || 'archivo.jpg', tipo: mimeType }],
+  })
+);
 
 export const becasRequest = async (path, options = {}) => {
   const token = await getBecasToken();
@@ -331,10 +382,5 @@ export const becasRequest = async (path, options = {}) => {
       : options.body,
   });
   registrarHoraServidor(response.headers?.get?.('Date'));
-  const payload = await parseResponse(response);
-  if (!response.ok) {
-    if (response.status === 401) await invalidateRejectedSession(token);
-    throw buildResponseError(response, payload, `Error HTTP ${response.status}`, token);
-  }
-  return payload;
+  return responderOFallar({ response, payload: await parseResponse(response) }, token);
 };

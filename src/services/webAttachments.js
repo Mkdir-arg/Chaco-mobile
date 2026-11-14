@@ -14,6 +14,10 @@ export const rememberWebFile = (asset) => {
   return asset;
 };
 
+export const forgetWebFile = (uri) => {
+  archivosElegidos.delete(uri);
+};
+
 const dataUriToBlob = (uri) => {
   const coma = uri.indexOf(',');
   const cabecera = uri.slice(5, coma);

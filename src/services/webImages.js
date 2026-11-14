@@ -15,6 +15,37 @@ export const nombreJpg = (nombre) => `${String(nombre || '').replace(/\.[^.]*$/,
 
 export const esHeic = (file) => /heic|heif/i.test(String(file?.type || '')) || /[.](heic|heif)$/i.test(String(file?.name || ''));
 
+// Dibuja la imagen decodificada en un canvas de ancho x alto y la codifica como JPEG. Con
+// `fondo`, pinta antes ese color: un PNG con transparencia sale negro en JPEG si no.
+// null si el navegador no pudo codificarla.
+export const dibujarJpeg = async (bitmap, ancho, alto, calidad, { fondo = null } = {}) => {
+  const canvas = document.createElement('canvas');
+  canvas.width = ancho;
+  canvas.height = alto;
+  const contexto = canvas.getContext('2d');
+  if (fondo) {
+    contexto.fillStyle = fondo;
+    contexto.fillRect(0, 0, ancho, alto);
+  }
+  contexto.drawImage(bitmap, 0, 0, ancho, alto);
+  // Achicar el canvas a 0 suelta su memoria ya, sin esperar al recolector: aJpeg prueba varios.
+  return new Promise((resolve) => canvas.toBlob((blob) => {
+    canvas.width = 0;
+    canvas.height = 0;
+    resolve(blob);
+  }, 'image/jpeg', calidad));
+};
+
+// JPEG de verdad: los tres primeros bytes son FF D8 FF, diga lo que diga la extensión.
+export const esJpegReal = async (blob) => {
+  try {
+    const bytes = new Uint8Array(await blob.slice(0, 3).arrayBuffer());
+    return bytes.length === 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  } catch {
+    return false;
+  }
+};
+
 // null cuando no conviene tocarla: no es imagen, ya es chica (salvo HEIC), el navegador no la sabe
 // decodificar (HEIC en Chrome) o el resultado no pesa menos que el original.
 export const comprimirImagen = async (file) => {
@@ -30,11 +61,7 @@ export const comprimirImagen = async (file) => {
   }
   try {
     const { ancho, alto } = medidasReducidas(bitmap.width, bitmap.height);
-    const canvas = document.createElement('canvas');
-    canvas.width = ancho;
-    canvas.height = alto;
-    canvas.getContext('2d').drawImage(bitmap, 0, 0, ancho, alto);
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', CALIDAD));
+    const blob = await dibujarJpeg(bitmap, ancho, alto, CALIDAD);
     if (!blob || (!heic && blob.size >= file.size)) return null;
     const reducida = new File([blob], nombreJpg(file.name), { type: 'image/jpeg', lastModified: file.lastModified });
     return { file: reducida, ancho, alto };

@@ -37,6 +37,7 @@ versiones disponibles. Cambiar a PWA no implica reemplazar React Native o Expo.
 | Async Storage | Sesión web y preferencias; en web utiliza almacenamiento del navegador |
 | NetInfo | Cambios de conectividad |
 | ZXing | Lectura web QR/PDF417 incluida en el bundle, sin CDN |
+| expo-image-manipulator | Conversión a JPEG de las fotos de Emergencia en nativo (en web, canvas) |
 | Playwright | Pruebas en Chromium de persistencia y recuperación offline |
 
 El código conserva soporte nativo Android/iOS. Secure Store, plugins nativos y EAS
@@ -185,6 +186,29 @@ se conecta directamente a esas integraciones externas.
 | `GET /api/emergencia/perfil/` | Accesos del módulo Emergencia |
 
 Los adjuntos se envían como multipart; los demás cuerpos normalmente como JSON.
+
+Para Emergencia, `src/services/emergenciaApi.js` arma los pedidos de
+`/api/emergencia/` (localidades, consulta de identidad, envío de familias, mis envíos,
+mis dispositivos y recepción de kits) con los nombres de campos del contrato
+`docs/internal/contrato-app-emergencia.md` de Chaco-Back. Los envíos con fotos van en
+un solo multipart (`uploadMultipart`, varios archivos). Emergencia acepta **solo
+JPEG** de hasta 5 MB: `src/utils/jpeg.js` (`aJpeg`) convierte cualquier foto a JPEG de
+hasta 3 MB, con canvas en web y `expo-image-manipulator` en nativo. Becas y
+Dispositivos no cambian.
+
+- En web, el JPEG que arma `aJpeg` vive en una `blob:` URL que retiene los bytes. La
+  pantalla que lo use tiene que llamar a `liberarJpeg(asset)` cuando descarta la foto o
+  cuando ya la envió o la guardó (después, esa uri deja de poder leerse). Con el asset
+  original del selector o uno de nativo no hace nada.
+- `enviarCaso` normaliza `relevado_en` (`Date` → ISO 8601 con el offset del teléfono; un
+  texto pasa tal cual) y `fecha_nacimiento` (`DD/MM/AAAA`, `AAAA-MM-DD` o `Date` →
+  `AAAA-MM-DD`). Una fecha inválida rechaza con `code: 'FECHA_INVALIDA'` y `campo`, sin
+  mandar nada.
+
+> **Despliegue:** `expo-image-manipulator` es un módulo nativo. El día que una pantalla
+> importe `src/utils/jpeg.js`, Android/iOS necesitan **un build nuevo** (EAS, ver
+> «Compilación nativa opcional»): la app no tiene `expo-updates`, y un instalador viejo
+> no trae el módulo. En la PWA (web) no aplica: usa canvas y sale con `npm run build:web`.
 
 ## Desarrollo local
 
