@@ -45,7 +45,16 @@ test('enviarCaso: multipart a /casos/ con las claves exactas de §6, en orden y 
   assert.equal(calls[0].url, '/api/emergencia/casos/');
   assert.equal(calls[0].method, 'POST');
   const enviados = campos(calls[0]);
-  assert.deepEqual(enviados.map(([n]) => n), [...e.CAMPOS_CASO, 'foto_vivienda', 'foto_acceso']);
+  // La tabla del §6, escrita acá a mano: no se compara contra la constante del código.
+  assert.deepEqual(enviados.map(([n]) => n), [
+    'uuid_cliente', 'relevado_en', 'traslado', 'traslado_otro', 'dni', 'nombre', 'apellido',
+    'fecha_nacimiento', 'telefono', 'documento_extraviado',
+    'menores_f', 'menores_m', 'adultos_f', 'adultos_m', 'mayores_f', 'mayores_m',
+    'dependientes', 'mayores_dependientes', 'lactantes',
+    'embarazo', 'electrodependiente', 'medicacion_critica', 'mascotas',
+    'direccion', 'localidad', 'latitud', 'longitud', 'precision_m', 'observaciones',
+    'foto_vivienda', 'foto_acceso',
+  ]);
   const valor = Object.fromEntries(enviados.map(([n, v]) => [n, v]));
   assert.equal(valor.embarazo, 'true'); assert.equal(valor.electrodependiente, 'false');
   assert.equal(valor.documento_extraviado, 'false'); assert.equal(valor.menores_m, '0');

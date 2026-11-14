@@ -59,7 +59,7 @@ test('web: un PNG chico pasa a JPEG real, con fondo, nombre .jpg y legible sin f
 test('web: una foto grande baja calidad y lado en pasos hasta entrar en el tope', async () => {
   const r = await setup('web');
   const registro = navegador(r, {ancho: 4000, alto: 3000, factor: 3});
-  const {aJpeg, CALIDADES} = r.load('../utils/jpeg');
+  const {aJpeg} = r.load('../utils/jpeg');
   const grande = archivo(JPEG, 9 * MB, 'IMG_0001.JPG', 'image/jpeg');
   const asset = await aJpeg({uri: 'blob:https://app.test/g', file: grande, fileName: 'IMG_0001.JPG'});
   assert.ok(asset.fileSize <= 3 * MB, `pesa ${asset.fileSize}`);
@@ -68,7 +68,7 @@ test('web: una foto grande baja calidad y lado en pasos hasta entrar en el tope'
   assert.ok(pasos.length > 1);
   assert.ok(pasos.every(({ancho, alto}) => Math.max(ancho, alto) <= 2048));
   // Primero todas las calidades al lado máximo, después un lado menor.
-  assert.deepEqual(JSON.parse(JSON.stringify(pasos.slice(0, CALIDADES.length).map(({ancho, calidad}) => [ancho, calidad]))), [...CALIDADES].map((c) => [2048, c]));
+  assert.deepEqual(JSON.parse(JSON.stringify(pasos.slice(0, 4).map(({ancho, calidad}) => [ancho, calidad]))), [[2048, 0.85], [2048, 0.7], [2048, 0.55], [2048, 0.4]]);
   assert.ok(pasos.at(-1).ancho < 2048);
   assert.equal(asset.width, pasos.at(-1).ancho);
 });
@@ -188,6 +188,17 @@ test('nativo: un JPEG real que ya entra no pasa por el manipulador', async () =>
   assert.equal(asset.uri, 'file:///original');
   assert.equal(asset.fileSize, MB);
   assert.equal(registro.manipulados.length, 0);
+});
+
+test('nativo: un PNG chico (aunque se llame .jpg) pasa igual por el manipulador', async () => {
+  const {registro, mocks} = nativo({inicio: 'iVBO', tamanoOriginal: 100 * 1024, ancho: 800, alto: 600});
+  const r = await setup('android', {mocks});
+  const {aJpeg} = r.load('../utils/jpeg');
+  const asset = await aJpeg({uri: 'file:///original', fileName: 'captura.jpg'});
+  assert.equal(registro.manipulados.length, 1);
+  assert.equal(registro.guardados[0].format, 'jpeg');
+  assert.ok(asset.uri.startsWith('file:///cache/'));
+  assert.equal(asset.fileName, 'captura.jpg');
 });
 
 test('nativo: un JPEG que pasa el tope se recomprime', async () => {
