@@ -8,7 +8,7 @@ import {
   setModuloActivo as guardarModuloActivo,
   subscribeBecasSessionExpired,
 } from '../services/becasApi';
-import { subscribeSinModulo } from '../services/dispositivosService';
+import { subscribeSinModulo } from '../services/sinModulo';
 import { moduloInicial } from '../services/modulos';
 
 const AuthContext = createContext({});

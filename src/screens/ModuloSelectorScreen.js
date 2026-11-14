@@ -7,7 +7,7 @@ import { useTheme } from '../context/ThemeContext';
 import { NOMBRE_MODULO } from '../services/modulos';
 import { designColors, fontSizes, radii } from '../theme';
 
-const ICONO_MODULO = { becas: 'school-outline', dispositivos: 'business-outline' };
+const ICONO_MODULO = { becas: 'school-outline', dispositivos: 'business-outline', emergencia: 'medkit-outline' };
 
 // Solo la ve quien tiene más de un módulo: con uno se entra directo.
 export default function ModuloSelectorScreen() {

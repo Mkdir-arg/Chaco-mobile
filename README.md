@@ -142,8 +142,25 @@ ese hostname.
 ### Sesión, permisos y operaciones
 
 La app inicia sesión mediante `POST /api/becas/auth/token/`. Django exige un usuario
-activo con capacidad `becas.campo` y responde con `token`, `user_id` y `username`.
-Las siguientes solicitudes incluyen `Authorization: Token <token>`.
+activo que entre a algún módulo de la app y responde con `token`, `user_id`,
+`username` y `modulos`. Las siguientes solicitudes incluyen
+`Authorization: Token <token>`.
+
+`modulos` dice a qué módulos entra el usuario, siempre en este orden:
+
+| Módulo | Qué hace | Quién entra |
+|---|---|---|
+| `becas` | Relevamientos de Becas | Territorial con `becas.campo` |
+| `dispositivos` | Relevamiento edilicio de Dispositivos | Agente con `inspeccion.relevar` en el programa Dispositivos |
+| `emergencia` | Relevar familias, llegada de familias y recepción de kits | Agente territorial (`emergencia.relevar`), guardia de un dispositivo o administrador del programa Dispositivos |
+
+Con un solo módulo se entra directo; con varios, la app muestra un selector y se
+puede cambiar desde el menú. Un 403 `SIN_MODULO` saca el módulo de la sesión local.
+En Emergencia ese código también significa que falta un permiso parcial, así que
+antes se vuelve a pedir `GET /api/emergencia/perfil/`: el módulo se saca solo si el
+perfil también responde 403 `SIN_MODULO`. El perfil se guarda en el teléfono para
+arrancar sin red.
+
 La sesión de la PWA se guarda mediante Async Storage; la distribución nativa usa
 Secure Store con fallback a Async Storage. No se debe dar por compartida la sesión
 del backoffice con la app.
@@ -165,6 +182,7 @@ se conecta directamente a esas integraciones externas.
 | `GET/PATCH /api/becas/formularios/{id}/` | Consultar o editar formulario |
 | `GET/POST /api/becas/formularios/{id}/adjuntos/` | Adjuntos |
 | `POST /api/becas/personas/consultar/` | Consulta de identidad |
+| `GET /api/emergencia/perfil/` | Accesos del módulo Emergencia |
 
 Los adjuntos se envían como multipart; los demás cuerpos normalmente como JSON.
 

@@ -6,6 +6,7 @@ import { Platform } from 'react-native';
 import { becasRequest, becasUploadFile, getBecasToken, getStoredBecasUser } from './becasApi';
 import { validateAttachmentMetadata } from './formularioSync';
 import { openSqliteSerialized, serializeSqliteAccess } from './sqliteAccess';
+import { esSinModulo, notificarSinModulo as avisarSinModulo, subscribeSinModulo } from './sinModulo';
 import { persistWebAttachment } from './webAttachments';
 
 // Módulo Relevamiento de Dispositivos: caché de inspecciones y cola de envíos offline.
@@ -41,21 +42,9 @@ const ERROR_ARCHIVO_LOCAL_FALTANTE = 'ARCHIVO_LOCAL_FALTANTE';
 let syncInFlightPromise = null;
 let sqliteDbPromise = null;
 let sqliteInitPromise = null;
-const sinModuloListeners = new Set();
-
-// El listener recibe el nombre del módulo que el back dejó de admitir y el token con el que
-// se hizo el pedido rechazado.
-export const subscribeSinModulo = (listener) => {
-  sinModuloListeners.add(listener);
-  return () => sinModuloListeners.delete(listener);
-};
-const notificarSinModulo = (error) => sinModuloListeners.forEach((listener) => {
-  try {
-    listener(MODULO, error?.requestToken ?? null);
-  } catch (error) {
-    console.warn('[DISPOSITIVOS][SIN_MODULO][LISTENER]', error?.message);
-  }
-});
+// La señal es común (sinModulo.js); se reexporta para quien la escuchaba desde acá.
+export { subscribeSinModulo };
+const notificarSinModulo = (error) => avisarSinModulo(MODULO, error?.requestToken ?? null);
 
 const nowIso = () => new Date().toISOString();
 const createUuid = () => String(Crypto.randomUUID()).toLowerCase();
@@ -353,9 +342,6 @@ const esFallaTransitoria = (error) => {
     || status >= 500 || status === 408 || status === 429
     || (status === 403 && !error?.payload?.code);
 };
-
-const esSinModulo = (error) => Number(error?.status) === 403 && error?.payload?.code === 'SIN_MODULO'
-  && !error?.unexpectedHtml;
 
 const traerDetalle = async (ownerId, id) => {
   const detalle = await becasRequest(rutaInspeccion(id));
