@@ -17,15 +17,17 @@ export default function EmergenciaApp({ onCambiarModulo }) {
   const displayName = user?.nombre || user?.username || 'Usuario';
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [recarga, setRecarga] = useState(0);
+  const [cargando, setCargando] = useState(false);
 
   const abrir = (acceso) => showAlert('Próximamente',
     `«${acceso.titulo}» va a estar disponible en una próxima versión de la app.`, [{ text: 'Entendido' }]);
 
   return (
     <>
-      <Banner title={`Hola, ${displayName}`} onSyncPress={() => setRecarga((valor) => valor + 1)} />
+      <Banner title={`Hola, ${displayName}`} syncStatus={cargando ? 'syncing' : 'synced'}
+        onSyncPress={() => setRecarga((valor) => valor + 1)} />
       <View style={{ flex: 1, backgroundColor: theme.colors.background }}>
-        <EmergenciaInicioScreen onAbrir={abrir} recarga={recarga} />
+        <EmergenciaInicioScreen onAbrir={abrir} recarga={recarga} onCargando={setCargando} />
       </View>
       <View style={styles.barra}>
         <CustomButton title="Menú" variant="secondary" iconLeft="menu" onPress={() => setSettingsVisible(true)} />

@@ -4,15 +4,16 @@
 // ahí el mismo código significa además «te falta un permiso parcial».
 const listeners = new Set();
 
-// El listener recibe el nombre del módulo y el token con el que se hizo el pedido rechazado.
+// El listener recibe el nombre del módulo, el token con el que se hizo el pedido rechazado y el
+// `detail` del back (contrato §2), para mostrarlo si la persona se queda sin módulos.
 export const subscribeSinModulo = (listener) => {
   listeners.add(listener);
   return () => listeners.delete(listener);
 };
 
-export const notificarSinModulo = (modulo, tokenDelPedido) => listeners.forEach((listener) => {
+export const notificarSinModulo = (modulo, tokenDelPedido, detalle) => listeners.forEach((listener) => {
   try {
-    listener(modulo, tokenDelPedido ?? null);
+    listener(modulo, tokenDelPedido ?? null, typeof detalle === 'string' && detalle.trim() ? detalle.trim() : null);
   } catch (error) {
     console.warn('[SIN_MODULO][LISTENER]', modulo, error?.message);
   }

@@ -198,6 +198,132 @@ test('Dispositivos sigue sacando su modulo ante su SIN_MODULO, por la señal com
   assert.deepEqual(await modulosGuardados(r), ['emergencia']);
 });
 
+// Una respuesta que se puede soltar cuando el test quiera.
+const diferida = () => {
+  let soltar;
+  const promesa = new Promise((resolve) => { soltar = resolve; });
+  return {promesa, soltar};
+};
+const pedidoDe = (init) => String(init?.headers?.Authorization || '').replace('Token ', '');
+// Lo que dice el AsyncStorage del runtime sobre el caché del perfil, por clave.
+const cachePerfil = (r) => Object.fromEntries([...r.legacy.entries()]
+  .filter(([clave]) => clave.startsWith('emergencia_perfil')).map(([clave, valor]) => [clave, JSON.parse(valor)]));
+
+test('M1: el perfil de A colgado no queda a nombre de B que entra despues en el mismo telefono', async () => {
+  const {r, e} = await preparar(['emergencia']);
+  const deA = diferida();
+  const pedidos = [];
+  r.setFetch(async (url, init = {}) => {
+    const ruta = String(url).replace('https://example.test', '');
+    if (ruta === PERFIL) {
+      pedidos.push(pedidoDe(init));
+      return pedidoDe(init) === 'tok' ? deA.promesa : response(200, {relevar: false, dispositivo: true});
+    }
+    return response(200, {token: 'otro', user_id: 9, username: 'otra', modulos: ['emergencia']});
+  });
+  const avisados = [];
+  e.subscribePerfil((perfil) => avisados.push(claves(e, perfil)));
+
+  const deAgenteA = e.cargarPerfil();
+  deAgenteA.catch(() => {});
+  await esperar(); await esperar();
+  assert.deepEqual(pedidos, ['tok'], 'A pidio su perfil y quedo colgado');
+  await r.api.clearBecasSession();
+  await r.api.loginBecas({username: 'otra', password: 'x'});
+
+  const deAgenteB = e.cargarPerfil();
+  deA.soltar(response(200, {relevar: true, dispositivo: false}));
+  const {perfil, desdeCache} = await deAgenteB;
+  assert.deepEqual(pedidos, ['tok', 'otro'], 'B no comparte el pedido de A');
+  assert.equal(desdeCache, false);
+  assert.deepEqual(claves(e, perfil), ['llegadas', 'kits']);
+  await assert.rejects(deAgenteA, (error) => error.obsoleto === true);
+  await esperar();
+  assert.deepEqual(avisados, [['llegadas', 'kits']], 'a B nunca se le avisa el perfil de A');
+  assert.deepEqual(claves(e, await e.getPerfilGuardado()), ['llegadas', 'kits']);
+  assert.deepEqual(Object.keys(cachePerfil(r)), ['emergencia_perfil:9']);
+});
+
+test('M1: si la respuesta de A llega con B ya adentro, no se guarda para B', async () => {
+  const {r, e} = await preparar(['emergencia']);
+  const deA = diferida();
+  r.setFetch(async (url, init = {}) => (String(url).endsWith(PERFIL) ? deA.promesa
+    : response(200, {token: 'otro', user_id: 9, username: 'otra', modulos: ['emergencia']})));
+  const avisados = [];
+  e.subscribePerfil((perfil) => avisados.push(claves(e, perfil)));
+  const deAgenteA = e.cargarPerfil();
+  deAgenteA.catch(() => {});
+  await esperar(); await esperar();
+  await r.api.clearBecasSession();
+  await r.api.loginBecas({username: 'otra', password: 'x'});
+  deA.soltar(response(200, {relevar: true, dispositivo: false}));
+  await assert.rejects(deAgenteA, (error) => error.obsoleto === true);
+  assert.deepEqual(avisados, []);
+  assert.equal(await e.getPerfilGuardado(), null);
+  assert.deepEqual(cachePerfil(r), {});
+});
+
+test('el perfil se guarda por usuario y la clave vieja sin usuario no se lee y se borra', async () => {
+  const {r, e} = await preparar();
+  r.legacy.set('emergencia_perfil', JSON.stringify({owner_user_id: '7', perfil: {relevar: true}}));
+  assert.equal(await e.getPerfilGuardado(), null, 'la clave vieja no se lee');
+  router(r, async () => response(200, {relevar: false, dispositivo: true}));
+  await e.cargarPerfil();
+  assert.deepEqual(Object.keys(cachePerfil(r)), ['emergencia_perfil:7']);
+  assert.equal(cachePerfil(r)['emergencia_perfil:7'].owner_user_id, '7');
+  await e.olvidarPerfilGuardado(7);
+  assert.deepEqual(cachePerfil(r), {});
+});
+
+test('m1: un pedido de perfil colgado se corta por tiempo, usa lo guardado y libera el siguiente', {timeout: 5000}, async () => {
+  const {r, e} = await preparar();
+  const original = e.LIMITES.perfilMs;
+  e.LIMITES.perfilMs = 30;
+  try {
+    const senales = [];
+    // Un fetch que no contesta nunca ni respeta la señal: el corte no depende del fetch.
+    let colgar = true;
+    const calls = [];
+    r.setFetch(async (url, init = {}) => {
+      calls.push(String(url));
+      senales.push(init.signal);
+      return colgar ? new Promise(() => {}) : response(200, {relevar: true, dispositivo: false});
+    });
+    await assert.rejects(e.cargarPerfil(), (error) => error.timeout === true && error.network === true);
+    assert.equal(senales[0]?.aborted, true, 'se aborta el fetch');
+    colgar = false;
+    await e.cargarPerfil();
+    assert.equal(calls.length, 2, 'el reintento vuelve a la red');
+    colgar = true;
+    const {perfil, desdeCache, sinRed} = await e.cargarPerfil();
+    assert.equal(desdeCache, true);
+    assert.equal(sinRed, false, 'tiempo agotado no es «sin conexión»');
+    assert.deepEqual(claves(e, perfil), ['relevar']);
+  } finally { e.LIMITES.perfilMs = original; }
+});
+
+test('m4: lo guardado sale marcado sinRed solo cuando fallo la red', async () => {
+  const {r, e} = await preparar();
+  router(r, async () => response(200, {relevar: true, dispositivo: false}));
+  await e.cargarPerfil();
+  router(r, async () => { throw new TypeError('Load failed'); });
+  assert.equal((await e.cargarPerfil()).sinRed, true);
+  router(r, async () => response(503, {detail: 'caido'}));
+  assert.equal((await e.cargarPerfil()).sinRed, false);
+});
+
+test('m5: la señal SIN_MODULO lleva el detail del back, de Emergencia y de Dispositivos', async () => {
+  const {r, e, sin} = await preparar(['dispositivos', 'emergencia']);
+  const detalles = [];
+  sin.subscribeSinModulo((modulo, token, detalle) => detalles.push([modulo, detalle]));
+  router(r, async () => response(403, SIN_MODULO));
+  await assert.rejects(e.cargarPerfil());
+  const d = r.load('./dispositivosService');
+  router(r, async () => response(403, {detail: 'Sin acceso a Dispositivos.', code: 'SIN_MODULO'}));
+  await d.getInspecciones({refreshFromRemote: true}).catch(() => {});
+  assert.deepEqual(detalles, [['emergencia', SIN_MODULO.detail], ['dispositivos', 'Sin acceso a Dispositivos.']]);
+});
+
 // ---- AuthContext con la señal común (el componente real, con becasApi del runtime) ----
 
 function loadModule(relative, mocks) {
@@ -217,6 +343,7 @@ async function montarAuth(modulos) {
   await r.api.setModuloActivo('emergencia');
   const auth = loadModule('src/context/AuthContext.js', {
     react: React, '../services/becasApi': r.api, '../services/sinModulo': sin, '../services/modulos': r.modulos,
+    '../services/emergenciaPerfil': e,
   });
   let actual;
   const Espia = () => { actual = auth.useAuth(); return null; };
@@ -256,5 +383,41 @@ test('AuthContext: Dispositivos sigue saliendo de la sesion ante su SIN_MODULO',
     });
     assert.equal(ui.auth().isAuthenticated, false);
     assert.equal(await ui.r.api.getBecasToken(), null);
+  } finally { await ui.close(); }
+});
+
+test('m5: AuthContext: si Emergencia era el unico modulo, el detail del perfil 403 queda para el login', async () => {
+  const ui = await montarAuth(['emergencia']);
+  try {
+    router(ui.r, async () => response(403, SIN_MODULO));
+    await renderer.act(async () => { await ui.e.cargarPerfil().catch(() => {}); await esperar(); await esperar(); });
+    assert.equal(ui.auth().isAuthenticated, false);
+    assert.equal(ui.auth().avisoSesion, SIN_MODULO.detail);
+    await renderer.act(async () => { ui.auth().limpiarAvisoSesion(); });
+    assert.equal(ui.auth().avisoSesion, null);
+  } finally { await ui.close(); }
+});
+
+test('m5: AuthContext: con otro modulo, sacar Emergencia no deja aviso de sesion', async () => {
+  const ui = await montarAuth(['becas', 'emergencia']);
+  try {
+    router(ui.r, async () => response(403, SIN_MODULO));
+    await renderer.act(async () => { await ui.e.cargarPerfil().catch(() => {}); await esperar(); await esperar(); });
+    assert.equal(ui.auth().isAuthenticated, true);
+    assert.equal(ui.auth().avisoSesion, null);
+  } finally { await ui.close(); }
+});
+
+test('m3: AuthContext: el logout borra el perfil guardado de ese usuario', async () => {
+  const ui = await montarAuth(['becas', 'emergencia']);
+  try {
+    ui.r.legacy.set('emergencia_perfil:9', JSON.stringify({owner_user_id: '9', perfil: {relevar: true}}));
+    router(ui.r, async () => response(200, {relevar: true, dispositivo: false}));
+    await ui.e.cargarPerfil();
+    assert.ok(ui.r.legacy.has('emergencia_perfil:7'));
+    await renderer.act(async () => { await ui.auth().logout(); });
+    assert.equal(ui.auth().isAuthenticated, false);
+    assert.equal(ui.r.legacy.has('emergencia_perfil:7'), false);
+    assert.equal(ui.r.legacy.has('emergencia_perfil:9'), true, 'el de otro usuario no se toca');
   } finally { await ui.close(); }
 });

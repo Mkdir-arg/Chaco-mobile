@@ -44,7 +44,7 @@ let sqliteDbPromise = null;
 let sqliteInitPromise = null;
 // La señal es común (sinModulo.js); se reexporta para quien la escuchaba desde acá.
 export { subscribeSinModulo };
-const notificarSinModulo = (error) => avisarSinModulo(MODULO, error?.requestToken ?? null);
+const notificarSinModulo = (error) => avisarSinModulo(MODULO, error?.requestToken ?? null, error?.payload?.detail);
 
 const nowIso = () => new Date().toISOString();
 const createUuid = () => String(Crypto.randomUUID()).toLowerCase();
