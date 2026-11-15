@@ -35,7 +35,7 @@ function loadScreen(relative, mocks) {
     filename, babelrc: false, configFile: false,
     plugins: ['@babel/plugin-transform-react-jsx', '@babel/plugin-transform-modules-commonjs']});
   const module = {exports: {}};
-  const context = vm.createContext({console, setTimeout, clearTimeout, Date});
+  const context = vm.createContext({console, setTimeout, clearTimeout, setInterval: () => 0, clearInterval() {}, Date});
   vm.runInContext('(function(require,module,exports){' + code + '\n})', context)(
     name => { assert.ok(mocks[name], 'Missing screen mock: ' + name); return mocks[name]; }, module, module.exports);
   return module.exports.default;
@@ -207,6 +207,12 @@ test('m2: EmergenciaApp pasa «syncing» al Banner mientras carga el perfil', as
     '../components/CustomButton': {__esModule: true, default: 'CustomButton'},
     '../components/SettingsPanel': {__esModule: true, default: 'SettingsPanel'},
     '../screens/EmergenciaInicioScreen': {__esModule: true, default: props => { onCargando = props.onCargando; return null; }},
+    '../screens/EmergenciaMisEnviosScreen': {__esModule: true, default: () => null},
+    '../screens/EmergenciaFormulario1Screen': {__esModule: true, default: () => null},
+    '@react-native-community/netinfo': {__esModule: true, default: {addEventListener: () => () => {}}},
+    '../services/emergenciaCola': {syncPendientes: async () => ({}), getPendingCount: async () => 0,
+      reintentar: async () => ({}), getLocalidadesGuardadas: async () => ({localidades: []})},
+    '../utils/emergencia': {avisoDeSalida: () => null},
   });
   let tree;
   await renderer.act(async () => { tree = renderer.create(React.createElement(App)); });

@@ -334,8 +334,10 @@ const agregarArchivo = async (formData, { campo, uri, nombre, tipo = 'image/jpeg
 // becasRequest (401 invalida la sesión; el error trae status, payload, retryAfter, network,
 // unexpectedHtml y requestToken). Cada archivo: { campo, uri, nombre, tipo, webData? }; una
 // entrada null se saltea (fotos opcionales). `timeoutMs` es opcional y por defecto no hay límite.
-export const uploadMultipart = async (path, { method = 'POST', fields = {}, files = [], timeoutMs = null } = {}) => {
-  const token = await getBecasToken();
+// `token`, si viene, es el de la sesión con la que se armó el pedido (una cola que no debe mandar lo
+// de un usuario con la sesión de otro): se usa ese y no se relee; el 401 invalida solo si coincide.
+export const uploadMultipart = async (path, { method = 'POST', fields = {}, files = [], timeoutMs = null, token: tokenDelPedido = null } = {}) => {
+  const token = tokenDelPedido ?? await getBecasToken();
   const formData = new FormData();
   agregarCampos(formData, fields);
   for (const archivo of files || []) {
