@@ -314,9 +314,9 @@ test('Ficha (confirmar): un corte deja «Reintentar confirmar» con el MISMO uui
     await segunda.pressButton('Reintentar confirmar');
     const [a, b] = confirmaciones(env.calls);
     assert.equal(b.body.uuid_cliente, a.body.uuid_cliente);
-    // El primero había llegado con la A-01 (otra guardia no; el servidor dice la A-01): se avisa.
+    // El servidor dice la A-01, no la elegida: se avisa sin afirmar quién la eligió.
     assert.deepEqual(env.alerts.at(-1).slice(0, 2), ['La persona ya estaba confirmada',
-      'Un envío anterior ya la había confirmado en la cama A-01 (Pabellón A), no en la que elegiste ahora. Quedó así; la cama se cambia desde el mapa del backoffice.']);
+      'Quedó confirmada en la cama A-01 (Pabellón A); los datos quedaron como en el primer envío. La cama se cambia desde el mapa del backoffice.']);
     assert.equal(segunda.eventos.at(-1)[0], 'terminar');
   } finally { await segunda.close(); }
 });
@@ -520,6 +520,7 @@ test('Ficha (completar): con la familia alojada se puede completar; un pendiente
 
 async function montarApp() {
   const pantallas = {};
+  const depurados = [];
   const alerts = [];
   const toasts = [];
   const montajes = {};
@@ -530,7 +531,7 @@ async function montarApp() {
   };
   const mocks = {
     react: React, 'react-native': native,
-    '../context/AuthContext': {useAuth: () => ({user: {nombre: 'Ana'}, logout() {}})},
+    '../context/AuthContext': {useAuth: () => ({user: {id: 7, nombre: 'Ana'}, logout() {}})},
     '../context/ThemeContext': {useTheme: () => ({theme, typography})},
     '../context/ToastContext': {useToast: () => ({showAlert: (...a) => alerts.push(a), showToast: t => toasts.push(t)})},
     '../components/Banner': {__esModule: true, default: 'Banner'},
@@ -542,6 +543,7 @@ async function montarApp() {
     '../services/emergenciaCola': {syncPendientes: async () => ({}), getPendingCount: async () => 0, getResumenPendientes: async () => ({}),
       reintentar: async () => ({}), getLocalidadesGuardadas: async () => ({localidades: []}), getBorradorEnCurso: async () => null, descartar: async () => true},
     '../utils/emergencia': {avisoDeSalida: () => null},
+    '../services/emergenciaLimpieza': {depurarBorradoresFicha: async (owner) => { depurados.push(owner); }},
   };
   const App = loadScreen('src/navigation/EmergenciaApp.js', mocks);
   let tree;
@@ -549,7 +551,8 @@ async function montarApp() {
   const banner = () => tree.root.findByType('Banner');
   const hacer = async (fn) => renderer.act(async () => { fn(); await esperar(2); });
   const montada = nombre => tree.root.findAll(x => x.type === mocks[`../screens/Emergencia${nombre}Screen`].default).length > 0;
-  return {pantallas, alerts, toasts, banner, hacer, montada, titulo: () => banner().props.title, atras: () => hacer(() => banner().props.onBackPress()),
+  await renderer.act(async () => { await esperar(5); });
+  return {pantallas, alerts, toasts, depurados, banner, hacer, montada, titulo: () => banner().props.title, atras: () => hacer(() => banner().props.onBackPress()),
     montajes,
     close: () => renderer.act(async () => tree.unmount())};
 }
@@ -557,6 +560,7 @@ async function montarApp() {
 test('EmergenciaApp M2: integrantes -> persona (título «Persona N», con caso y dispositivo) -> volver, terminar, 404 y 409', async () => {
   const ui = await montarApp();
   try {
+    assert.deepEqual(ui.depurados, [7], 'al abrir el módulo depura los borradores de ficha con el usuario actual');
     await ui.hacer(() => ui.pantallas.Inicio.onAbrir({clave: 'llegadas', titulo: 'Llegada de familias'}));
     await ui.hacer(() => ui.pantallas.MisDispositivos.onElegir({id: 9, nombre: 'Escuela 12'}, {unico: false}));
     await ui.hacer(() => ui.pantallas.LlegadaBuscar.onIntegrantes({id: 184, numero: '2026-000184'}, '30111222'));
@@ -595,5 +599,140 @@ test('EmergenciaApp M2: integrantes -> persona (título «Persona N», con caso 
     await ui.hacer(() => ui.pantallas.Ficha.onConflicto({tipo: 'conflicto', destino: 'buscar', estadoActual: 'EN_GESTION', mensaje: 'La mesa canceló.'}));
     assert.ok(ui.montada('LlegadaBuscar'));
     assert.equal(ui.pantallas.LlegadaBuscar.dniInicial, '30111222');
+  } finally { await ui.close(); }
+});
+
+// ---- Revisión del PR #30 ----
+
+const CONFIRMADA_CON = (ficha) => ({...CONFIRMADA, ficha});
+const VIEJA = {...FICHA_GUARDADA, educacion: {}, trabajo: {}};
+
+test('MAJOR 1: el borrador de «completar» recuperado sobre la ficha nueva manda solo lo tocado (no pisa `trabajo` de otra guardia)', async () => {
+  let ficha = VIEJA;
+  const env = await entorno(rutasDe({persona: () => response(200, CONFIRMADA_CON(ficha))}));
+  const primera = await montarFicha(null, {env});
+  await primera.escribir('Escuela', 'N 12');
+  await renderer.act(async () => { await esperar(600); });
+  await primera.close();
+  // Mientras tanto, otra guardia guardó `trabajo`.
+  ficha = {...VIEJA, trabajo: {ocupacion: 'Albañil'}};
+  const segunda = await montarFicha(null, {env});
+  try {
+    assert.equal(segunda.input('Escuela').props.value, 'N 12', 'lo tocado vuelve');
+    assert.equal(segunda.input('Ocupación').props.value, 'Albañil', 'lo de la otra guardia se ve');
+    assert.ok(segunda.button('Descartar lo recuperado'));
+    await segunda.pressButton('Guardar ficha');
+    const [patch] = env.calls.filter(c => c.method === 'PATCH');
+    assert.deepEqual(patch.body, {ficha: {educacion: {escuela: 'N 12'}}}, 'sin `trabajo: {}`');
+  } finally { await segunda.close(); }
+});
+
+test('MAJOR 1: si la otra guardia guardó la MISMA sección, se avisa y se elige; «Descartar lo recuperado» vuelve a lo del servidor', async () => {
+  let ficha = VIEJA;
+  const env = await entorno(rutasDe({persona: () => response(200, CONFIRMADA_CON(ficha))}));
+  const primera = await montarFicha(null, {env});
+  await primera.escribir('Escuela', 'N 12');
+  await primera.close();
+  ficha = {...VIEJA, educacion: {nivel_educativo: 'PRIMARIO'}};
+  const segunda = await montarFicha(null, {env});
+  try {
+    assert.ok(segunda.labels().some(t => t.startsWith('Mientras tanto se guardaron cambios en Educación.')));
+    assert.equal(segunda.input('Escuela').props.value, '', 'no se pone sola');
+    await segunda.pressButton('Guardar ficha');
+    assert.equal(env.calls.filter(c => c.method === 'PATCH').length, 0, 'hasta elegir no se guarda');
+    assert.equal(env.toasts.at(-1).message, 'Antes de guardar, elegí qué hacer con lo recuperado que choca con lo guardado.');
+    await segunda.pressButton('Recuperar lo mío');
+    assert.equal(segunda.input('Escuela').props.value, 'N 12');
+    await segunda.pressButton('Guardar ficha');
+    assert.deepEqual(env.calls.filter(c => c.method === 'PATCH')[0].body, {ficha: {educacion: {escuela: 'N 12'}}});
+  } finally { await segunda.close(); }
+  ficha = VIEJA;
+  const tercera = await montarFicha(null, {env});
+  await tercera.escribir('Ocupación', 'Docente');
+  await tercera.close();
+  const cuarta = await montarFicha(null, {env});
+  try {
+    assert.equal(cuarta.input('Ocupación').props.value, 'Docente');
+    await cuarta.pressButton('Descartar lo recuperado');
+    await renderer.act(async () => { await env.alerts.at(-1)[2].find(o => o.text === 'Descartar').onPress(); await esperar(5); });
+    assert.equal(cuarta.input('Ocupación').props.value, '');
+    const sesion = await env.llegadas.abrirSesion();
+    assert.equal(await env.llegadas.leerBorradorFicha(sesion, 184, 2, 'completar'), null);
+  } finally { await cuarta.close(); }
+});
+
+test('MAJOR 2 (c): un 404 o 403 SIN_MODULO no deja lo tipeado guardado al salir', async () => {
+  for (const respuesta of [() => response(404, {detail: 'No encontrado.'}),
+    (call) => (call.url.endsWith('/perfil/') ? response(200, {llegadas: false}) : response(403, {detail: 'Sin permiso.', code: 'SIN_MODULO'}))]) {
+    let mapas = 0;
+    const env = await entorno((call) => (call.url.includes('/plazas/') && ++mapas > 1 ? respuesta(call) : rutasDe()(call)));
+    const ui = await montarFicha(null, {env});
+    await ui.llenarMinimo();
+    await renderer.act(async () => { await esperar(600); });
+    const sesion = await env.llegadas.abrirSesion();
+    assert.ok(await env.llegadas.leerBorradorFicha(sesion, 184, 2, 'confirmar'));
+    await ui.pressButton('Recargar camas');
+    await ui.close();
+    await renderer.act(async () => { await esperar(20); });
+    assert.equal(await env.llegadas.leerBorradorFicha(sesion, 184, 2, 'confirmar'), null, ui.eventos[0]?.[0]);
+  }
+});
+
+test('MINOR 1: cambiar la respuesta limpia el campo condicional y no viaja', async () => {
+  const ui = await montarFicha(rutasDe());
+  try {
+    await ui.llenarMinimo();
+    await ui.press('Parentesco: Otro');
+    await ui.escribir('Cuál parentesco', 'Tía');
+    await ui.press('Parentesco: Hijo/a');
+    await ui.press('Medicación crítica: Sí');
+    await ui.escribir('Qué medicación crítica toma', 'Insulina');
+    await ui.press('Medicación crítica: No');
+    await ui.pressButton('Confirmar persona');
+    const [post] = confirmaciones(ui.calls);
+    assert.deepEqual(post.body.ficha.parentesco, {parentesco: 'HIJO'});
+    assert.equal('medicacion_critica_nombre' in post.body.ficha.avisos_salud, false);
+  } finally { await ui.close(); }
+});
+
+test('MINOR 2: el 400 `adulto_responsable` (fecha del legajo) se pide arriba; un error de las secciones 4 a 8 las abre', async () => {
+  const ui = await montarFicha(rutasDe({confirmar: () => response(400, {code: 'VALIDACION', detail: 'x',
+    adulto_responsable: ['Es menor de 16 años: indicá el adulto responsable (sección 8).'], escuela: ['No puede tener más de 200 caracteres.']})}));
+  try {
+    await ui.llenarMinimo();
+    await ui.fecha('');
+    assert.ok(!ui.input('Adulto responsable'), 'sin fecha cargada no se sabe que es menor');
+    await ui.pressButton('Confirmar persona');
+    assert.equal(ui.input('Adulto responsable')?.props.placeholder, 'Es menor de 16 años', 'aparece arriba, con el mínimo, con el error');
+    assert.ok(ui.labels().includes('4. Educación'), 'se abrieron las secciones 4 a 8');
+    assert.equal(ui.tree.root.findAllByType('TextInput').filter(n => n.props.accessibilityLabel === 'Adulto responsable').length, 1, 'una sola vez');
+  } finally { await ui.close(); }
+});
+
+test('MINOR 4: tras un envío incierto, el 409 ALOJADO dice que la familia ya se alojó', async () => {
+  const ui = await montarFicha(rutasDe({confirmar: (call, n) => (n === 1 ? fallaDeRed()
+    : response(409, {detail: 'El caso ya no está para esto.', estado_actual: 'ALOJADO'}))}));
+  try {
+    await ui.llenarMinimo();
+    await ui.pressButton('Confirmar persona');
+    await ui.pressButton('Reintentar confirmar');
+    assert.deepEqual(ui.eventos.map(e => [e[0], e[1].estadoActual, e[1].mensaje]), [['conflicto', 'ALOJADO',
+      'La familia ya figura alojada. Si esta persona había quedado confirmada con el envío anterior, aparece en los integrantes con su cama.']]);
+  } finally { await ui.close(); }
+});
+
+test('MINOR 6: sincronizar en «completar» vuelve a leer a la persona y deja lo tocado encima', async () => {
+  let ficha = VIEJA;
+  const ui = await montarFicha(rutasDe({persona: () => response(200, CONFIRMADA_CON(ficha))}));
+  try {
+    await ui.escribir('Escuela', 'N 12');
+    ficha = {...VIEJA, trabajo: {ocupacion: 'Albañil'}};
+    await ui.rerender({recarga: 1});
+    await renderer.act(async () => { await esperar(10); });
+    assert.equal(ui.calls.filter(c => c.url.endsWith('/integrantes/2/') && c.method === 'GET').length, 2);
+    assert.equal(ui.input('Ocupación').props.value, 'Albañil');
+    assert.equal(ui.input('Escuela').props.value, 'N 12');
+    await ui.pressButton('Guardar ficha');
+    assert.deepEqual(ui.calls.filter(c => c.method === 'PATCH')[0].body, {ficha: {educacion: {escuela: 'N 12'}}});
   } finally { await ui.close(); }
 });

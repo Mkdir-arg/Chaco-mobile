@@ -745,6 +745,7 @@ async function montarApp({integrantes = null, ficha = null} = {}) {
     '../screens/EmergenciaFichaScreen': {__esModule: true, default: ficha
       ? (props) => { pantallas.ficha = props; return React.createElement(ficha, props); } : capturar('ficha')},
     '@react-native-community/netinfo': {__esModule: true, default: {addEventListener: () => () => {}}},
+    '../services/emergenciaLimpieza': {depurarBorradoresFicha: async () => {}},
     '../services/emergenciaCola': {syncPendientes: async () => ({}), getPendingCount: async () => 0, getResumenPendientes: async () => ({}),
       reintentar: async () => ({}), getLocalidadesGuardadas: async () => ({localidades: []}), getBorradorEnCurso: async () => null, descartar: async () => true},
     '../utils/emergencia': {avisoDeSalida: () => null},

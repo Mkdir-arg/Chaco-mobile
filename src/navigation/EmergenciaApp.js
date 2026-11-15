@@ -21,6 +21,7 @@ import {
   descartar, getBorradorEnCurso, getLocalidadesGuardadas, getPendingCount, getResumenPendientes, reintentar, syncPendientes,
 } from '../services/emergenciaCola';
 import { avisoDeSalida } from '../utils/emergencia';
+import { depurarBorradoresFicha } from '../services/emergenciaLimpieza';
 
 const SYNC_INTERVAL_MS = 8000;
 const RECONNECT_DELAY_MS = 1800;
@@ -125,6 +126,8 @@ export default function EmergenciaApp({ onCambiarModulo }) {
     sincronizarDeFondo();
     // La lista de localidades se guarda al entrar y se refresca una vez por día (§5).
     getLocalidadesGuardadas().catch(() => {});
+    // Borradores de la ficha (M2): los de otro usuario se borran y los vencidos también.
+    Promise.resolve().then(() => depurarBorradoresFicha(user?.id)).catch(() => {});
     const timer = setInterval(sincronizarDeFondo, SYNC_INTERVAL_MS);
     const desuscribir = escucharReconexion(() => {
       if (reconexion.current) clearTimeout(reconexion.current);

@@ -357,7 +357,10 @@ confirmada, también con la familia alojada (con el caso cerrado, en lectura).
 - **Completar** (§13.6): una confirmada muestra «Ficha incompleta» y lo que falta, y deja cargar las
   secciones 4 a 8 (cada una con «Sin datos»). «Guardar ficha» manda por `PATCH` **solo las
   secciones que cambiaron** (cada sección que viene reemplaza a la guardada: así no pisa lo que otra
-  guardia cargó en otra). Sin cambios no manda nada.
+  guardia cargó en otra). Sin cambios no manda nada. **Dentro de una misma sección gana el último
+  que guarda**: si dos guardias editan la misma sección a la vez, la segunda reemplaza a la primera
+  (el back no versiona la ficha). El botón de sincronizar vuelve a leer a la persona y deja lo tocado
+  encima.
 
 Reglas (`src/services/emergenciaLlegadas.js`, `src/utils/fichaEmergencia.js`):
 
@@ -381,11 +384,17 @@ Reglas (`src/services/emergenciaLlegadas.js`, `src/utils/fichaEmergencia.js`):
 - **409** (otra guardia la confirmó, el caso se cerró o volvió a la mesa) va al router de §13.1; un
   404 vuelve a los integrantes (si el caso ya no es del dispositivo, su propio 404 sigue a «mis
   dispositivos»). Mientras se confirma o se guarda no se puede volver.
-- **Borrador de la ficha en curso**: lo tipeado (y la cama elegida) se guarda en el teléfono por
-  usuario, caso, persona y modo, para no perderlo si se vuelve atrás, el router recarga o se cierra
-  la app. No es lectura guardada ni cola: sin red la pantalla igual se bloquea. Se borra al
-  confirmar o guardar, ante un 404 o 409, cuando la persona ya figura confirmada (un borrador de
-  confirmación ya no aplica) y a las 48 h.
+- **Borrador de la ficha en curso**: lo tipeado se guarda en el teléfono por usuario, caso, persona y
+  modo, para no perderlo si se vuelve atrás, el router recarga o se cierra la app. No es lectura
+  guardada ni cola: sin red la pantalla igual se bloquea. Al confirmar, guarda la ficha entera y la
+  cama. Al completar, guarda **solo las secciones tocadas** y cómo estaban en el servidor al empezar:
+  al recuperarlo se ponen sobre la ficha de ahora, y si otra guardia guardó una de esas secciones en
+  el medio no se pone sola: se avisa y se elige («Recuperar lo mío» o «Quedarme con lo guardado»).
+  «Descartar lo recuperado» vuelve a lo del servidor. Se borra al confirmar o guardar, ante un 404,
+  409 o 403, cuando la persona ya figura confirmada, en el **logout** (`emergenciaLimpieza`, desde
+  `AuthContext`) y al abrir el módulo los de otro usuario y los vencidos (48 h).
+- Un campo que depende de otra respuesta (cuál parentesco, la medicación crítica, el detalle de las
+  alergias) no se manda si esa respuesta no lo abre, y se limpia al cambiarla.
 
 > **Despliegue:** `expo-image-manipulator` es un módulo nativo. Desde 1.2.13 el
 > Formulario 1 importa `src/utils/jpeg.js`: Android/iOS necesitan **un build nuevo**

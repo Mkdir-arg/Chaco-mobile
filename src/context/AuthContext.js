@@ -10,6 +10,7 @@ import {
 } from '../services/becasApi';
 import { subscribeSinModulo } from '../services/sinModulo';
 import { olvidarPerfilGuardado } from '../services/emergenciaPerfil';
+import { limpiarDatosLocalesEmergencia } from '../services/emergenciaLimpieza';
 import { moduloInicial } from '../services/modulos';
 
 const AuthContext = createContext({});
@@ -91,6 +92,12 @@ export const AuthProvider = ({ children }) => {
     const ownerId = user?.id;
     await clearBecasSession();
     await olvidarPerfilGuardado(ownerId);
+    // Los borradores de la ficha de Emergencia tienen datos personales y de salud: no sobreviven a la sesión.
+    try {
+      await limpiarDatosLocalesEmergencia();
+    } catch {
+      // Si falla, el logout sigue; al abrir el módulo con otro usuario se vuelven a depurar.
+    }
     setAvisoSesion(null);
     setUser(null);
     setModuloActivoState(null);

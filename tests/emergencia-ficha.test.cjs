@@ -92,7 +92,7 @@ test('ficha: el mínimo bloquea lo que el back exige siempre; nombre, apellido, 
   igual(v(MINIMO, {plazaId: null}), ['plaza']);
   igual(v({...MINIMO, fecha_nacimiento: '31/02/2000'}), ['fecha_nacimiento']);
   igual(v({...MINIMO, fecha_nacimiento: '01/01/2030'}), ['fecha_nacimiento'], 'futura');
-  igual(v({...MINIMO, nivel_educativo: 'DOCTORADO', parentesco_otro: 'x'.repeat(81), observaciones: 'x'.repeat(1001)}),
+  igual(v({...MINIMO, parentesco: 'OTRO', nivel_educativo: 'DOCTORADO', parentesco_otro: 'x'.repeat(81), observaciones: 'x'.repeat(1001)}),
     ['nivel_educativo', 'observaciones', 'parentesco_otro']);
   assert.equal(f.validarConfirmacion({}, {hoy: HOY}).embarazo[0], 'Falta: avisos de salud · respondé sí o no a embarazo.');
 });
@@ -298,4 +298,63 @@ test('borrador de la ficha: por usuario, caso, persona y modo; vence a las 48 h;
   await l.guardarBorradorFicha(sesion, 184, 2, {modo: 'completar', plano: {escuela: 'N.° 12'}});
   await l.borrarBorradorFicha(sesion, 184, 2);
   assert.equal(await l.leerBorradorFicha(sesion, 184, 2, 'completar'), null);
+});
+
+// ---- Revisión del PR #30 ----
+
+test('MAJOR 1: el borrador de «completar» guarda solo lo tocado; recuperado sobre la ficha de ahora no pisa lo que otra guardia guardó', async () => {
+  const {f} = await preparar();
+  // El escenario exacto: A empieza con `trabajo` vacío y toca solo `educacion`; B guarda `trabajo` en el medio.
+  const vieja = {version: 1, educacion: {}, trabajo: {}, observaciones: {}};
+  const borrador = f.borradorDeCompletar({...f.fichaAPlano(vieja), escuela: 'N 12'}, vieja);
+  igual(borrador, {secciones: {educacion: {escuela: 'N 12'}}, base: {educacion: {}}});
+  const nueva = {version: 1, educacion: {}, trabajo: {ocupacion: 'Albañil'}, observaciones: {}};
+  const {plano, conflictos} = f.recuperarSobre(nueva, borrador);
+  igual(conflictos, {});
+  igual([plano.escuela, plano.ocupacion], ['N 12', 'Albañil']);
+  const secs = f.seccionesCambiadas(plano, nueva);
+  igual(secs, ['educacion'], 'trabajo no cambió: no se manda');
+  igual(f.fichaDesdePlano(plano, secs), {educacion: {escuela: 'N 12'}});
+  // B guardó la MISMA sección que A tocó: conflicto; no se pone, queda la del servidor para elegir.
+  const pisada = {...nueva, educacion: {nivel_educativo: 'PRIMARIO'}};
+  const r = f.recuperarSobre(pisada, borrador);
+  igual(r.conflictos, {educacion: {escuela: 'N 12'}});
+  igual(['escuela' in r.plano, r.plano.nivel_educativo], [false, 'PRIMARIO']);
+  igual(f.seccionesCambiadas(r.plano, pisada), []);
+  igual(f.seccionesCambiadas(f.ponerSecciones(r.plano, r.conflictos), pisada), ['educacion'], 'recuperar lo mío');
+  // Sin nada tocado no hay borrador.
+  igual(f.borradorDeCompletar(f.fichaAPlano(vieja), vieja), {secciones: {}, base: {}});
+});
+
+test('MINOR 1: un campo condicional oculto no viaja aunque tenga un valor viejo; se limpia al cambiar la respuesta', async () => {
+  const {f} = await preparar();
+  const plano = {...MINIMO, parentesco_otro: 'Tía', medicacion_critica_nombre: 'Insulina', medicacion_critica_tiene_dosis: true,
+    alergias_graves_detalle: 'Penicilina'};
+  const ficha = f.fichaDesdePlano(plano);
+  igual([ficha.parentesco, 'medicacion_critica_nombre' in ficha.avisos_salud, 'medicacion_critica_tiene_dosis' in ficha.avisos_salud,
+    'alergias_graves_detalle' in ficha.avisos_salud], [{parentesco: 'HIJO'}, false, false, false]);
+  const abierta = f.fichaDesdePlano({...plano, parentesco: 'OTRO', medicacion_critica: true, alergias_graves: true});
+  igual([abierta.parentesco.parentesco_otro, abierta.avisos_salud.medicacion_critica_nombre, abierta.avisos_salud.alergias_graves_detalle],
+    ['Tía', 'Insulina', 'Penicilina']);
+  igual(Object.keys(f.limpiarCondicionales(plano)).filter(k => k.includes('_otro') || k.includes('critica_') || k.includes('detalle')), []);
+  assert.equal(f.validarConfirmacion({...MINIMO, parentesco_otro: 'x'.repeat(81)}, {plazaId: 41, hoy: HOY}).parentesco_otro, undefined, 'oculto no se valida');
+});
+
+test('MAJOR 2: el logout borra los borradores de ficha de todos (no los uuid pendientes); al abrir el módulo se borran los de otro usuario y los vencidos', async () => {
+  const {r, l, sesion} = await preparar();
+  const limpieza = r.load('./emergenciaLimpieza');
+  await l.guardarBorradorFicha(sesion, 184, 2, {modo: 'confirmar', plano: {dni: '45111222'}, plazaId: 41});
+  await l.guardarBorradorFicha({owner: '8'}, 190, 1, {modo: 'confirmar', plano: {dni: '30111222'}, plazaId: 41});
+  r.legacy.set('emergencia_llegadas_confirmar:7', JSON.stringify({'184:2': 'uuid'}));
+  await limpieza.depurarBorradoresFicha('7');
+  assert.equal(r.legacy.has('emergencia_llegadas_ficha:8'), false, 'el de otro usuario se borra');
+  assert.ok(await l.leerBorradorFicha(sesion, 184, 2, 'confirmar'), 'el propio vigente queda');
+  r.legacy.set('emergencia_llegadas_ficha:7', JSON.stringify({'184:2': {modo: 'confirmar', plano: {}, guardado_en: Date.now() - l.VIDA_BORRADOR_MS - 1},
+    '184:3': {modo: 'confirmar', plano: {}, guardado_en: Date.now()}}));
+  await limpieza.depurarBorradoresFicha('7');
+  igual(Object.keys(JSON.parse(r.legacy.get('emergencia_llegadas_ficha:7'))), ['184:3'], 'el vencido se borra sin esperar a leerlo');
+  await l.guardarBorradorFicha({owner: '8'}, 190, 1, {modo: 'confirmar', plano: {}, plazaId: 41});
+  await limpieza.limpiarDatosLocalesEmergencia();
+  igual([...r.legacy.keys()].filter(k => k.startsWith('emergencia_llegadas_ficha:')), []);
+  assert.ok(r.legacy.has('emergencia_llegadas_confirmar:7'), 'el uuid pendiente no tiene datos de nadie y evita duplicar');
 });

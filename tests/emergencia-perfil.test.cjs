@@ -343,7 +343,7 @@ async function montarAuth(modulos) {
   await r.api.setModuloActivo('emergencia');
   const auth = loadModule('src/context/AuthContext.js', {
     react: React, '../services/becasApi': r.api, '../services/sinModulo': sin, '../services/modulos': r.modulos,
-    '../services/emergenciaPerfil': e,
+    '../services/emergenciaPerfil': e, '../services/emergenciaLimpieza': r.load('./emergenciaLimpieza'),
   });
   let actual;
   const Espia = () => { actual = auth.useAuth(); return null; };
@@ -419,5 +419,16 @@ test('m3: AuthContext: el logout borra el perfil guardado de ese usuario', async
     assert.equal(ui.auth().isAuthenticated, false);
     assert.equal(ui.r.legacy.has('emergencia_perfil:7'), false);
     assert.equal(ui.r.legacy.has('emergencia_perfil:9'), true, 'el de otro usuario no se toca');
+  } finally { await ui.close(); }
+});
+
+test('MAJOR 2 (PR #30): el logout borra los borradores de la ficha de Emergencia (datos personales y de salud)', async () => {
+  const ui = await montarAuth(['emergencia']);
+  try {
+    ui.r.legacy.set('emergencia_llegadas_ficha:7', JSON.stringify({'184:2': {modo: 'confirmar', plano: {dni: '45111222'}, guardado_en: Date.now()}}));
+    ui.r.legacy.set('emergencia_llegadas_ficha:9', JSON.stringify({}));
+    await renderer.act(async () => { await ui.auth().logout(); });
+    assert.equal(ui.auth().isAuthenticated, false);
+    assert.deepEqual([...ui.r.legacy.keys()].filter(k => k.startsWith('emergencia_llegadas_ficha:')), []);
   } finally { await ui.close(); }
 });

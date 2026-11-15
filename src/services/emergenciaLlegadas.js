@@ -10,6 +10,7 @@ import { erroresDelServidor } from '../utils/emergencia';
 import { cleanDigits, isValidDni } from '../utils/dni';
 import { CAMPOS_FICHA, SECCIONES_OPCIONALES, fichaDesdePlano } from '../utils/fichaEmergencia';
 import { hayConexion } from './emergenciaKits';
+import { PREFIJO_BORRADOR_FICHA, VIDA_BORRADOR_MS } from './emergenciaLimpieza';
 
 // La red, como M3: en web `navigator.onLine`, en nativo NetInfo.
 export { escucharRed, hayConexion } from './emergenciaKits';
@@ -692,34 +693,48 @@ export const completarFicha = async (sesion, casoId, n, { plano, secciones = SEC
 // por usuario, caso y persona) para no perderlo si la guardia vuelve atrás, el router recarga por un
 // 409 o se cierra la app. NO es una lectura guardada (sin red la pantalla igual se bloquea) ni una
 // cola: solo lo que la guardia escribió y todavía no se mandó con éxito. Se borra al confirmar o
-// guardar, cuando el servidor dice que ya no aplica (404, 409, la persona ya confirmada para un
-// borrador de confirmación), y vence a las 48 h.
-const CLAVE_BORRADOR = 'emergencia_llegadas_ficha';
-const claveBorrador = (owner) => `${CLAVE_BORRADOR}:${owner}`;
-export const VIDA_BORRADOR_MS = 48 * 60 * 60 * 1000;
+// guardar, cuando el servidor dice que ya no aplica (404, 409, 403, la persona ya confirmada para un
+// borrador de confirmación), con el logout y al abrir el módulo con otro usuario
+// (`emergenciaLimpieza`), y vence a las 48 h.
+// - 'confirmar': el plano entero y la cama (la persona no tiene ficha en el servidor que pisar).
+// - 'completar': SOLO las secciones tocadas y su `base` (utils/fichaEmergencia `borradorDeCompletar`):
+//   al recuperarlas se ponen sobre la ficha de ahora del servidor (`recuperarSobre`).
+const claveBorrador = (owner) => `${PREFIJO_BORRADOR_FICHA}${owner}`;
+export { VIDA_BORRADOR_MS };
 
-// `modo`: 'confirmar' (sin confirmar: el mínimo, la cama y lo demás) o 'completar' (secciones 4 a 8).
-export const guardarBorradorFicha = async (sesion, casoId, n, { modo, plano, plazaId = null }) => {
+const vigente = (borrador, modo) => !!borrador && typeof borrador === 'object' && borrador.modo === modo
+  && Date.now() - Number(borrador.guardado_en || 0) < VIDA_BORRADOR_MS
+  && (modo === 'confirmar' ? !!borrador.plano && typeof borrador.plano === 'object'
+    : !!borrador.secciones && typeof borrador.secciones === 'object');
+
+export const guardarBorradorFicha = async (sesion, casoId, n, { modo, plano, plazaId = null, secciones, base }) => {
   if (!sesion?.owner) return;
   await modificarMapa(claveBorrador(sesion.owner), (todas) => {
     Object.keys(todas).forEach((k) => { if (!(Date.now() - Number(todas[k]?.guardado_en || 0) < VIDA_BORRADOR_MS)) delete todas[k]; });
-    todas[idPersona(casoId, n)] = { modo, plano, plaza_id: plazaId, guardado_en: Date.now() };
+    const id = idPersona(casoId, n);
+    if (modo === 'completar') {
+      // Nada tocado respecto de la ficha del servidor: no hay borrador.
+      if (!secciones || !Object.keys(secciones).length) delete todas[id];
+      else todas[id] = { modo, secciones, base: base || {}, guardado_en: Date.now() };
+    } else {
+      todas[id] = { modo, plano, plaza_id: plazaId, guardado_en: Date.now() };
+    }
   });
 };
 
 // El borrador de esa persona si es del mismo modo y no venció; si no, null (y el que no sirve se borra).
+// 'confirmar' → { plano, plazaId }; 'completar' → { secciones, base }.
 export const leerBorradorFicha = async (sesion, casoId, n, modo) => {
   if (!sesion?.owner) return null;
   const id = idPersona(casoId, n);
   return modificarMapa(claveBorrador(sesion.owner), (todas) => {
     const borrador = todas[id];
-    const vigente = borrador && typeof borrador === 'object' && borrador.modo === modo
-      && Date.now() - Number(borrador.guardado_en || 0) < VIDA_BORRADOR_MS && borrador.plano && typeof borrador.plano === 'object';
-    if (!vigente) {
+    if (!vigente(borrador, modo)) {
       delete todas[id];
       return null;
     }
-    return { plano: borrador.plano, plazaId: borrador.plaza_id ?? null };
+    return modo === 'confirmar' ? { plano: borrador.plano, plazaId: borrador.plaza_id ?? null }
+      : { secciones: borrador.secciones, base: borrador.base || {} };
   });
 };
 

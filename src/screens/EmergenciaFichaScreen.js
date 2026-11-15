@@ -9,11 +9,12 @@ import { useToast } from '../context/ToastContext';
 import {
   TEXTO_SIN_RED, abrirSesion, borrarBorradorFicha, camasElegibles, cargarCamas, cargarPersona, clasificarErrorLlegada,
   completarFicha, confirmarPendiente, confirmarPersona, escucharRed, estadoDeCama, estadoDeIntegrante, guardarBorradorFicha,
-  hayConexion, leerBorradorFicha, olvidarConfirmarPendiente, revisarCama, buscarCama, esSoloLectura,
+  hayConexion, leerBorradorFicha, olvidarConfirmarPendiente, revisarCama, buscarCama, esSoloLectura, camaPorDefecto,
 } from '../services/emergenciaLlegadas';
 import {
-  MAXIMOS, NIVELES_EDUCATIVOS, PARENTESCOS, PREGUNTAS_CRITICAS, ROTULOS_SECCION, SECCIONES_OPCIONALES, SEXOS_FICHA,
-  esMenor, fichaAPlano, listaDeErroresFicha, seccionesCambiadas, seccionesIncompletas, validarCompletar, validarConfirmacion,
+  ESQUEMA_FICHA, MAXIMOS, NIVELES_EDUCATIVOS, PARENTESCOS, PREGUNTAS_CRITICAS, ROTULOS_SECCION, SECCIONES_OPCIONALES, SEXOS_FICHA,
+  borradorDeCompletar, esMenor, fichaAPlano, limpiarCondicionales, listaDeErroresFicha, ponerSecciones, recuperarSobre,
+  seccionesCambiadas, seccionesIncompletas, validarCompletar, validarConfirmacion,
 } from '../utils/fichaEmergencia';
 import { cleanDigits } from '../utils/dni';
 import { statusTones } from '../theme/statusBadges';
@@ -25,6 +26,11 @@ export const TEXTO_BORRADOR = 'Recuperamos lo que habías cargado de esta person
 export const TEXTO_SIN_CAMAS = 'No queda ninguna cama libre ni guardada para esta familia. Liberá una o cerrá el ingreso con diferencia.';
 export const TEXTO_LEGAJO = 'Si la persona ya tiene legajo, alcanza con el DNI: el sistema completa nombre, apellido, sexo y fecha.';
 export const TEXTO_CERRADO = 'El caso está cerrado: la ficha se muestra en modo lectura.';
+export const TEXTO_ALOJADA_TRAS_REINTENTO = 'La familia ya figura alojada. Si esta persona había quedado confirmada con el envío anterior, aparece en los integrantes con su cama.';
+export const textoConflictoBorrador = (rotulos) => `Mientras tanto se guardaron cambios en ${rotulos.join(', ')}. Lo que habías cargado ahí no se puso: elegí si recuperarlo (al guardar reemplaza lo de la otra persona) o quedarte con lo guardado.`;
+
+// Los campos planos de las secciones 4 a 8 (y su «sin datos»): un error en uno abre esas secciones.
+const CAMPOS_OPCIONALES_PLANOS = SECCIONES_OPCIONALES.flatMap((s) => [...Object.keys(ESQUEMA_FICHA[s]), `${s}_sin_datos`]);
 
 // Qué secciones 4 a 8 se dibujan y con qué campos (el orden de §13.11).
 const CAMPOS_OPCIONALES = {
@@ -48,7 +54,8 @@ const CAMPOS_OPCIONALES = {
 // - `onConflicto(clasificacion)`: 409 → el padre recarga por `estado_actual` (§13.1).
 // - `onNoEncontrado()`: 404 (la persona o el caso ya no). `onSinModulo(mensaje)`: 403.
 // - `onEnviando(bool)`: hay un envío en curso (el padre oculta «volver»).
-// `recarga` cambia con el botón de sincronizar del Banner: vuelve a pedir el mapa de camas.
+// `recarga` cambia con el botón de sincronizar del Banner: en «confirmar» vuelve a pedir el mapa de
+// camas; en «completar» vuelve a leer a la persona, con lo tocado puesto encima (como un borrador).
 export default function EmergenciaFichaScreen({
   caso, n, dispositivo, recarga = 0, onTerminar, onConflicto, onNoEncontrado, onSinModulo, onEnviando,
 }) {
@@ -71,7 +78,11 @@ export default function EmergenciaFichaScreen({
   const [incierto, setIncierto] = useState(false);
   const [intentado, setIntentado] = useState(false);
   const [erroresServidor, setErroresServidor] = useState({});
+  const [recuperado, setRecuperado] = useState(false);
+  const [conflictos, setConflictos] = useState({});
   const montado = useRef(true);
+  const planoRef = useRef(null);
+  planoRef.current = plano;
   const sesionRef = useRef(null);
   const personaRef = useRef(null);
   personaRef.current = persona;
@@ -88,7 +99,15 @@ export default function EmergenciaFichaScreen({
   // cerrado no se puede completar (el back contesta 409): las dos son solo lectura.
   const lectura = caso?.estado === 'CERRADO' || (modo === 'confirmar' && esSoloLectura(caso));
 
+  // El caso, la persona o el permiso ya no están: lo tipeado no tiene adónde ir. Se borra el borrador y
+  // no se vuelve a guardar al desmontar.
+  const abandonar = () => {
+    terminado.current = true;
+    ultimo.current = null;
+    if (sesionRef.current) borrarBorradorFicha(sesionRef.current, casoId, n).catch(() => {});
+  };
   const rutear = (c) => {
+    if (['conflicto', 'no_encontrado', 'sin_modulo'].includes(c.tipo)) abandonar();
     if (c.tipo === 'conflicto') {
       onConflicto?.(c);
       return true;
@@ -134,10 +153,12 @@ export default function EmergenciaFichaScreen({
     }
   };
 
-  const cargar = async () => {
+  // `enMemoria`: al releer (sincronizar del Banner en modo completar) lo tocado en pantalla se trata como
+  // un borrador: se pone sobre la ficha nueva del servidor, con los mismos conflictos.
+  const cargar = async ({ enMemoria = null } = {}) => {
     const base = sesionRef.current;
     if (!base) return;
-    setCargando(true);
+    if (!enMemoria) setCargando(true);
     setError(null);
     try {
       const leida = await cargarPersona(base, casoId, n);
@@ -151,15 +172,24 @@ export default function EmergenciaFichaScreen({
       } else {
         setIncierto(!!await confirmarPendiente(base, casoId, n).catch(() => null));
       }
-      if (!(caso?.estado === 'CERRADO' || (modoLeido === 'confirmar' && esSoloLectura(caso)))) {
+      if (enMemoria) borrador = enMemoria;
+      else if (!(caso?.estado === 'CERRADO' || (modoLeido === 'confirmar' && esSoloLectura(caso)))) {
         borrador = await leerBorradorFicha(base, casoId, n, modoLeido).catch(() => null);
       }
       if (!montado.current) return;
       setPersona(leida);
-      setPlano(borrador?.plano || fichaAPlano(leida.ficha));
+      if (modoLeido === 'completar' && borrador?.secciones) {
+        const r = recuperarSobre(leida.ficha, borrador);
+        setPlano(r.plano);
+        setConflictos(r.conflictos);
+      } else {
+        setPlano(borrador?.plano || fichaAPlano(leida.ficha));
+        setConflictos({});
+      }
       setSinRed(false);
-      if (borrador) {
+      if (borrador && !enMemoria) {
         tocado.current = true;
+        setRecuperado(true);
         showToast({ type: 'info', message: TEXTO_BORRADOR });
       }
       if (modoLeido === 'confirmar' && !esSoloLectura(caso)) pedirMapa(borrador?.plazaId ?? null);
@@ -204,27 +234,36 @@ export default function EmergenciaFichaScreen({
     };
   }, [casoId, n]);
   useEffect(() => {
-    if (recarga !== recargaInicial.current && modo === 'confirmar' && !lectura) pedirMapa(plazaId);
+    if (recarga === recargaInicial.current || enviandoRef.current) return;
+    if (modo === 'confirmar' && !lectura) pedirMapa(plazaId);
+    else if (modo === 'completar') {
+      // Lo tocado y los conflictos sin resolver viajan como un borrador sobre la ficha nueva.
+      const tocadas = borradorDeCompletar(planoRef.current, personaRef.current?.ficha);
+      cargar({ enMemoria: { secciones: { ...tocadas.secciones, ...conflictos },
+        // Un conflicto sin resolver sigue siendo conflicto: su base no coincide con nada.
+        base: { ...tocadas.base, ...Object.fromEntries(Object.keys(conflictos).map((k) => [k, { conflicto_sin_resolver: true }])) } } });
+    }
   }, [recarga]);
 
   // Borrador: lo tipeado se guarda medio segundo después del último cambio, y al salir de la pantalla.
   useEffect(() => {
     if (!plano || !modo || !tocado.current || terminado.current || lectura || !sesionRef.current) return undefined;
-    ultimo.current = { sesion: sesionRef.current, modo, plano, plazaId };
-    const timer = setTimeout(() => guardarBorradorFicha(sesionRef.current, casoId, n, { modo, plano, plazaId }).catch(() => {}), AUTOGUARDADO_MS);
+    // En «completar» solo lo tocado respecto de la ficha del servidor, con su base (MAJOR 1 de la
+    // revisión): lo no tocado nunca se manda desde un borrador.
+    const datos = modo === 'completar' ? { modo, ...borradorDeCompletar(plano, persona?.ficha) } : { modo, plano, plazaId };
+    ultimo.current = { sesion: sesionRef.current, datos };
+    const timer = setTimeout(() => guardarBorradorFicha(sesionRef.current, casoId, n, datos).catch(() => {}), AUTOGUARDADO_MS);
     return () => clearTimeout(timer);
   }, [plano, plazaId]);
   useEffect(() => () => {
     const pendiente = ultimo.current;
-    if (!terminado.current && pendiente) {
-      guardarBorradorFicha(pendiente.sesion, casoId, n, { modo: pendiente.modo, plano: pendiente.plano, plazaId: pendiente.plazaId }).catch(() => {});
-    }
+    if (!terminado.current && pendiente) guardarBorradorFicha(pendiente.sesion, casoId, n, pendiente.datos).catch(() => {});
   }, []);
 
   const cambiar = (cambios) => {
     if (lectura || enviandoRef.current) return;
     tocado.current = true;
-    setPlano((prev) => ({ ...prev, ...cambios }));
+    setPlano((prev) => limpiarCondicionales({ ...prev, ...cambios }));
     setErroresServidor((prev) => {
       const claves = Object.keys(cambios);
       if (!claves.some((clave) => prev[clave])) return prev;
@@ -252,6 +291,31 @@ export default function EmergenciaFichaScreen({
     }
   };
 
+  const descartarRecuperado = () => showAlert('Descartar lo recuperado', 'Se borra lo que habías cargado y no se mandó; la ficha vuelve a como está en el servidor.', [
+    { text: 'Cancelar', style: 'cancel' },
+    {
+      text: 'Descartar',
+      style: 'destructive',
+      onPress: async () => {
+        ultimo.current = null;
+        tocado.current = false;
+        await borrarBorradorFicha(sesionRef.current, casoId, n).catch(() => {});
+        if (!montado.current) return;
+        setPlano(fichaAPlano(personaRef.current?.ficha));
+        setConflictos({});
+        setErroresServidor({});
+        setIntentado(false);
+        setRecuperado(false);
+        if (modo === 'confirmar') setPlazaId(camaPorDefecto(mapa)?.id ?? null);
+      },
+    },
+  ]);
+  const resolverConflictos = (usarLoMio) => {
+    tocado.current = true;
+    if (usarLoMio) setPlano((prev) => ponerSecciones(prev, conflictos));
+    setConflictos({});
+  };
+
   const terminar = async (resultado) => {
     terminado.current = true;
     ultimo.current = null;
@@ -261,7 +325,7 @@ export default function EmergenciaFichaScreen({
 
   // Lo común a confirmar y guardar: un solo envío a la vez (el candado va antes de mirar la red), el
   // aviso al padre y los errores.
-  const enviar = async (hacer, { alValidar } = {}) => {
+  const enviar = async (hacer, { alValidar, alConflicto } = {}) => {
     if (enviandoRef.current || !sesionRef.current) return;
     enviandoRef.current = true;
     if (!await hayConexion()) {
@@ -280,14 +344,9 @@ export default function EmergenciaFichaScreen({
     try {
       await hacer();
     } catch (e) {
-      const c = e?.clasificacion || clasificarErrorLlegada(e);
+      let c = e?.clasificacion || clasificarErrorLlegada(e);
       if (c.tipo === 'obsoleto') return;
-      if (['conflicto', 'no_encontrado'].includes(c.tipo)) {
-        // El caso o la persona ya no están como para esto: lo tipeado ya no tiene adónde ir.
-        terminado.current = true;
-        ultimo.current = null;
-        await borrarBorradorFicha(sesionRef.current, casoId, n).catch(() => {});
-      }
+      if (c.tipo === 'conflicto' && alConflicto) c = alConflicto(c);
       if (rutear(c)) return;
       if (!montado.current) {
         showToast({ type: 'warning', message: c.mensaje });
@@ -304,6 +363,7 @@ export default function EmergenciaFichaScreen({
         setErroresServidor(c.errores || {});
         setIntentado(true);
         showToast({ type: 'warning', message: 'El servidor rechazó algunos datos. Corregí lo marcado y volvé a mandar.' });
+        if (Object.keys(c.errores || {}).some((campo) => CAMPOS_OPCIONALES_PLANOS.includes(campo))) setVerOpcionales(true);
         alValidar?.(c.errores || {});
         return;
       }
@@ -321,15 +381,18 @@ export default function EmergenciaFichaScreen({
     const locales = validarConfirmacion(plano, { plazaId });
     if (Object.keys(locales).length) {
       const cantidad = Object.keys(locales).length;
+      if (Object.keys(locales).some((campo) => CAMPOS_OPCIONALES_PLANOS.includes(campo))) setVerOpcionales(true);
       showToast({ type: 'warning', message: `Falta${cantidad === 1 ? '' : 'n'} ${cantidad} dato${cantidad === 1 ? '' : 's'} para poder confirmar.` });
       return;
     }
+    // Un 409 ALOJADO en el reintento de un envío incierto: la familia se alojó, quizá con esta persona.
+    const habiaPendiente = incierto;
     enviar(async () => {
       const r = await confirmarPersona(sesionRef.current, casoId, n, { plano, plazaId });
       const cama = r.integrante?.plaza?.nombre || buscarCama(mapa, plazaId)?.nombre || '';
       if (r.otraCama) {
         // El reenvío de un envío anterior que había llegado: lo que vale es lo del servidor.
-        showAlert('La persona ya estaba confirmada', `Un envío anterior ya la había confirmado en la cama ${r.otraCama.nombre || r.otraCama.codigo}, no en la que elegiste ahora. Quedó así; la cama se cambia desde el mapa del backoffice.`, [{ text: 'Entendido' }]);
+        showAlert('La persona ya estaba confirmada', `Quedó confirmada en la cama ${r.otraCama.nombre || r.otraCama.codigo}; los datos quedaron como en el primer envío. La cama se cambia desde el mapa del backoffice.`, [{ text: 'Entendido' }]);
       } else {
         showToast({ type: 'success', message: `Persona ${n} confirmada${cama ? ` en la cama ${cama}` : ''} · ${r.confirmadas} de ${r.total_declarado}.` });
       }
@@ -338,12 +401,17 @@ export default function EmergenciaFichaScreen({
     }, {
       // 400 `plaza`: otra guardia tomó la cama, o quedó fuera de servicio. Se recarga el mapa.
       alValidar: (errores) => { if (errores.plaza) pedirMapa(plazaId, { avisar: true }); },
+      alConflicto: (c) => (habiaPendiente && c.estadoActual === 'ALOJADO' ? { ...c, mensaje: TEXTO_ALOJADA_TRAS_REINTENTO } : c),
     });
   };
 
   const tocarGuardar = () => {
     if (enviandoRef.current || lectura) return;
     setIntentado(true);
+    if (Object.keys(conflictos).length) {
+      showToast({ type: 'warning', message: 'Antes de guardar, elegí qué hacer con lo recuperado que choca con lo guardado.' });
+      return;
+    }
     const locales = validarCompletar(plano);
     if (Object.keys(locales).length) {
       showToast({ type: 'warning', message: 'Hay datos para corregir antes de guardar.' });
@@ -393,7 +461,7 @@ export default function EmergenciaFichaScreen({
       <ScrollView style={{ flex: 1, backgroundColor: theme.colors.background }} contentContainerStyle={styles.content}>
         {sinRed ? avisoDe('warning', TEXTO_SIN_RED, 'cloud-offline-outline') : null}
         {error ? avisoDe(error.tipo === 'reintentable' ? 'warning' : 'danger', error.mensaje) : null}
-        <CustomButton title="Reintentar" variant="secondary" iconLeft="refresh" disabled={!sesion} onPress={cargar} />
+        <CustomButton title="Reintentar" variant="secondary" iconLeft="refresh" disabled={!sesion} onPress={() => cargar()} />
       </ScrollView>
     );
   }
@@ -460,6 +528,8 @@ export default function EmergenciaFichaScreen({
 
   const estado = estadoDeIntegrante(persona.estado);
   const menor = esMenor(plano);
+  // Un 400 `adulto_responsable` de un menor cuya fecha vino del legajo (no la cargó la guardia): se pide arriba igual.
+  const adultoArriba = modo === 'confirmar' && (menor || errorDe('adulto_responsable').length > 0);
   const elegida = buscarCama(mapa, plazaId);
   const elegibles = camasElegibles(mapa);
   const faltan = seccionesIncompletas(plano);
@@ -471,7 +541,7 @@ export default function EmergenciaFichaScreen({
       {casilla(`${seccion}_sin_datos`, 'Sin datos (pregunté y no hay nada que cargar)')}
       {CAMPOS_OPCIONALES[seccion].map(([campo, tipo, extra]) => {
         // El adulto responsable de un menor se pide arriba, con el mínimo.
-        if (campo === 'adulto_responsable' && menor && modo === 'confirmar') return null;
+        if (campo === 'adulto_responsable' && adultoArriba) return null;
         if (tipo === 'opciones') {
           return (
             <View key={campo} style={styles.campo}>
@@ -541,6 +611,20 @@ export default function EmergenciaFichaScreen({
         {lectura ? avisoDe('info', caso?.estado === 'CERRADO' ? TEXTO_CERRADO : 'La familia ya no está en ingreso: esta persona no se puede confirmar desde acá.', 'lock-closed-outline') : null}
       </View>
 
+      {recuperado && !lectura ? (
+        <View style={tarjeta}>
+          <Text style={ayuda}>{TEXTO_BORRADOR}</Text>
+          <CustomButton title="Descartar lo recuperado" variant="tertiary" iconLeft="trash-outline" disabled={enviando} onPress={descartarRecuperado} />
+        </View>
+      ) : null}
+      {Object.keys(conflictos).length && !lectura ? (
+        <View style={tarjeta}>
+          {avisoDe('warning', textoConflictoBorrador(Object.keys(conflictos).map((s) => ROTULOS_SECCION[s])), 'git-compare-outline')}
+          <CustomButton title="Recuperar lo mío" variant="secondary" disabled={enviando} onPress={() => resolverConflictos(true)} />
+          <CustomButton title="Quedarme con lo guardado" variant="tertiary" disabled={enviando} onPress={() => resolverConflictos(false)} />
+        </View>
+      ) : null}
+
       {modo === 'confirmar' ? (
         <>
           <View style={tarjeta}>
@@ -588,7 +672,7 @@ export default function EmergenciaFichaScreen({
                 {clave === 'alergias_graves' && plano.alergias_graves === true ? texto('alergias_graves_detalle', 'Detalle de las alergias') : null}
               </React.Fragment>
             ))}
-            {menor ? texto('adulto_responsable', 'Adulto responsable', { obligatorio: true, placeholder: 'Es menor de 16 años' }) : null}
+            {adultoArriba ? texto('adulto_responsable', 'Adulto responsable', { obligatorio: true, placeholder: 'Es menor de 16 años' }) : null}
           </View>
 
           {!lectura ? (

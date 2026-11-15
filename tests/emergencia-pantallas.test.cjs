@@ -216,6 +216,7 @@ test('m2: EmergenciaApp pasa «syncing» al Banner mientras carga el perfil', as
     '../screens/EmergenciaDerivacionScreen': {__esModule: true, default: () => null},
     '../screens/EmergenciaIntegrantesScreen': {__esModule: true, default: () => null},
     '../screens/EmergenciaFichaScreen': {__esModule: true, default: () => null},
+    '../services/emergenciaLimpieza': {depurarBorradoresFicha: async () => {}},
     '@react-native-community/netinfo': {__esModule: true, default: {addEventListener: () => () => {}}},
     '../services/emergenciaCola': {syncPendientes: async () => ({}), getPendingCount: async () => 0,
       reintentar: async () => ({}), getLocalidadesGuardadas: async () => ({localidades: []})},

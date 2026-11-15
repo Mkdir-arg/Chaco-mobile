@@ -217,6 +217,21 @@ export const fichaAPlano = (ficha) => {
   return plano;
 };
 
+// Los campos que solo valen si otra respuesta los abre: oculto, un valor viejo no viaja (y la pantalla
+// lo limpia al cambiar la respuesta, `limpiarCondicionales`).
+export const CONDICIONALES = {
+  parentesco_otro: (plano) => plano?.parentesco === 'OTRO',
+  medicacion_critica_nombre: (plano) => plano?.medicacion_critica === true,
+  medicacion_critica_tiene_dosis: (plano) => plano?.medicacion_critica === true,
+  alergias_graves_detalle: (plano) => plano?.alergias_graves === true,
+};
+const aplica = (campo, plano) => !CONDICIONALES[campo] || CONDICIONALES[campo](plano);
+export const limpiarCondicionales = (plano) => {
+  const limpio = { ...plano };
+  Object.keys(CONDICIONALES).forEach((campo) => { if (!aplica(campo, limpio)) delete limpio[campo]; });
+  return limpio;
+};
+
 // Una sección del plano → su objeto anidado, con solo lo respondido. Los textos van sin espacios
 // exteriores, la fecha en AAAA-MM-DD (una que no se entiende va tal cual: el back la marca), el DNI
 // con solo los dígitos.
@@ -225,6 +240,7 @@ export const seccionDesdePlano = (plano, seccion) => {
   if (SECCIONES_OPCIONALES.includes(seccion) && plano?.[`${seccion}_sin_datos`] === true) armada.sin_datos = true;
   Object.entries(ESQUEMA_FICHA[seccion] || {}).forEach(([campo, [tipo]]) => {
     const valor = plano?.[campo];
+    if (!aplica(campo, plano)) return;
     if (tipo === BOOLEANO) {
       if (typeof valor === 'boolean') armada[campo] = valor;
       return;
@@ -247,6 +263,50 @@ const igualJson = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 export const seccionesCambiadas = (plano, guardada) => {
   const base = fichaAPlano(guardada);
   return SECCIONES_OPCIONALES.filter((seccion) => !igualJson(seccionDesdePlano(plano, seccion), seccionDesdePlano(base, seccion)));
+};
+
+// ---- Borrador de «completar» (secciones 4 a 8) ----
+// El borrador guarda SOLO las secciones que la guardia tocó y cómo estaban en el servidor cuando
+// empezó (`base`), no el plano entero: al recuperarlo se ponen esas secciones sobre la ficha que el
+// servidor tiene AHORA, así una sección que otra guardia guardó en el medio y acá no se tocó no
+// «cambia» ni se manda (el back reemplaza la sección entera).
+export const borradorDeCompletar = (plano, fichaBase) => {
+  const base = fichaAPlano(fichaBase);
+  const tocadas = seccionesCambiadas(plano, fichaBase);
+  return {
+    secciones: Object.fromEntries(tocadas.map((s) => [s, seccionDesdePlano(plano, s)])),
+    base: Object.fromEntries(tocadas.map((s) => [s, seccionDesdePlano(base, s)])),
+  };
+};
+
+// El plano con las secciones dadas ({seccion: anidada}) en lugar de las suyas.
+export const ponerSecciones = (plano, secciones = {}) => {
+  const nuevo = { ...plano };
+  Object.entries(secciones).forEach(([seccion, datos]) => {
+    if (!SECCIONES_OPCIONALES.includes(seccion)) return;
+    Object.keys(ESQUEMA_FICHA[seccion]).forEach((campo) => { delete nuevo[campo]; });
+    delete nuevo[`${seccion}_sin_datos`];
+    Object.assign(nuevo, fichaAPlano({ [seccion]: datos || {} }));
+  });
+  return nuevo;
+};
+
+// Lo tocado (`borrador`: { secciones, base }) sobre la ficha del servidor de ahora. Una sección que el
+// servidor cambió desde la base es un conflicto: NO se pone (queda la del servidor) y se devuelve en
+// `conflictos` con lo que había tocado la guardia, para que elija. Devuelve { plano, conflictos }.
+export const recuperarSobre = (servidor, borrador) => {
+  const actual = fichaAPlano(servidor);
+  const libres = {};
+  const conflictos = {};
+  Object.entries(borrador?.secciones || {}).forEach(([seccion, datos]) => {
+    if (!SECCIONES_OPCIONALES.includes(seccion)) return;
+    const hoy = seccionDesdePlano(actual, seccion);
+    const base = borrador?.base?.[seccion] || {};
+    if (igualJson(hoy, datos)) return;
+    if (igualJson(hoy, base)) libres[seccion] = datos;
+    else conflictos[seccion] = datos;
+  });
+  return { plano: ponerSecciones(actual, libres), conflictos };
 };
 
 // Rótulos de las secciones 4 a 8 sin ningún dato ni «sin datos», en orden (`secciones_incompletas`).
@@ -276,7 +336,7 @@ const agregar = (errores, campo, mensaje) => { errores[campo] = [...(errores[cam
 const validarTipos = (plano, secciones, errores, hoy) => {
   secciones.forEach((seccion) => Object.entries(ESQUEMA_FICHA[seccion]).forEach(([campo, [tipo, parametro]]) => {
     const valor = plano?.[campo];
-    if (tipo === BOOLEANO || vacio(valor)) return;
+    if (tipo === BOOLEANO || vacio(valor) || !aplica(campo, plano)) return;
     if (tipo === FECHA) {
       const iso = fechaIso(valor);
       if (!iso) agregar(errores, campo, TEXTOS_FICHA.fecha);
