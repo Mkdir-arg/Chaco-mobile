@@ -196,6 +196,9 @@ se conecta directamente a esas integraciones externas.
 | `POST /api/emergencia/derivaciones/{id}/aceptar/` | Aceptar la derivación y reservar camas (JSON, no idempotente) |
 | `POST /api/emergencia/derivaciones/{id}/rechazar/` | Rechazar la derivación con motivo (JSON, no idempotente) |
 | `GET/POST /api/emergencia/casos/{id}/integrantes/` | Integrantes de la familia y «Agregar persona» (idempotente) |
+| `GET/PATCH /api/emergencia/casos/{id}/integrantes/{n}/` | Una persona con su ficha; completar las secciones 4 a 8 (JSON) |
+| `GET /api/emergencia/dispositivos/{id}/plazas/?caso=` | Mapa de camas para elegir la de una persona |
+| `POST /api/emergencia/casos/{id}/integrantes/{n}/confirmar/` | Confirmar a una persona con su ficha y su cama (JSON, idempotente) |
 
 Los adjuntos se envían como multipart; los demás cuerpos normalmente como JSON.
 
@@ -310,9 +313,9 @@ hay notificaciones). Con uno solo entra directo. De ahí:
   7», una fila por persona (cama, parentesco, «Ficha incompleta») y «Agregar persona» (confirma
   antes; idempotente: el uuid nace al tocar y el reintento manda el mismo). Con la familia alojada
   o el caso cerrado, solo lectura.
-- **Próxima versión**: confirmar a una persona, la ficha, el mapa de camas, los cierres («Familia
-  alojada», «Cerrar con diferencia», «Cancelar ingreso», según el contador) y el ingreso sin
-  derivación (§13.6 a §13.10) ya tienen su botón, que hoy avisa «Próximamente».
+- **Próxima versión**: los cierres («Familia alojada», «Cerrar con diferencia», «Cancelar ingreso»,
+  según el contador, §13.9) y el ingreso sin derivación («Ingresar igual», «Avisar a la mesa»,
+  §13.10) ya tienen su botón, que hoy avisa «Próximamente».
 
 Reglas (`src/services/emergenciaLlegadas.js`):
 
@@ -336,6 +339,64 @@ Reglas (`src/services/emergenciaLlegadas.js`):
   hizo» y se sigue. Un 400, 404 o 409 destraba el intento incierto; 429, 403 o sin red no.
 - Mientras se acepta, se rechaza o se agrega una persona no se puede volver. 404 vuelve a «mis
   dispositivos» sin entrar directo; 403 `SIN_MODULO` vuelve a pedir el perfil y va al inicio.
+
+#### M2 · Llegada de familias, parte 2 (desde 1.2.17)
+
+En los integrantes, tocar una persona abre `EmergenciaFichaScreen` («Persona N»; volver lleva a los
+integrantes, que se recargan). Sin confirmar se abre solo con el ingreso en curso; la ficha de una
+confirmada, también con la familia alojada (con el caso cerrado, en lectura).
+
+- **Confirmar** (§13.8, M2-4): el mínimo del Formulario 2 (§13.11): parentesco (con cuál si es
+  «Otro»), DNI, nombre, apellido, sexo (F, M, X), fecha de nacimiento (con «aproximada»), teléfono,
+  documento extraviado, las cinco preguntas de salud con «Sí»/«No» (`false` es respuesta; con
+  medicación crítica, cuál y si tiene dosis) y el adulto responsable si la fecha dice menor de 16.
+  La cama sale del mapa (§13.7): se propone la primera guardada para la familia
+  (`RESERVADA_FAMILIA`); «Cambiar cama» muestra el mapa por sector, y solo se elige lo `elegible`
+  (ocupada, fuera de servicio y reservada para otra persona quedan deshabilitadas). Las secciones 4
+  a 8 se pueden cargar ahí mismo («Cargar ahora el resto de la ficha»).
+- **Completar** (§13.6): una confirmada muestra «Ficha incompleta» y lo que falta, y deja cargar las
+  secciones 4 a 8 (cada una con «Sin datos»). «Guardar ficha» manda por `PATCH` **solo las
+  secciones que cambiaron** (cada sección que viene reemplaza a la guardada: así no pisa lo que otra
+  guardia cargó en otra). Sin cambios no manda nada. **Dentro de una misma sección gana el último
+  que guarda**: si dos guardias editan la misma sección a la vez, la segunda reemplaza a la primera
+  (el back no versiona la ficha). El botón de sincronizar vuelve a leer a la persona y deja lo tocado
+  encima.
+
+Reglas (`src/services/emergenciaLlegadas.js`, `src/utils/fichaEmergencia.js`):
+
+- **Validación antes de mandar**: lo que el back exige siempre (parentesco, DNI de 7 u 8 dígitos,
+  las cinco preguntas respondidas, medicación crítica, adulto de un menor, la cama) y tipos y
+  largos. Nombre, apellido, sexo y fecha **no** bloquean: con la persona en el legajo alcanza el
+  DNI y el back completa; si no está, el 400 los marca en su campo. Cada 400 `VALIDACION` va al
+  campo por su nombre plano (§13.8); `orden` y lo que no es un campo, a «Para corregir».
+- **«Confirmar persona» es idempotente**: el `uuid_cliente` nace al mandar y se guarda en
+  AsyncStorage por usuario, caso y persona hasta saber el resultado (como «Agregar persona»):
+  volver, re-entrar o cerrar la app no lo cambian, y «Reintentar confirmar» manda el mismo. Se
+  olvida con 2xx, 400, 404 y 409; se conserva con red, timeout, 5xx, página del WAF, 429 y 403. Si
+  el reenvío devuelve a la persona en **otra** cama (la del primer envío, que había llegado), se
+  avisa que quedó así.
+- **Camas compartidas entre guardias**: un 400 `plaza` (otra guardia tomó la cama, o quedó fuera de
+  servicio) se muestra en la cama, recarga el mapa y, si la elegida ya no sirve, propone otra
+  guardada para la familia; no se reenvía solo. Sin ninguna elegible, lo dice y no deja confirmar
+  (cerrar con diferencia es de la parte 3).
+- **Guardar la ficha** no necesita uuid: repetir el `PATCH` deja lo mismo; tras un corte, «Reintentar
+  guardar» manda lo mismo.
+- **409** (otra guardia la confirmó, el caso se cerró o volvió a la mesa) va al router de §13.1; un
+  404 vuelve a los integrantes (si el caso ya no es del dispositivo, su propio 404 sigue a «mis
+  dispositivos»). Mientras se confirma o se guarda no se puede volver.
+- **Borrador de la ficha en curso**: lo tipeado se guarda en el teléfono por usuario, caso, persona y
+  modo, para no perderlo si se vuelve atrás, el router recarga o se cierra la app. No es lectura
+  guardada ni cola: sin red la pantalla igual se bloquea. Al confirmar, guarda la ficha entera y la
+  cama. Al completar, guarda **solo las secciones tocadas** y cómo estaban en el servidor al empezar:
+  al recuperarlo se ponen sobre la ficha de ahora, y si otra guardia guardó una de esas secciones en
+  el medio no se pone sola: se avisa y se elige («Recuperar lo mío» o «Quedarme con lo guardado»).
+  «Descartar lo recuperado» vuelve a lo del servidor. Se borra al confirmar o guardar, ante un 404,
+  409 o 403, cuando la persona ya figura confirmada, en el **logout**, cuando la sesión vence (401) y
+  cuando el usuario pierde Emergencia (`emergenciaLimpieza`, desde `AuthContext`), y al entrar y al
+  abrir el módulo, los de otro usuario y los vencidos (48 h). Un conflicto sin resolver también se
+  guarda: al volver sigue siendo conflicto.
+- Un campo que depende de otra respuesta (cuál parentesco, la medicación crítica, el detalle de las
+  alergias) no se manda si esa respuesta no lo abre, y se limpia al cambiarla.
 
 > **Despliegue:** `expo-image-manipulator` es un módulo nativo. Desde 1.2.13 el
 > Formulario 1 importa `src/utils/jpeg.js`: Android/iOS necesitan **un build nuevo**

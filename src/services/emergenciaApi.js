@@ -28,6 +28,9 @@ export const RUTAS = {
   aceptarDerivacion: (id) => `${BASE}derivaciones/${encodeURIComponent(id)}/aceptar/`,
   rechazarDerivacion: (id) => `${BASE}derivaciones/${encodeURIComponent(id)}/rechazar/`,
   integrantes: (id) => `${BASE}casos/${encodeURIComponent(id)}/integrantes/`,
+  integrante: (id, n) => `${BASE}casos/${encodeURIComponent(id)}/integrantes/${encodeURIComponent(n)}/`,
+  confirmarIntegrante: (id, n) => `${BASE}casos/${encodeURIComponent(id)}/integrantes/${encodeURIComponent(n)}/confirmar/`,
+  plazas: (id, caso) => `${BASE}dispositivos/${encodeURIComponent(id)}/plazas/?caso=${encodeURIComponent(caso)}`,
 };
 
 // §4: Emergencia no tiene padrones; consulta solo Base de Personas.
@@ -174,7 +177,7 @@ export const recibirEntrega = async (entregaId, { uuid_cliente, cantidades = {},
   return conVerificacion(() => uploadMultipart(RUTAS.recibirEntrega(entregaId), { fields, files, timeoutMs, token }));
 };
 
-// ---- M2 · Llegada de familias (§13.1 a §13.5) ----
+// ---- M2 · Llegada de familias (§13.1 a §13.8) ----
 // Todo M2 es JSON y con conexión. becasRequest relee el token en cada pedido y no corta por tiempo,
 // así que acá:
 // - `token` es el de la sesión con la que se abrió la pantalla: becasRequest lo usa tal cual (no relee
@@ -228,6 +231,26 @@ export const getIntegrantes = (casoId, opciones = {}) => conVerificacion(() => p
 export const agregarIntegrante = (casoId, { uuid_cliente } = {}, opciones = {}) => {
   exigirUuid(uuid_cliente);
   return conVerificacion(() => pedirJson(RUTAS.integrantes(casoId), { ...opciones, method: 'POST', body: { uuid_cliente } }));
+};
+
+// §13.6: una persona con su ficha guardada (`ficha`, `secciones_incompletas`). 404 si `n` no es de la familia.
+export const getIntegrante = (casoId, n, opciones = {}) => conVerificacion(() => pedirJson(RUTAS.integrante(casoId, n), opciones));
+
+// §13.6 «Completar la ficha»: PATCH con las secciones 4 a 8 que se cargan; cada una que viene reemplaza a
+// la guardada. Repetirlo deja lo mismo (no necesita uuid).
+export const completarFichaIntegrante = (casoId, n, { ficha } = {}, opciones = {}) => conVerificacion(
+  () => pedirJson(RUTAS.integrante(casoId, n), { ...opciones, method: 'PATCH', body: { ficha: ficha || {} } }));
+
+// §13.7: el mapa de camas del dispositivo para elegir la de una persona del caso.
+export const getPlazas = (dispositivoId, casoId, opciones = {}) => conVerificacion(
+  () => pedirJson(RUTAS.plazas(dispositivoId, casoId), opciones));
+
+// §13.8 «Confirmar persona»: idempotente por `uuid_cliente` (201 la primera vez, 200 el reenvío con la
+// misma fila). `ficha` anidada (§13.11) y `plaza_id`, los tres obligatorios.
+export const confirmarIntegrante = (casoId, n, { uuid_cliente, ficha, plaza_id } = {}, opciones = {}) => {
+  exigirUuid(uuid_cliente);
+  return conVerificacion(() => pedirJson(RUTAS.confirmarIntegrante(casoId, n),
+    { ...opciones, method: 'POST', body: { uuid_cliente, plaza_id, ficha: ficha || {} } }));
 };
 
 const es409 = (error) => Number(error?.status) === 409 && !error?.unexpectedHtml;

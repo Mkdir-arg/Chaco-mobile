@@ -434,6 +434,8 @@ async function montarApp({pendientes = 0, resumen = null, enCurso = null, sync =
     '../screens/EmergenciaLlegadaBuscarScreen': {__esModule: true, default: capturar('llegadasBuscar')},
     '../screens/EmergenciaDerivacionScreen': {__esModule: true, default: capturar('llegadasDerivacion')},
     '../screens/EmergenciaIntegrantesScreen': {__esModule: true, default: capturar('llegadasIntegrantes')},
+    '../screens/EmergenciaFichaScreen': {__esModule: true, default: capturar('llegadasFicha')},
+    '../services/emergenciaLimpieza': {depurarBorradoresFicha: async () => {}},
     '../services/emergenciaCola': {
       syncPendientes: async () => { llamadas.sync += 1; llamadas.orden.push('sync'); return sync ? sync() : {synced: 0}; },
       getPendingCount: async () => pendientes,

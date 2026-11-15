@@ -31,6 +31,7 @@ async function setup(platform = 'android', {secureStoreSeparado = false, mocks: 
     getItem: async key => legacy.get(key) ?? null,
     setItem: async (key, value) => { legacy.set(key, value); },
     removeItem: async key => { legacy.delete(key); },
+    getAllKeys: async () => [...legacy.keys()],
   };
   let secureFalla = false;
   const secureOp = fn => async (...args) => {

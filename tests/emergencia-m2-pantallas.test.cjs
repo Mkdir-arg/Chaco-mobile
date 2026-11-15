@@ -572,7 +572,8 @@ async function montarIntegrantes(rutas, {online = true, caso = CASO} = {}) {
   const Screen = loadScreen('src/screens/EmergenciaIntegrantesScreen.js', env.mocks);
   const ui = await render(Screen, {caso, onConflicto: c => eventos.push(['conflicto', plano(c)]),
     onNoEncontrado: () => eventos.push(['no_encontrado']), onSinModulo: m => eventos.push(['sin_modulo', m]),
-    onProximamente: t => eventos.push(['proximamente', t]), onEnviando: v => enviando.push(v)});
+    onProximamente: t => eventos.push(['proximamente', t]), onEnviando: v => enviando.push(v),
+    onAbrirPersona: (i, c) => eventos.push(['persona', i.n, c?.estado])});
   return {...env, ...ui, eventos, enviando};
 }
 
@@ -589,8 +590,9 @@ test('Integrantes: contador, filas (confirmada con cama y ficha incompleta, sin 
     assert.ok(ui.button('Cerrar con diferencia'));
     assert.ok(!ui.button('Familia alojada'));
     await ui.press('2. Persona 2. Sin confirmar');
+    await ui.press('1. Benítez, Rosa. Confirmada. DNI 30111222 · Cama B-12 (Pabellón B) · Jefe/a de hogar. Ficha incompleta');
     await ui.pressButton('Cerrar con diferencia');
-    assert.deepEqual(ui.eventos, [['proximamente', 'Confirmar persona'], ['proximamente', 'Cerrar con diferencia']]);
+    assert.deepEqual(ui.eventos, [['persona', 2, 'INGRESO_EN_CURSO'], ['persona', 1, 'INGRESO_EN_CURSO'], ['proximamente', 'Cerrar con diferencia']]);
   } finally { await ui.close(); }
 });
 
@@ -608,12 +610,14 @@ test('Integrantes: N de N ofrece «Familia alojada», ninguna «Cancelar ingreso
   } finally { await ninguna.close(); }
 });
 
-test('Integrantes: con la familia alojada es solo lectura (sin agregar ni cierres, filas deshabilitadas)', async () => {
+test('Integrantes: con la familia alojada es solo lectura (sin agregar ni cierres); solo se abre la ficha de las confirmadas', async () => {
   const ui = await montarIntegrantes(() => response(200, {...INTEGRANTES, caso: {...CASO, estado: 'ALOJADO'}}));
   try {
     assert.ok(ui.labels().includes('Familia alojada: se muestra en modo lectura.'));
     assert.deepEqual(ui.titulos(), []);
-    assert.ok(ui.pressables().every(p => p.props.disabled === true));
+    assert.deepEqual(ui.pressables().map(p => [p.props.accessibilityLabel.slice(0, 2), p.props.disabled]), [['1.', false], ['2.', true]]);
+    await ui.press('1. Benítez, Rosa. Confirmada. DNI 30111222 · Cama B-12 (Pabellón B) · Jefe/a de hogar. Ficha incompleta');
+    assert.deepEqual(ui.eventos, [['persona', 1, 'ALOJADO']], 'la ficha de una confirmada se completa también con la familia alojada');
   } finally { await ui.close(); }
 });
 
@@ -715,7 +719,7 @@ test('Integrantes: «Agregar persona» confirma, manda con uuid y recarga; el re
 
 // ---- EmergenciaApp: el recorrido y el router por estado_actual ----
 
-async function montarApp({integrantes = null} = {}) {
+async function montarApp({integrantes = null, ficha = null} = {}) {
   const pantallas = {};
   const alerts = [];
   const toasts = [];
@@ -738,7 +742,10 @@ async function montarApp({integrantes = null} = {}) {
     '../screens/EmergenciaDerivacionScreen': {__esModule: true, default: capturar('derivacion')},
     '../screens/EmergenciaIntegrantesScreen': {__esModule: true, default: integrantes
       ? (props) => { pantallas.integrantes = props; return React.createElement(integrantes, props); } : capturar('integrantes')},
+    '../screens/EmergenciaFichaScreen': {__esModule: true, default: ficha
+      ? (props) => { pantallas.ficha = props; return React.createElement(ficha, props); } : capturar('ficha')},
     '@react-native-community/netinfo': {__esModule: true, default: {addEventListener: () => () => {}}},
+    '../services/emergenciaLimpieza': {depurarBorradoresFicha: async () => {}},
     '../services/emergenciaCola': {syncPendientes: async () => ({}), getPendingCount: async () => 0, getResumenPendientes: async () => ({}),
       reintentar: async () => ({}), getLocalidadesGuardadas: async () => ({localidades: []}), getBorradorEnCurso: async () => null, descartar: async () => true},
     '../utils/emergencia': {avisoDeSalida: () => null},
@@ -749,7 +756,7 @@ async function montarApp({integrantes = null} = {}) {
   const banner = () => tree.root.findByType('Banner');
   const hacer = async (fn) => renderer.act(async () => { fn(); await esperar(2); });
   return {pantallas, alerts, toasts, banner, hacer, titulo: () => banner().props.title, atras: () => hacer(() => banner().props.onBackPress()),
-    vista: () => ['dispositivos', 'buscar', 'derivacion', 'integrantes'].find(n => tree.root.findAll(x => x.type === mocks[`../screens/${{dispositivos: 'EmergenciaMisDispositivosScreen', buscar: 'EmergenciaLlegadaBuscarScreen', derivacion: 'EmergenciaDerivacionScreen', integrantes: 'EmergenciaIntegrantesScreen'}[n]}`].default).length),
+    vista: () => ['dispositivos', 'buscar', 'derivacion', 'integrantes', 'ficha'].find(n => tree.root.findAll(x => x.type === mocks[`../screens/${{dispositivos: 'EmergenciaMisDispositivosScreen', buscar: 'EmergenciaLlegadaBuscarScreen', derivacion: 'EmergenciaDerivacionScreen', integrantes: 'EmergenciaIntegrantesScreen', ficha: 'EmergenciaFichaScreen'}[n]}`].default).length),
     close: () => renderer.act(async () => tree.unmount())};
 }
 

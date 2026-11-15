@@ -343,7 +343,7 @@ async function montarAuth(modulos) {
   await r.api.setModuloActivo('emergencia');
   const auth = loadModule('src/context/AuthContext.js', {
     react: React, '../services/becasApi': r.api, '../services/sinModulo': sin, '../services/modulos': r.modulos,
-    '../services/emergenciaPerfil': e,
+    '../services/emergenciaPerfil': e, '../services/emergenciaLimpieza': r.load('./emergenciaLimpieza'),
   });
   let actual;
   const Espia = () => { actual = auth.useAuth(); return null; };
@@ -419,5 +419,57 @@ test('m3: AuthContext: el logout borra el perfil guardado de ese usuario', async
     assert.equal(ui.auth().isAuthenticated, false);
     assert.equal(ui.r.legacy.has('emergencia_perfil:7'), false);
     assert.equal(ui.r.legacy.has('emergencia_perfil:9'), true, 'el de otro usuario no se toca');
+  } finally { await ui.close(); }
+});
+
+test('MAJOR 2 (PR #30): el logout borra los borradores de la ficha de Emergencia (datos personales y de salud)', async () => {
+  const ui = await montarAuth(['emergencia']);
+  try {
+    ui.r.legacy.set('emergencia_llegadas_ficha:7', JSON.stringify({'184:2': {modo: 'confirmar', plano: {dni: '45111222'}, guardado_en: Date.now()}}));
+    ui.r.legacy.set('emergencia_llegadas_ficha:9', JSON.stringify({}));
+    await renderer.act(async () => { await ui.auth().logout(); });
+    assert.equal(ui.auth().isAuthenticated, false);
+    assert.deepEqual([...ui.r.legacy.keys()].filter(k => k.startsWith('emergencia_llegadas_ficha:')), []);
+  } finally { await ui.close(); }
+});
+
+// ---- Segunda ronda de la revisión del PR #30: la sesión que se corta sola también limpia ----
+const FICHA = 'emergencia_llegadas_ficha:7';
+const borradorDe = (owner = '7') => JSON.stringify({'184:2': {modo: 'confirmar', plano: {dni: '45111222'}, guardado_en: Date.now(), owner}});
+const fichasGuardadas = (r) => [...r.legacy.keys()].filter(k => k.startsWith('emergencia_llegadas_ficha:'));
+
+test('MINOR A (PR #30): la sesión vencida (401) borra los borradores de la ficha', async () => {
+  const ui = await montarAuth(['emergencia']);
+  try {
+    ui.r.legacy.set(FICHA, borradorDe());
+    router(ui.r, async () => response(401, {detail: 'Invalid token.'}));
+    await renderer.act(async () => { await ui.r.api.becasRequest('/api/emergencia/casos/mios/').catch(() => {}); await esperar(); await esperar(); });
+    assert.equal(ui.auth().isAuthenticated, false);
+    assert.deepEqual(fichasGuardadas(ui.r), []);
+  } finally { await ui.close(); }
+});
+
+test('MINOR A (PR #30): sacar Emergencia (SIN_MODULO) borra los borradores; sacar otro módulo no', async () => {
+  const ui = await montarAuth(['becas', 'emergencia']);
+  try {
+    ui.r.legacy.set(FICHA, borradorDe());
+    const token = await ui.r.api.getBecasToken();
+    await renderer.act(async () => { ui.sin.notificarSinModulo('becas', token, 'x'); await esperar(); await esperar(); });
+    assert.deepEqual([...ui.auth().modulos], ['emergencia']);
+    assert.deepEqual(fichasGuardadas(ui.r), [FICHA], 'sigue con Emergencia: el borrador queda');
+    await renderer.act(async () => { ui.sin.notificarSinModulo('emergencia', token, 'Sin acceso.'); await esperar(); await esperar(); });
+    assert.equal(ui.auth().isAuthenticated, false);
+    assert.deepEqual(fichasGuardadas(ui.r), [], 'sin Emergencia, los borradores de la ficha no quedan');
+  } finally { await ui.close(); }
+});
+
+test('MINOR A (PR #30): al entrar se depuran los borradores de otro usuario', async () => {
+  const ui = await montarAuth(['becas']);
+  try {
+    ui.r.legacy.set('emergencia_llegadas_ficha:9', borradorDe('9'));
+    ui.r.legacy.set(FICHA, borradorDe());
+    router(ui.r, async () => response(200, {token: 'tok-2', user_id: 7, username: 'agente', modulos: ['becas']}));
+    await renderer.act(async () => { await ui.auth().login('agente', 'x'); await esperar(); await esperar(); });
+    assert.deepEqual(fichasGuardadas(ui.r), [FICHA], 'el de otro usuario se borra al entrar, sin abrir Emergencia');
   } finally { await ui.close(); }
 });

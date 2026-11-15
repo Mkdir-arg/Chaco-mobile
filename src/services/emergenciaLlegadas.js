@@ -2,19 +2,22 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Crypto from 'expo-crypto';
 import { getBecasToken, getStoredBecasUser } from './becasApi';
 import {
-  aceptarDerivacion, agregarIntegrante, buscarFamilia, errorObsoleto, esConflictoDeEstado, esUuidEnUso, getIntegrantes,
-  rechazarDerivacion,
+  aceptarDerivacion, agregarIntegrante, buscarFamilia, completarFichaIntegrante, confirmarIntegrante, errorObsoleto,
+  esConflictoDeEstado, esUuidEnUso, getIntegrante, getIntegrantes, getPlazas, rechazarDerivacion,
 } from './emergenciaApi';
 import { esSinModulo } from './sinModulo';
 import { erroresDelServidor } from '../utils/emergencia';
 import { cleanDigits, isValidDni } from '../utils/dni';
+import { CAMPOS_FICHA, SECCIONES_OPCIONALES, fichaDesdePlano } from '../utils/fichaEmergencia';
 import { hayConexion } from './emergenciaKits';
+import { PREFIJO_BORRADOR_FICHA, VIDA_BORRADOR_MS, enOrdenGuardado } from './emergenciaLimpieza';
 
 // La red, como M3: en web `navigator.onLine`, en nativo NetInfo.
 export { escucharRed, hayConexion } from './emergenciaKits';
 
-// M2 · Llegada de familias, parte 1 (contrato-app-emergencia §13.1 a §13.5): buscar a la familia por
-// DNI, aceptar o rechazar la derivación, los integrantes y «agregar persona». Va SIN cola y sin
+// M2 · Llegada de familias (contrato-app-emergencia §13.1 a §13.8): buscar a la familia por DNI,
+// aceptar o rechazar la derivación, los integrantes y «agregar persona» (parte 1), y una persona con
+// su ficha, el mapa de camas y «confirmar persona» (parte 2). Va SIN cola y sin
 // lectura guardada: aceptar, confirmar y alojar trabajan sobre camas compartidas con toda la red
 // (RU-3). Sin red la pantalla se bloquea con un aviso.
 //
@@ -483,4 +486,253 @@ export const agregarPersona = async (sesion, casoId) => {
     error.uuid = uuid;
     throw error;
   }
+};
+
+// ---- Parte 2: una persona y su ficha (§13.6), el mapa de camas (§13.7) y confirmar (§13.8) ----
+
+export const TEXTO_CONFIRMAR_INCIERTO = 'No se pudo saber si la persona quedó confirmada. «Reintentar confirmar» manda el mismo pedido: si ya había llegado, no la confirma dos veces ni toma otra cama.';
+export const TEXTO_FICHA_INCIERTA = 'No se pudo saber si la ficha se guardó. «Reintentar» manda lo mismo: guardarla dos veces no cambia nada.';
+export const TEXTO_PERSONA_NO_ENCONTRADA = 'Esa persona ya no está en la familia, o el caso ya no es de tu dispositivo. Se vuelven a cargar los integrantes.';
+
+// La fila de §13.6: la de §13.5 más `ficha` (el Formulario 2 guardado, `{}` sin confirmar) y
+// `secciones_incompletas`.
+export const normalizarPersona = (payload) => {
+  const fila = normalizarIntegrante(payload);
+  if (!fila) return null;
+  const ficha = payload.ficha && typeof payload.ficha === 'object' && !Array.isArray(payload.ficha) ? payload.ficha : {};
+  return {
+    ...fila,
+    ficha,
+    secciones_incompletas: (Array.isArray(payload.secciones_incompletas) ? payload.secciones_incompletas : [])
+      .filter((s) => typeof s === 'string'),
+  };
+};
+
+// §13.7. La app mira solo `elegible` para dejar elegir; `estado` da el texto propio.
+const ESTADOS_CAMA = {
+  RESERVADA_FAMILIA: ['Reservada para esta familia', 'warning'],
+  LIBRE: ['Libre', 'success'],
+  OCUPADA: ['Ocupada', 'gray'],
+  FUERA_SERVICIO: ['Fuera de servicio', 'danger'],
+  RESERVADA: ['Reservada para otra persona', 'gray'],
+};
+export const estadoDeCama = (estado) => {
+  const [titulo, tono] = ESTADOS_CAMA[String(estado || '').toUpperCase()] || ['No disponible', 'gray'];
+  return { titulo, tono };
+};
+
+export const normalizarMapa = (payload) => {
+  const datos = payload && typeof payload === 'object' ? payload : {};
+  const sectores = (Array.isArray(datos.sectores) ? datos.sectores : []).map((item) => {
+    if (!item || typeof item !== 'object' || !item.sector || item.sector.id == null) return null;
+    const plazas = (Array.isArray(item.plazas) ? item.plazas : []).filter((p) => p && p.id != null).map((p) => ({
+      id: p.id,
+      codigo: textoPlano(p.codigo) || String(p.id),
+      nombre: textoPlano(p.nombre) || textoPlano(p.codigo) || `Cama ${p.id}`,
+      estado: textoPlano(p.estado),
+      elegible: p.elegible === true,
+      detalle: textoPlano(p.detalle).trim(),
+    }));
+    return {
+      sector: { id: item.sector.id, nombre: textoPlano(item.sector.nombre) || `Sector ${item.sector.id}`, perfil: textoPlano(item.sector.perfil) },
+      plazas,
+      total: item.total != null ? entero(item.total) : plazas.length,
+      libres: entero(item.libres),
+      reservadas_familia: entero(item.reservadas_familia),
+    };
+  }).filter(Boolean);
+  return { caso: datos.caso ?? null, sectores };
+};
+
+export const camasElegibles = (mapa) => (mapa?.sectores || []).flatMap((s) => s.plazas.filter((p) => p.elegible));
+export const buscarCama = (mapa, id) => (id == null ? null
+  : (mapa?.sectores || []).flatMap((s) => s.plazas).find((p) => String(p.id) === String(id)) || null);
+
+// La cama que se propone (§13.7): la primera guardada para esta familia, en el orden del mapa (sectores
+// por nombre, camas por código). Sin ninguna (la persona se agregó, o ya se usaron todas), ninguna: la
+// guardia elige una libre.
+export const camaPorDefecto = (mapa) => (mapa?.sectores || []).flatMap((s) => s.plazas)
+  .find((p) => p.elegible && p.estado === 'RESERVADA_FAMILIA') || null;
+
+// ¿Sigue sirviendo la cama elegida con este mapa? Si no, la que se propone en su lugar (o null).
+export const revisarCama = (mapa, plazaId) => {
+  const actual = buscarCama(mapa, plazaId);
+  if (actual?.elegible) return { plaza: actual, cambio: false };
+  return { plaza: camaPorDefecto(mapa), cambio: plazaId != null, anterior: actual };
+};
+
+// §13.6.
+export const cargarPersona = async (sesion, casoId, n) => {
+  const persona = normalizarPersona(await conSesion(sesion, (op) => getIntegrante(casoId, n, op), { timeoutMs: LIMITES.lecturaMs }));
+  if (!persona) {
+    throw crearError('RESPUESTA', 'El servidor no devolvió a la persona.', { clasificacion: { tipo: 'rechazo', mensaje: 'El servidor no devolvió a la persona. Probá de nuevo.' } });
+  }
+  return persona;
+};
+
+// §13.7.
+export const cargarCamas = async (sesion, dispositivoId, casoId) => normalizarMapa(
+  await conSesion(sesion, (op) => getPlazas(dispositivoId, casoId, op), { timeoutMs: LIMITES.lecturaMs }));
+
+// Los campos del 400 de confirmar y completar que van a un campo de la pantalla: los de la ficha (con
+// su nombre plano), `plaza`, y el «sin datos» de cada sección. `orden` y lo demás van a generales.
+const CAMPOS_PERSONA = [...CAMPOS_FICHA, 'plaza', ...SECCIONES_OPCIONALES.map((s) => `${s}_sin_datos`)];
+
+// «Confirmar persona» (§13.8): idempotente por `uuid_cliente`. Como «Agregar persona», el uuid nace al
+// mandar y se guarda en AsyncStorage por usuario, caso y persona hasta saber el resultado: volver,
+// re-entrar, la recarga del router o cerrar la app no lo cambian, y el reintento con el mismo uuid
+// devuelve la misma fila (no confirma dos veces ni toma otra cama, aunque se haya elegido otra).
+// - Se olvida con 2xx y con las respuestas que dicen en qué quedó: 400 VALIDACION (la persona no se
+//   confirmó: el reenvío con el mismo uuid habría dado 200), 404 y 409 (otra guardia la confirmó, o el
+//   caso ya no está en curso).
+// - Se conserva con red, timeout, 5xx, página del WAF, 429, 403 y 401: el pedido pudo haber llegado.
+const CLAVE_CONFIRMAR = 'emergencia_llegadas_confirmar';
+const claveConfirmar = (owner) => `${CLAVE_CONFIRMAR}:${owner}`;
+const idPersona = (casoId, n) => `${casoId}:${n}`;
+const leerMapa = async (clave) => {
+  try {
+    const crudo = await AsyncStorage.getItem(clave);
+    const valor = crudo ? JSON.parse(crudo) : {};
+    return valor && typeof valor === 'object' && !Array.isArray(valor) ? valor : {};
+  } catch {
+    return {};
+  }
+};
+const modificarMapa = (clave, cambio) => enOrdenGuardado(async () => {
+  const todas = await leerMapa(clave);
+  const resultado = cambio(todas);
+  if (Object.keys(todas).length) await AsyncStorage.setItem(clave, JSON.stringify(todas));
+  else await AsyncStorage.removeItem(clave);
+  return resultado;
+});
+
+// El uuid de un «Confirmar persona» sin resultado para esa persona, o null.
+export const confirmarPendiente = async (sesion, casoId, n) => {
+  if (!sesion?.owner) return null;
+  const todas = await enOrdenGuardado(() => leerMapa(claveConfirmar(sesion.owner)));
+  const uuid = todas[idPersona(casoId, n)];
+  return typeof uuid === 'string' ? uuid : null;
+};
+
+// Se olvida cuando el servidor ya muestra a la persona confirmada (el pendiente ya no tiene a qué volver).
+export const olvidarConfirmarPendiente = async (sesion, casoId, n) => {
+  if (!sesion?.owner) return;
+  await modificarMapa(claveConfirmar(sesion.owner), (todas) => { delete todas[idPersona(casoId, n)]; });
+};
+
+const RESUELVEN_CONFIRMAR = ['validacion', 'no_encontrado', 'conflicto', 'uuid_en_uso'];
+
+// `plano`: la ficha aplanada de la pantalla (utils/fichaEmergencia); se manda anidada, con las ocho
+// secciones (las 4 a 8 solo con lo que se haya cargado). Devuelve
+// { integrante, confirmadas, total_declarado, reserva_liberada, uuid, otraCama } — `otraCama` es la
+// cama con la que el servidor dice que quedó, si no es la elegida (el reenvío de un envío anterior que
+// había llegado con otra): la pantalla lo avisa.
+export const confirmarPersona = async (sesion, casoId, n, { plano, plazaId } = {}) => {
+  const id = idPersona(casoId, n);
+  const clave = claveConfirmar(sesion.owner);
+  let nuevo = false;
+  const uuid = await modificarMapa(clave, (todas) => {
+    if (typeof todas[id] !== 'string') {
+      todas[id] = crearUuid();
+      nuevo = true;
+    }
+    return todas[id];
+  });
+  const olvidar = () => modificarMapa(clave, (todas) => { if (todas[id] === uuid) delete todas[id]; });
+  try {
+    const payload = await conSesion(sesion, (op) => confirmarIntegrante(casoId, n,
+      { uuid_cliente: uuid, plaza_id: plazaId, ficha: fichaDesdePlano(plano) }, op),
+    { timeoutMs: LIMITES.accionMs, campos: CAMPOS_PERSONA });
+    await olvidar();
+    const integrante = normalizarIntegrante(payload?.integrante);
+    const otraCama = integrante?.plaza && String(integrante.plaza.id) !== String(plazaId) ? integrante.plaza : null;
+    return {
+      integrante,
+      confirmadas: entero(payload?.confirmadas),
+      total_declarado: entero(payload?.total_declarado),
+      reserva_liberada: payload?.reserva_liberada === true,
+      uuid,
+      otraCama,
+    };
+  } catch (error) {
+    const tipo = error.clasificacion?.tipo;
+    // Sin red no salió nada: un uuid recién nacido no queda como pendiente (uno de antes, sí).
+    if (RESUELVEN_CONFIRMAR.includes(tipo) || (tipo === 'sin_red' && nuevo)) await olvidar();
+    if (tipo === 'reintentable') error.clasificacion.mensaje = TEXTO_CONFIRMAR_INCIERTO;
+    error.uuid = uuid;
+    throw error;
+  }
+};
+
+// «Completar la ficha» (§13.6): las secciones 4 a 8 de `secciones` (las que cambiaron). Es un reemplazo
+// por sección: repetirlo deja lo mismo, así que tras un corte se reintenta igual, sin uuid.
+// Devuelve { ficha_completa, secciones_incompletas }.
+export const completarFicha = async (sesion, casoId, n, { plano, secciones = SECCIONES_OPCIONALES } = {}) => {
+  const validas = secciones.filter((s) => SECCIONES_OPCIONALES.includes(s));
+  try {
+    const payload = await conSesion(sesion, (op) => completarFichaIntegrante(casoId, n, { ficha: fichaDesdePlano(plano, validas) }, op),
+      { timeoutMs: LIMITES.accionMs, campos: CAMPOS_PERSONA });
+    return {
+      ficha_completa: payload?.ficha_completa === true,
+      secciones_incompletas: (Array.isArray(payload?.secciones_incompletas) ? payload.secciones_incompletas : []).filter((s) => typeof s === 'string'),
+    };
+  } catch (error) {
+    if (error.clasificacion?.tipo === 'reintentable') error.clasificacion.mensaje = TEXTO_FICHA_INCIERTA;
+    throw error;
+  }
+};
+
+// ---- Borrador de la ficha en curso ----
+// La ficha es larga y la familia está en la puerta: lo tipeado se guarda en el teléfono (AsyncStorage,
+// por usuario, caso y persona) para no perderlo si la guardia vuelve atrás, el router recarga por un
+// 409 o se cierra la app. NO es una lectura guardada (sin red la pantalla igual se bloquea) ni una
+// cola: solo lo que la guardia escribió y todavía no se mandó con éxito. Se borra al confirmar o
+// guardar, cuando el servidor dice que ya no aplica (404, 409, 403, la persona ya confirmada para un
+// borrador de confirmación), con el logout y al abrir el módulo con otro usuario
+// (`emergenciaLimpieza`), y vence a las 48 h.
+// - 'confirmar': el plano entero y la cama (la persona no tiene ficha en el servidor que pisar).
+// - 'completar': SOLO las secciones tocadas y su `base` (utils/fichaEmergencia `borradorDeCompletar`):
+//   al recuperarlas se ponen sobre la ficha de ahora del servidor (`recuperarSobre`).
+const claveBorrador = (owner) => `${PREFIJO_BORRADOR_FICHA}${owner}`;
+export { VIDA_BORRADOR_MS };
+
+const vigente = (borrador, modo) => !!borrador && typeof borrador === 'object' && borrador.modo === modo
+  && Date.now() - Number(borrador.guardado_en || 0) < VIDA_BORRADOR_MS
+  && (modo === 'confirmar' ? !!borrador.plano && typeof borrador.plano === 'object'
+    : !!borrador.secciones && typeof borrador.secciones === 'object');
+
+export const guardarBorradorFicha = async (sesion, casoId, n, { modo, plano, plazaId = null, secciones, base }) => {
+  if (!sesion?.owner) return;
+  await modificarMapa(claveBorrador(sesion.owner), (todas) => {
+    Object.keys(todas).forEach((k) => { if (!(Date.now() - Number(todas[k]?.guardado_en || 0) < VIDA_BORRADOR_MS)) delete todas[k]; });
+    const id = idPersona(casoId, n);
+    if (modo === 'completar') {
+      // Nada tocado respecto de la ficha del servidor: no hay borrador.
+      if (!secciones || !Object.keys(secciones).length) delete todas[id];
+      else todas[id] = { modo, secciones, base: base || {}, guardado_en: Date.now() };
+    } else {
+      todas[id] = { modo, plano, plaza_id: plazaId, guardado_en: Date.now() };
+    }
+  });
+};
+
+// El borrador de esa persona si es del mismo modo y no venció; si no, null (y el que no sirve se borra).
+// 'confirmar' → { plano, plazaId }; 'completar' → { secciones, base }.
+export const leerBorradorFicha = async (sesion, casoId, n, modo) => {
+  if (!sesion?.owner) return null;
+  const id = idPersona(casoId, n);
+  return modificarMapa(claveBorrador(sesion.owner), (todas) => {
+    const borrador = todas[id];
+    if (!vigente(borrador, modo)) {
+      delete todas[id];
+      return null;
+    }
+    return modo === 'confirmar' ? { plano: borrador.plano, plazaId: borrador.plaza_id ?? null }
+      : { secciones: borrador.secciones, base: borrador.base || {} };
+  });
+};
+
+export const borrarBorradorFicha = async (sesion, casoId, n) => {
+  if (!sesion?.owner) return;
+  await modificarMapa(claveBorrador(sesion.owner), (todas) => { delete todas[idPersona(casoId, n)]; });
 };

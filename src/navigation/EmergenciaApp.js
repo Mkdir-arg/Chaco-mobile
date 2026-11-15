@@ -16,10 +16,12 @@ import EmergenciaRecibirEntregaScreen from '../screens/EmergenciaRecibirEntregaS
 import EmergenciaLlegadaBuscarScreen from '../screens/EmergenciaLlegadaBuscarScreen';
 import EmergenciaDerivacionScreen from '../screens/EmergenciaDerivacionScreen';
 import EmergenciaIntegrantesScreen from '../screens/EmergenciaIntegrantesScreen';
+import EmergenciaFichaScreen from '../screens/EmergenciaFichaScreen';
 import {
   descartar, getBorradorEnCurso, getLocalidadesGuardadas, getPendingCount, getResumenPendientes, reintentar, syncPendientes,
 } from '../services/emergenciaCola';
 import { avisoDeSalida } from '../utils/emergencia';
+import { depurarBorradoresFicha } from '../services/emergenciaLimpieza';
 
 const SYNC_INTERVAL_MS = 8000;
 const RECONNECT_DELAY_MS = 1800;
@@ -34,11 +36,14 @@ const TITULOS = {
   llegadas_buscar: 'Llegada de familias',
   llegadas_derivacion: 'Derivación',
   llegadas_integrantes: 'Integrantes',
+  llegadas_ficha: 'Persona',
 };
 // Las vistas que se vuelven a pedir con el botón de sincronizar del Banner.
-const VISTAS_RECARGABLES = ['inicio', 'kits_dispositivos', 'kits_entregas', 'llegadas_dispositivos', 'llegadas_integrantes'];
+const VISTAS_RECARGABLES = ['inicio', 'kits_dispositivos', 'kits_entregas', 'llegadas_dispositivos', 'llegadas_integrantes', 'llegadas_ficha'];
 const VISTAS_M1 = ['envios', 'formulario'];
 const INICIO = { vista: 'inicio', uuid: null };
+// El mismo texto que TEXTO_PERSONA_NO_ENCONTRADA de emergenciaLlegadas (el router no importa servicios).
+const TEXTO_PERSONA_NO_ENCONTRADA = 'Esa persona ya no está en la familia, o el caso ya no es de tu dispositivo. Se vuelven a cargar los integrantes.';
 
 // Al volver la red, `alVolver`. En web, el evento `online` del navegador (la cola mira
 // `navigator.onLine`: el estado guardado de NetInfo web puede seguir diciendo «sin internet»); en
@@ -60,7 +65,7 @@ const escucharReconexion = (alVolver) => {
 
 // Módulo Emergencia: inicio con los accesos del perfil -> M1 («Ingreso de familias»: mis envíos y
 // el Formulario 1), M2 («Llegada de familias»: mis dispositivos -> buscar por DNI -> derivación ->
-// integrantes, con conexión) y M3 («Recepción de kits»: mis dispositivos -> entregas por recibir ->
+// integrantes -> una persona (confirmar con su ficha y su cama, o completar la ficha), con conexión) y M3 («Recepción de kits»: mis dispositivos -> entregas por recibir ->
 // recibir, sin cola y con conexión). Como Dispositivos, no importa nada de los otros módulos: comparte sesión, tema
 // y componentes. La cola de M1 se sincroniza solo mientras este árbol está montado.
 export default function EmergenciaApp({ onCambiarModulo }) {
@@ -76,8 +81,8 @@ export default function EmergenciaApp({ onCambiarModulo }) {
   const [pendientes, setPendientes] = useState(0);
   const [syncTick, setSyncTick] = useState(0);
   const [enviadosTick, setEnviadosTick] = useState(0);
-  // Una acción con conexión mandándose (recibir kits, aceptar o rechazar una derivación, agregar una
-  // persona): no se sale de la pantalla hasta saber el resultado.
+  // Una acción con conexión mandándose (recibir kits, aceptar o rechazar una derivación, agregar,
+  // confirmar a una persona o guardar su ficha): no se sale de la pantalla hasta saber el resultado.
   const [enviando, setEnviando] = useState(false);
   // Hasta cuándo (ms) el back pidió no buscar por DNI (429 de §13.2): sobrevive a volver y re-entrar.
   const [esperaBuscarHasta, setEsperaBuscarHasta] = useState(0);
@@ -121,6 +126,8 @@ export default function EmergenciaApp({ onCambiarModulo }) {
     sincronizarDeFondo();
     // La lista de localidades se guarda al entrar y se refresca una vez por día (§5).
     getLocalidadesGuardadas().catch(() => {});
+    // Borradores de la ficha (M2): los de otro usuario se borran y los vencidos también.
+    Promise.resolve().then(() => depurarBorradoresFicha(user?.id)).catch(() => {});
     const timer = setInterval(sincronizarDeFondo, SYNC_INTERVAL_MS);
     const desuscribir = escucharReconexion(() => {
       if (reconexion.current) clearTimeout(reconexion.current);
@@ -272,6 +279,23 @@ export default function EmergenciaApp({ onCambiarModulo }) {
   const verIntegrantes = (caso, dni) => setPantalla((actual) => ({
     ...actual, vista: 'llegadas_integrantes', caso, dni: dni ?? actual.dni, n: (actual.n || 0) + 1,
   }));
+  // Una persona de la familia (§13.6 a §13.8). `caso` es el de los integrantes (con su estado).
+  const verPersona = (integrante, caso) => setPantalla((actual) => ({
+    ...actual, vista: 'llegadas_ficha', persona: { n: integrante.n }, caso: caso || actual.caso, n: (actual.n || 0) + 1,
+  }));
+  // Confirmada o guardada: a los integrantes, que se recargan al montarse.
+  const terminarPersona = () => {
+    setEnviando(false);
+    setPantalla((actual) => ({ ...actual, vista: 'llegadas_integrantes', n: (actual.n || 0) + 1 }));
+  };
+  // 404 de la persona: puede ser que `n` ya no sea de la familia o que el caso ya no sea de este
+  // dispositivo (el back no distingue): se recargan los integrantes, que con un caso ajeno dan su
+  // propio 404 y vuelven a «mis dispositivos».
+  const personaNoEncontrada = () => {
+    setEnviando(false);
+    showToast({ type: 'warning', message: TEXTO_PERSONA_NO_ENCONTRADA });
+    setPantalla((actual) => ({ ...actual, vista: 'llegadas_integrantes', n: (actual.n || 0) + 1 }));
+  };
   const llegadaNoEncontrada = () => {
     setEnviando(false);
     showToast({ type: 'warning', message: 'Eso ya no está entre lo tuyo. Se recargó la lista de tus dispositivos.' });
@@ -297,12 +321,14 @@ export default function EmergenciaApp({ onCambiarModulo }) {
 
   const { vista, uuid } = pantalla;
   const titulo = vista === 'inicio' ? `Hola, ${displayName}`
-    : (['kits_entregas', 'llegadas_buscar'].includes(vista) && pantalla.dispositivo?.nombre) || TITULOS[vista];
+    : (['kits_entregas', 'llegadas_buscar'].includes(vista) && pantalla.dispositivo?.nombre)
+      || (vista === 'llegadas_ficha' && pantalla.persona?.n != null && `Persona ${pantalla.persona.n}`) || TITULOS[vista];
   const volver = () => {
     if (enviando) return;
     if (vista === 'formulario') setPantalla({ vista: 'envios', uuid: null });
     else if (vista === 'kits_recibir') verEntregas();
     else if (vista === 'kits_entregas' && !pantalla.unico) verDispositivos();
+    else if (vista === 'llegadas_ficha') setPantalla((actual) => ({ ...actual, vista: 'llegadas_integrantes', n: (actual.n || 0) + 1 }));
     else if (vista === 'llegadas_derivacion' || vista === 'llegadas_integrantes') verBuscar({ dni: pantalla.dni || '' });
     else if (vista === 'llegadas_buscar' && !pantalla.unico) verDispositivosLlegadas();
     else setPantalla(INICIO);
@@ -362,7 +388,12 @@ export default function EmergenciaApp({ onCambiarModulo }) {
         {vista === 'llegadas_integrantes' ? (
           <EmergenciaIntegrantesScreen key={`integrantes-${pantalla.caso?.id}-${pantalla.n}`} caso={pantalla.caso} recarga={recarga}
             onConflicto={recargarPorEstado} onNoEncontrado={llegadaNoEncontrada} onSinModulo={sinModulo}
-            onProximamente={proximamente} onEnviando={setEnviando} />
+            onProximamente={proximamente} onEnviando={setEnviando} onAbrirPersona={verPersona} />
+        ) : null}
+        {vista === 'llegadas_ficha' ? (
+          <EmergenciaFichaScreen key={`ficha-${pantalla.caso?.id}-${pantalla.persona?.n}-${pantalla.n}`} caso={pantalla.caso}
+            n={pantalla.persona?.n} dispositivo={pantalla.dispositivo} recarga={recarga} onTerminar={terminarPersona}
+            onConflicto={recargarPorEstado} onNoEncontrado={personaNoEncontrada} onSinModulo={sinModulo} onEnviando={setEnviando} />
         ) : null}
       </View>
       {vista === 'inicio' ? (
