@@ -260,7 +260,7 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
       const args={entrega,recepcion:r,cantidades:r.cantidades,remito,observacion:r.observacion};
       let primero=null;
       try { await k.enviarRecepcion(args); } catch(e){ primero=e.clasificacion&&e.clasificacion.tipo; }
-      const bloqueada=(await k.abrirRecepcion(entrega,7)).bloqueada;
+      const bloqueada=(await k.abrirRecepcion(entrega,7)).incierto;
       const ok=await k.enviarRecepcion(args);
       return {uuid:r.uuid_cliente,recuperada:r.recuperada,primero,bloqueada,ok,despues:(await k.abrirRecepcion(entrega,7)).uuid_cliente};
     });

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Image, ActivityIndicator, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as FileSystem from 'expo-file-system/legacy';
 import TextInput from '../components/FormInput';
 import CustomButton from '../components/CustomButton';
 import { useTheme } from '../context/ThemeContext';
@@ -9,7 +10,8 @@ import * as ImagePicker from '../services/imagePicker';
 import { forgetWebFile } from '../services/webAttachments';
 import {
   MAX_DIGITOS_CANTIDAD, MAX_OBSERVACION, TEXTO_SIN_RED, abrirRecepcion, clasificarErrorRecepcion, descartarIntento,
-  diferenciasDe, enviarRecepcion, errorDeCantidad, escucharRed, guardarRecepcion, hayConexion, textoDeDiferencia, validarRecepcion,
+  diferenciasDe, enviarRecepcion, errorDeCantidad, escucharRed, guardarRecepcion, hayConexion, textoDeDiferencia,
+  textoDeDistinta, validarRecepcion,
 } from '../services/emergenciaKits';
 import { aJpeg, liberarJpeg } from '../utils/jpeg';
 import { formatDate } from '../utils/dates';
@@ -21,7 +23,7 @@ import { fontSizes, radii } from '../theme';
 const AUTOGUARDADO_MS = 400;
 
 export const TEXTO_RECUPERADA = 'Recuperamos la recepción que habías empezado. Volvé a sacar la foto del remito.';
-export const TEXTO_BLOQUEADA = 'Un intento anterior pudo haber llegado al servidor: las cantidades quedan fijas y «Reintentar» manda la misma recepción, sin duplicarla.';
+export const TEXTO_INCIERTA = 'Ya mandaste esta recepción y no se pudo confirmar si llegó. Nada se puede cambiar: «Reintentar» manda la misma (no hace falta volver a sacar la foto) y no se duplica.';
 export const TEXTO_SIN_DIFERENCIAS = 'Coincide con lo enviado.';
 
 const sinVacios = (objeto) => Object.fromEntries(Object.entries(objeto || {}).filter(([, valor]) => valor != null));
@@ -29,10 +31,13 @@ const sinVacios = (objeto) => Object.fromEntries(Object.entries(objeto || {}).fi
 // M3-2 · Recibir una entrega (§12): una cantidad por línea (precargada con lo enviado), la foto del
 // remito (JPEG con aJpeg) y una observación. Requiere conexión: sin red no se manda nada y se avisa.
 // El uuid_cliente nace al abrir (abrirRecepcion) y se conserva mientras la recepción esté abierta,
-// también si se cierra la app; un reintento tras un error de red, timeout, 5xx o 429 usa el mismo.
+// también si se cierra la app. Si un envío quedó incierto (red, timeout, 5xx, 429…), la recepción
+// queda fija y solo se reintenta con el mismo uuid.
 // `onTerminar(motivo, detalle)`: 'recibida' (con el resultado), 'conflicto' (409 de estado: recargar
 // las entregas) o 'no_encontrada' (404: recargar los dispositivos). `onSinModulo(mensaje)`: 403.
-export default function EmergenciaRecibirEntregaScreen({ entrega, dispositivoId = null, onTerminar, onSinModulo }) {
+// `onEnviando(bool)`: hay un envío en curso (el padre no deja salir mientras tanto). El resultado
+// llega al padre aunque la pantalla ya no esté.
+export default function EmergenciaRecibirEntregaScreen({ entrega, dispositivoId = null, onTerminar, onSinModulo, onEnviando }) {
   const { theme, typography } = useTheme();
   const { showToast, showAlert } = useToast();
   const [recepcion, setRecepcion] = useState(null);
@@ -53,6 +58,15 @@ export default function EmergenciaRecibirEntregaScreen({ entrega, dispositivoId 
   const remitoRef = useRef(null);
   remitoRef.current = remito;
 
+  // Suelta el JPEG: la blob: URL en web y, en nativo, el temporal que dejó ImageManipulator.
+  const soltar = (asset) => {
+    if (!asset) return;
+    liberarJpeg(asset);
+    if (Platform.OS !== 'web' && asset.temporal && asset.uri) {
+      Promise.resolve(FileSystem.deleteAsync?.(asset.uri, { idempotent: true })).catch(() => {});
+    }
+  };
+
   useEffect(() => {
     montado.current = true;
     (async () => {
@@ -62,7 +76,8 @@ export default function EmergenciaRecibirEntregaScreen({ entrega, dispositivoId 
         setRecepcion(abierta);
         setCantidades(abierta.cantidades);
         setObservacion(abierta.observacion || '');
-        if (abierta.recuperada) showToast({ type: 'info', message: TEXTO_RECUPERADA });
+        if (abierta.recuperada && !abierta.incierto) showToast({ type: 'info', message: TEXTO_RECUPERADA });
+        if (abierta.uuidEnUso) setFalla(clasificarErrorRecepcion({ status: 409, payload: { code: 'UUID_EN_USO' } }));
       } catch (e) {
         if (montado.current) setErrorCarga(e?.message || 'No se pudo abrir la recepción.');
       }
@@ -72,13 +87,17 @@ export default function EmergenciaRecibirEntregaScreen({ entrega, dispositivoId 
     return () => {
       montado.current = false;
       dejarDeEscuchar();
-      liberarJpeg(remitoRef.current);
+      soltar(remitoRef.current);
     };
   }, [entrega?.id]);
 
+  const incierto = !!recepcion?.incierto;
+  const uuidEnUso = !!recepcion?.uuidEnUso;
+  const bloqueada = incierto || uuidEnUso;
+
   // Lo tipeado se guarda con la recepción (no la foto): sobrevive a cerrar la app.
   useEffect(() => {
-    if (!recepcion || recepcion.bloqueada) return undefined;
+    if (!recepcion || bloqueada) return undefined;
     const timer = setTimeout(() => {
       guardarRecepcion(recepcion.owner, entrega.id, { cantidades, observacion }).catch(() => {});
     }, AUTOGUARDADO_MS);
@@ -93,8 +112,6 @@ export default function EmergenciaRecibirEntregaScreen({ entrega, dispositivoId 
     return () => clearInterval(timer);
   }, [esperando]);
 
-  const bloqueada = !!recepcion?.bloqueada;
-
   const cambiarCantidad = (item, texto) => {
     if (bloqueada) return;
     setCantidades((prev) => ({ ...prev, [item]: texto }));
@@ -108,17 +125,19 @@ export default function EmergenciaRecibirEntregaScreen({ entrega, dispositivoId 
 
   // ---- Foto del remito ----
   const guardarFoto = async (asset) => {
-    if (!asset?.uri && !asset?.file) return;
+    if (bloqueada || (!asset?.uri && !asset?.file)) return;
     setProcesandoFoto(true);
     try {
       const convertido = await aJpeg(asset);
-      if (Platform.OS === 'web' && asset.uri && convertido.uri !== asset.uri) forgetWebFile(asset.uri);
+      // En web el remito sube con `file` (webData): el File del selector no hace falta registrado.
+      if (Platform.OS === 'web' && asset.uri) forgetWebFile(asset.uri);
+      const listo = Platform.OS !== 'web' && convertido.uri !== asset.uri ? { ...convertido, temporal: true } : convertido;
       if (!montado.current) {
-        liberarJpeg(convertido);
+        soltar(listo);
         return;
       }
-      liberarJpeg(remitoRef.current);
-      setRemito(convertido);
+      soltar(remitoRef.current);
+      setRemito(listo);
       setErroresServidor((prev) => (prev.remito ? sinVacios({ ...prev, remito: null }) : prev));
       setFalla((prev) => (prev?.tipo === 'pesada' ? null : prev));
     } catch (e) {
@@ -128,6 +147,7 @@ export default function EmergenciaRecibirEntregaScreen({ entrega, dispositivoId 
     }
   };
   const elegirRemito = () => {
+    if (bloqueada) return;
     const desde = (obtener) => async () => {
       try {
         const resultado = await obtener();
@@ -153,13 +173,18 @@ export default function EmergenciaRecibirEntregaScreen({ entrega, dispositivoId 
     ]);
   };
   const quitarRemito = () => {
-    liberarJpeg(remitoRef.current);
+    if (bloqueada) return;
+    soltar(remitoRef.current);
     setRemito(null);
+    setErroresServidor((prev) => (prev.remito ? sinVacios({ ...prev, remito: null }) : prev));
   };
 
   // ---- Envío ----
   const avisarResultado = (resultado) => {
-    if (resultado.diferencias.length) {
+    if (resultado.distintas?.length) {
+      showAlert('Quedó registrada con otras cantidades', ['El servidor ya tenía esta recepción y quedó la del primer envío:',
+        ...resultado.distintas.map(textoDeDistinta)].join('\n'), [{ text: 'Entendido' }]);
+    } else if (resultado.diferencias.length) {
       showAlert('Recibida con diferencias', [`Entrega ${entrega.numero}: la mesa ve lo que faltó o sobró.`,
         ...resultado.diferencias.map(textoDeDiferencia)].join('\n'), [{ text: 'Entendido' }]);
     } else {
@@ -167,60 +192,74 @@ export default function EmergenciaRecibirEntregaScreen({ entrega, dispositivoId 
     }
   };
 
+  const avisarEnviando = (valor) => {
+    try {
+      onEnviando?.(valor);
+    } catch {
+      // Solo informa.
+    }
+  };
+
   const enviar = async () => {
     if (enviandoRef.current || !recepcion) return;
     enviandoRef.current = true;
     setEnviando(true);
+    avisarEnviando(true);
     setFalla(null);
     try {
       const resultado = await enviarRecepcion({ entrega, recepcion, cantidades, remito, observacion });
-      liberarJpeg(remitoRef.current);
+      soltar(remitoRef.current);
       remitoRef.current = null;
-      if (!montado.current) return;
-      setRemito(null);
+      if (montado.current) setRemito(null);
       avisarResultado(resultado);
       onTerminar?.('recibida', resultado);
     } catch (e) {
       const c = e?.clasificacion || clasificarErrorRecepcion(e);
-      if (!montado.current) return;
-      if (c.tipo === 'sin_red') {
-        setSinRed(true);
-        showAlert('Sin conexión', TEXTO_SIN_RED, [{ text: 'Entendido' }]);
-      } else if (c.tipo === 'conflicto') {
-        showAlert('La entrega ya no se puede recibir', c.mensaje, [{ text: 'Entendido' }]);
+      if (c.tipo === 'conflicto') {
+        showAlert(c.registrada ? 'La recepción ya figura registrada' : 'La entrega ya no se puede recibir', c.mensaje, [{ text: 'Entendido' }]);
         onTerminar?.('conflicto', c);
         return;
-      } else if (c.tipo === 'no_encontrada') {
+      }
+      if (c.tipo === 'no_encontrada') {
         showAlert('Entrega no disponible', c.mensaje, [{ text: 'Entendido' }]);
         onTerminar?.('no_encontrada', c);
         return;
-      } else if (c.tipo === 'sin_modulo') {
+      }
+      if (c.tipo === 'sin_modulo') {
         onSinModulo?.(c.mensaje);
         return;
-      } else if (c.tipo === 'validacion' || c.tipo === 'pesada') {
+      }
+      if (!montado.current) {
+        // La pantalla ya no está (no debería: el padre no deja salir), pero el resultado se dice igual.
+        showToast({ type: 'warning', message: c.mensaje });
+        return;
+      }
+      if (e?.recepcion) setRecepcion((prev) => prev && { ...prev, ...e.recepcion });
+      if (c.tipo === 'sin_red') {
+        setSinRed(true);
+        showAlert('Sin conexión', TEXTO_SIN_RED, [{ text: 'Entendido' }]);
+        return;
+      }
+      if (c.tipo === 'validacion' || c.tipo === 'pesada') {
         setIntentado(true);
         setErroresServidor(c.errores || {});
-        setRecepcion((prev) => prev && { ...prev, bloqueada: false });
-        setFalla(c);
-      } else {
-        // reintentable, uuid_en_uso, sesion, rechazo: el pedido salió con este uuid.
-        setRecepcion((prev) => prev && { ...prev, bloqueada: true });
-        setFalla(c);
-        if (c.espera) {
-          setAhora(Date.now());
-          setEsperaHasta(Date.now() + c.espera);
-        }
+      }
+      setFalla(c);
+      if (c.espera) {
+        setAhora(Date.now());
+        setEsperaHasta(Date.now() + c.espera);
       }
     } finally {
       enviandoRef.current = false;
       if (montado.current) setEnviando(false);
+      avisarEnviando(false);
     }
   };
 
   const recibir = async () => {
-    if (enviandoRef.current || !recepcion) return;
+    if (enviandoRef.current || !recepcion || uuidEnUso) return;
     setIntentado(true);
-    if (Object.keys(validarRecepcion({ entrega, cantidades, remito })).length) return;
+    if (Object.keys(validarRecepcion({ entrega, cantidades, remito, incierto })).length) return;
     if (!await hayConexion()) {
       if (!montado.current) return;
       setSinRed(true);
@@ -229,8 +268,8 @@ export default function EmergenciaRecibirEntregaScreen({ entrega, dispositivoId 
     }
     setSinRed(false);
     const diferencias = diferenciasDe(entrega, cantidades);
-    // El reintento manda lo mismo que el primer intento, que ya se confirmó.
-    if (diferencias.length && !bloqueada) {
+    // El reintento de un envío incierto manda lo mismo que el primero, que ya se confirmó.
+    if (diferencias.length && !incierto) {
       showAlert('Recibir con diferencias', [...diferencias.map(textoDeDiferencia),
         '', 'Después de confirmada, la recepción no se corrige.'].join('\n'), [
         { text: 'Revisar', style: 'cancel' },
@@ -241,6 +280,7 @@ export default function EmergenciaRecibirEntregaScreen({ entrega, dispositivoId 
     await enviar();
   };
 
+  // Solo tras 409 UUID_EN_USO: ese uuid no escribió nada en esta entrega.
   const confirmarDescarteIntento = () => showAlert('Descartar este intento',
     'Se empieza un intento nuevo con lo cargado y otro identificador.', [
       { text: 'Cancelar', style: 'cancel' },
@@ -249,9 +289,9 @@ export default function EmergenciaRecibirEntregaScreen({ entrega, dispositivoId 
         style: 'destructive',
         onPress: async () => {
           try {
-            const uuid = await descartarIntento(recepcion.owner, entrega.id);
-            if (!montado.current) return;
-            setRecepcion((prev) => ({ ...prev, uuid_cliente: uuid, bloqueada: false }));
+            const uuid = await descartarIntento(recepcion, entrega.id);
+            if (!uuid || !montado.current) return;
+            setRecepcion((prev) => ({ ...prev, uuid_cliente: uuid, incierto: false, uuidEnUso: false, descartado: true }));
             setFalla(null);
             setEsperaHasta(0);
           } catch (e) {
@@ -272,7 +312,7 @@ export default function EmergenciaRecibirEntregaScreen({ entrega, dispositivoId 
     return <View style={styles.centro}><ActivityIndicator size="large" color={theme.colors.primary} accessibilityLabel="Abriendo la recepción" /></View>;
   }
 
-  const erroresCliente = intentado ? validarRecepcion({ entrega, cantidades, remito }) : {};
+  const erroresCliente = intentado ? validarRecepcion({ entrega, cantidades, remito, incierto }) : {};
   const errorDeLinea = (item) => [...(erroresCliente.lineas?.[item] || []), ...(erroresServidor.lineas?.[item] || [])];
   const erroresRemito = [...(erroresCliente.remito || []), ...(erroresServidor.remito || [])];
   const diferencias = diferenciasDe(entrega, cantidades);
@@ -284,20 +324,25 @@ export default function EmergenciaRecibirEntregaScreen({ entrega, dispositivoId 
     backgroundColor: bloqueada ? theme.colors.background : theme.colors.surface,
     borderColor: conError ? theme.colors.danger : theme.colors.border,
   }];
-  const mensajes = (lista) => lista.map((mensaje) => (
-    <Text key={mensaje} accessibilityLiveRegion="polite" style={[styles.error, { color: theme.colors.danger, fontFamily: typography.medium }]}>{mensaje}</Text>
+  const mensajes = (lista, prefijo) => lista.map((mensaje, indice) => (
+    <Text key={`${prefijo}:${indice}`} accessibilityLiveRegion="polite" style={[styles.error, { color: theme.colors.danger, fontFamily: typography.medium }]}>{mensaje}</Text>
   ));
+  // Texto de estado siempre sobre su propio fondo (statusTones): se lee igual en tema claro y oscuro.
   const aviso = (tono, texto, icono) => (
     <View accessibilityRole="alert" style={[styles.aviso, { backgroundColor: statusTones[tono].bg, borderColor: statusTones[tono].bd }]}>
       {icono ? <Ionicons name={icono} size={18} color={statusTones[tono].tx} accessible={false} importantForAccessibility="no" /> : null}
       <Text style={[styles.flex, styles.texto, { color: statusTones[tono].tx, fontFamily: typography.semibold }]}>{texto}</Text>
     </View>
   );
+  const insignia = (tono, texto) => (
+    <View style={[styles.insignia, { backgroundColor: statusTones[tono].bg, borderColor: statusTones[tono].bd }]}>
+      <Text accessibilityLiveRegion="polite" style={[styles.ayuda, { color: statusTones[tono].tx, fontFamily: typography.semibold }]}>{texto}</Text>
+    </View>
+  );
 
   const segundos = Math.max(1, Math.ceil((esperaHasta - ahora) / 1000));
-  let tituloBoton = bloqueada ? 'Reintentar' : 'Recibir';
+  let tituloBoton = incierto ? 'Reintentar' : 'Recibir';
   if (esperando) tituloBoton = `Reintentar en ${segundos} s`;
-  const uuidEnUso = falla?.tipo === 'uuid_en_uso';
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: theme.colors.background }} contentContainerStyle={styles.content}
@@ -311,7 +356,7 @@ export default function EmergenciaRecibirEntregaScreen({ entrega, dispositivoId 
         {entrega.observacion_mesa ? <Text style={ayuda}>{`Mesa: ${entrega.observacion_mesa}`}</Text> : null}
       </View>
 
-      {bloqueada && !uuidEnUso ? aviso('info', TEXTO_BLOQUEADA, 'lock-closed-outline') : null}
+      {incierto ? aviso('info', TEXTO_INCIERTA, 'lock-closed-outline') : null}
 
       <View style={tarjeta}>
         <Text accessibilityRole="header" style={[styles.titulo, { color: theme.colors.text, fontFamily: typography.bold }]}>¿Cuánto llegó?</Text>
@@ -333,44 +378,41 @@ export default function EmergenciaRecibirEntregaScreen({ entrega, dispositivoId 
                   keyboardType="number-pad" maxLength={MAX_DIGITOS_CANTIDAD} accessibilityLabel={`Cantidad recibida de ${linea.nombre}`}
                   placeholder="0" placeholderTextColor={theme.colors.textSoft} style={[...caja(errores.length > 0), styles.cantidad]} />
               </View>
-              {resto ? (
-                <Text style={[styles.ayuda, { color: statusTones.warning.tx, fontFamily: typography.semibold }]}>
-                  {resto < 0 ? `Faltan ${-resto}` : `Sobran ${resto}`}
-                </Text>
-              ) : null}
-              {mensajes(errores)}
+              {resto ? insignia('warning', resto < 0 ? `Faltan ${-resto}` : `Sobran ${resto}`) : null}
+              {mensajes(errores, `linea-${item}`)}
             </View>
           );
         })}
-        {mensajes(erroresServidor.cantidades || [])}
+        {mensajes(erroresServidor.cantidades || [], 'cantidades')}
         {diferencias.length
           ? aviso('warning', `Diferencias con lo enviado:\n${diferencias.map(textoDeDiferencia).join('\n')}`)
-          : <Text accessibilityLiveRegion="polite" style={[styles.texto, { color: statusTones.success.tx, fontFamily: typography.semibold }]}>{TEXTO_SIN_DIFERENCIAS}</Text>}
+          : insignia('success', TEXTO_SIN_DIFERENCIAS)}
       </View>
 
       <View style={tarjeta}>
-        <Text accessibilityRole="header" style={[styles.titulo, { color: theme.colors.text, fontFamily: typography.bold }]}>Foto del remito *</Text>
+        <Text accessibilityRole="header" style={[styles.titulo, { color: theme.colors.text, fontFamily: typography.bold }]}>{incierto ? 'Foto del remito' : 'Foto del remito *'}</Text>
         {remito ? (
           <View style={[styles.foto, { borderColor: theme.colors.border }]}>
             <Image source={{ uri: remito.uri }} style={styles.miniatura} accessibilityLabel="Foto del remito" />
             <View style={styles.flex}>
-              <CustomButton title="Cambiar" variant="secondary" size="SM" disabled={procesandoFoto || enviando} onPress={elegirRemito} />
+              <CustomButton title="Cambiar" variant="secondary" size="SM" disabled={procesandoFoto || enviando || bloqueada} onPress={elegirRemito} />
             </View>
-            <Pressable accessibilityRole="button" accessibilityLabel="Quitar foto del remito" disabled={enviando} onPress={quitarRemito}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Quitar foto del remito" accessibilityState={{ disabled: enviando || bloqueada }}
+              disabled={enviando || bloqueada} onPress={quitarRemito}>
               <Ionicons name="trash-outline" size={22} color={theme.colors.danger} accessible={false} importantForAccessibility="no" />
             </Pressable>
           </View>
         ) : (
           <CustomButton title="Sacar foto del remito" variant="secondary" iconLeft="camera-outline"
-            loading={procesandoFoto} disabled={procesandoFoto || enviando} onPress={elegirRemito} />
+            loading={procesandoFoto} disabled={procesandoFoto || enviando || bloqueada} onPress={elegirRemito} />
         )}
-        {mensajes(erroresRemito)}
+        {mensajes(erroresRemito, 'remito')}
 
         <Text style={[etiqueta, styles.separado]}>Observación (opcional)</Text>
         <TextInput value={observacion} onChangeText={(valor) => { if (!bloqueada) setObservacion(valor); }} editable={!bloqueada}
           multiline maxLength={MAX_OBSERVACION} accessibilityLabel="Observación" placeholder="Lo que la mesa tenga que saber"
           placeholderTextColor={theme.colors.textSoft} style={[...caja((erroresServidor.observacion || []).length > 0), styles.areaTexto]} />
-        {mensajes(erroresServidor.observacion || [])}
+        {mensajes(erroresServidor.observacion || [], 'observacion')}
       </View>
 
       {erroresServidor.generales?.length ? aviso('danger', erroresServidor.generales.join('\n')) : null}
@@ -379,12 +421,9 @@ export default function EmergenciaRecibirEntregaScreen({ entrega, dispositivoId 
       {uuidEnUso ? (
         <CustomButton title="Descartar este intento" size="L" variant="secondary" iconLeft="refresh" onPress={confirmarDescarteIntento} />
       ) : (
-        <CustomButton title={tituloBoton} size="L" iconLeft={bloqueada ? 'refresh' : 'checkmark-done-outline'} loading={enviando}
+        <CustomButton title={tituloBoton} size="L" iconLeft={incierto ? 'refresh' : 'checkmark-done-outline'} loading={enviando}
           disabled={enviando || procesandoFoto || esperando} onPress={recibir} />
       )}
-      {falla?.tipo === 'rechazo' ? (
-        <CustomButton title="Descartar este intento" variant="tertiary" iconLeft="trash-outline" disabled={enviando} onPress={confirmarDescarteIntento} />
-      ) : null}
     </ScrollView>
   );
 }
@@ -406,6 +445,7 @@ const styles = StyleSheet.create({
   cantidad: { width: 96, textAlign: 'center' },
   areaTexto: { minHeight: 96, textAlignVertical: 'top' },
   aviso: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderRadius: radii.lg, padding: 10 },
+  insignia: { alignSelf: 'flex-start', borderWidth: 1, borderRadius: radii.full, paddingHorizontal: 10, paddingVertical: 3 },
   foto: { flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderRadius: radii.lg, padding: 8 },
   miniatura: { width: 64, height: 64, borderRadius: radii.md },
 });

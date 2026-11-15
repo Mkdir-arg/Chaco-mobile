@@ -68,6 +68,8 @@ export default function EmergenciaApp({ onCambiarModulo }) {
   const [pendientes, setPendientes] = useState(0);
   const [syncTick, setSyncTick] = useState(0);
   const [enviadosTick, setEnviadosTick] = useState(0);
+  // Recepción de kits mandándose: no se sale de la pantalla hasta saber el resultado.
+  const [enviandoKits, setEnviandoKits] = useState(false);
   // La pasada de fondo en curso (su promesa) y si hay una manual: la manual espera a la de fondo.
   const fondo = useRef(null);
   const manual = useRef(false);
@@ -221,26 +223,30 @@ export default function EmergenciaApp({ onCambiarModulo }) {
   // Con un solo dispositivo se entra directo a sus entregas, y «volver» desde ahí va al inicio.
   const elegirDispositivo = (dispositivo, { unico = false } = {}) => setPantalla({ vista: 'kits_entregas', dispositivo, unico });
   const verEntregas = () => setPantalla((actual) => ({ vista: 'kits_entregas', dispositivo: actual.dispositivo, unico: actual.unico }));
-  const verDispositivos = () => setPantalla({ vista: 'kits_dispositivos' });
+  // `sinEntrarDirecto`: se vuelve por un 404; con un solo dispositivo no se vuelve a entrar solo.
+  const verDispositivos = ({ sinEntrarDirecto = false } = {}) => setPantalla({ vista: 'kits_dispositivos', sinEntrarDirecto });
   // 403 SIN_MODULO: emergenciaApi ya volvió a pedir el perfil; el inicio muestra los accesos nuevos.
   const sinModulo = (mensaje) => {
+    setEnviandoKits(false);
     showAlert('Sin permiso', mensaje, [{ text: 'Entendido' }]);
     setPantalla(INICIO);
   };
   const dispositivoNoEncontrado = () => {
     showToast({ type: 'warning', message: 'Ese dispositivo ya no está entre los tuyos. Se recargó la lista.' });
-    verDispositivos();
+    verDispositivos({ sinEntrarDirecto: true });
   };
   // 'recibida' y 'conflicto' (409 de estado) vuelven a las entregas, que se recargan al montarse;
   // 'no_encontrada' (404) vuelve a «mis dispositivos».
   const terminarRecepcion = (motivo) => {
-    if (motivo === 'no_encontrada') verDispositivos();
+    setEnviandoKits(false);
+    if (motivo === 'no_encontrada') verDispositivos({ sinEntrarDirecto: true });
     else verEntregas();
   };
 
   const { vista, uuid } = pantalla;
   const titulo = vista === 'inicio' ? `Hola, ${displayName}` : (vista === 'kits_entregas' && pantalla.dispositivo?.nombre) || TITULOS[vista];
   const volver = () => {
+    if (enviandoKits) return;
     if (vista === 'formulario') setPantalla({ vista: 'envios', uuid: null });
     else if (vista === 'kits_recibir') verEntregas();
     else if (vista === 'kits_entregas' && !pantalla.unico) verDispositivos();
@@ -254,7 +260,7 @@ export default function EmergenciaApp({ onCambiarModulo }) {
   return (
     <>
       <Banner title={titulo} syncStatus={syncStatus} syncPendingCount={pendientes}
-        onSyncPress={sincronizarAhora} showBackButton={vista !== 'inicio'} onBackPress={volver} />
+        onSyncPress={sincronizarAhora} showBackButton={vista !== 'inicio' && !enviandoKits} onBackPress={volver} />
       <View style={{ flex: 1, backgroundColor: theme.colors.background }}>
         {vista === 'inicio' ? (
           <EmergenciaInicioScreen onAbrir={abrir} recarga={recarga} onCargando={setCargandoPerfil} />
@@ -269,7 +275,8 @@ export default function EmergenciaApp({ onCambiarModulo }) {
             onTerminar={() => { setPantalla({ vista: 'envios', uuid: null }); refrescarEstado(); }} />
         ) : null}
         {vista === 'kits_dispositivos' ? (
-          <EmergenciaMisDispositivosScreen recarga={recarga} onElegir={elegirDispositivo} onSinModulo={sinModulo} />
+          <EmergenciaMisDispositivosScreen recarga={recarga} onElegir={elegirDispositivo} onSinModulo={sinModulo}
+            entrarDirecto={!pantalla.sinEntrarDirecto} />
         ) : null}
         {vista === 'kits_entregas' ? (
           <EmergenciaEntregasScreen key={String(pantalla.dispositivo?.id)} dispositivo={pantalla.dispositivo} recarga={recarga}
@@ -278,7 +285,8 @@ export default function EmergenciaApp({ onCambiarModulo }) {
         ) : null}
         {vista === 'kits_recibir' ? (
           <EmergenciaRecibirEntregaScreen key={String(pantalla.entrega?.id)} entrega={pantalla.entrega}
-            dispositivoId={pantalla.dispositivo?.id ?? null} onTerminar={terminarRecepcion} onSinModulo={sinModulo} />
+            dispositivoId={pantalla.dispositivo?.id ?? null} onTerminar={terminarRecepcion} onSinModulo={sinModulo}
+            onEnviando={setEnviandoKits} />
         ) : null}
       </View>
       {vista === 'inicio' ? (

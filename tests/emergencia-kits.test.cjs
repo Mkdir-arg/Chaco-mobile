@@ -33,7 +33,7 @@ const router = (r, handler) => {
 };
 const campos = (call) => call.init.body.fields.map(([nombre, valor]) => [nombre, typeof valor === 'string' ? valor : {...valor}]);
 const uuidDe = (call) => call.init.body.fields.find(([nombre]) => nombre === 'uuid_cliente')[1];
-const recibirOk = () => response(200, {estado: 'RECIBIDA_CON_DIFERENCIAS', diferencias: [{item: 12, enviada: 10, recibida: 8}]});
+const recibirOk = () => response(200, {estado: 'RECIBIDA_CON_DIFERENCIAS', diferencias: [{item: 12, enviada: 10, recibida: 8}, {item: 14, enviada: 3, recibida: 0}]});
 const fallaDeRed = () => Promise.reject(new TypeError('Load failed'));
 const enviar = (k, entrega, recepcion, extra = {}) => k.enviarRecepcion({entrega, recepcion, cantidades: {12: '8', 14: '0'},
   remito: REMITO, observacion: '  Faltan dos  ', ...extra});
@@ -56,13 +56,14 @@ test('entregas: normaliza §10, resume ítems y nombra estados', async () => {
   const {k, entrega} = await preparar();
   igual(entrega, {id: 31, numero: '2026-K-000031', estado: 'EN_CAMINO', despachada_en: '2026-11-12T10:00:00-03:00',
     observacion_mesa: 'Entregar a la directora.', lineas: [
-      {item: 12, nombre: 'Colchón', unidad: 'unidad', enviada: 10}, {item: 14, nombre: 'Kit alimentario', unidad: 'kit', enviada: 3}]});
+      {item: 12, nombre: 'Colchón', unidad: 'unidad', enviada: 10, recibida: null}, {item: 14, nombre: 'Kit alimentario', unidad: 'kit', enviada: 3, recibida: null}]});
   assert.equal(k.resumenDeItems(entrega), '10 × Colchón · 3 × Kit alimentario');
   assert.equal(k.resumenDeItems({lineas: []}), 'Sin ítems');
   const preparada = k.normalizarEntrega({id: 32, estado: 'PREPARADA', lineas: [{item: 1, enviada: '4'}, {nombre: 'sin item'}]});
   assert.equal(preparada.numero, '32');
   assert.equal(preparada.despachada_en, null);
-  igual(preparada.lineas, [{item: 1, nombre: 'Ítem 1', unidad: '', enviada: 4}]);
+  igual(preparada.lineas, [{item: 1, nombre: 'Ítem 1', unidad: '', enviada: 4, recibida: null}]);
+  igual(k.normalizarEntrega({...ENTREGA, lineas: [{item: 12, enviada: 10, recibida: '8'}]}).lineas[0].recibida, 8, '§11 trae lo recibido');
   igual(k.normalizarEntregas([ENTREGA, null, {numero: 'sin id'}]).map((e) => e.id), [31]);
   igual(k.estadoDeEntrega('EN_CAMINO'), {titulo: 'En camino', tono: 'info'});
   igual(k.estadoDeEntrega('PREPARADA'), {titulo: 'Preparada', tono: 'gray'});
@@ -170,10 +171,10 @@ test('recepcionesAbiertas: olvida las del dispositivo que ya no están pendiente
   await k.abrirRecepcion(entrega, 7);
   await k.abrirRecepcion(k.normalizarEntrega({...ENTREGA, id: 40}), 7);
   await k.abrirRecepcion(k.normalizarEntrega({...ENTREGA, id: 50}), 9);
-  igual(await k.recepcionesAbiertas(7, [31, 33]), ['31']);
+  igual(await k.recepcionesAbiertas(7, [31, 33]), {abiertas: ['31'], avisos: []});
   const de40 = await k.abrirRecepcion(k.normalizarEntrega({...ENTREGA, id: 40}), 7);
   assert.equal(de40.recuperada, false, 'la de 40 se olvidó');
-  igual(await k.recepcionesAbiertas(9, [50]), ['50']);
+  igual(await k.recepcionesAbiertas(9, [50]), {abiertas: ['50'], avisos: []});
 });
 
 // ---- Envío (§12) ----
@@ -185,7 +186,8 @@ test('enviarRecepcion: multipart exacto de §12 con el uuid y el token de la rec
   r.values.set('becas_auth_token', 'otro-token');
   const calls = router(r, async () => recibirOk());
   const res = await enviar(k, entrega, recepcion);
-  igual(res, {estado: 'RECIBIDA_CON_DIFERENCIAS', diferencias: [{item: 12, nombre: 'Colchón', unidad: 'unidad', enviada: 10, recibida: 8}]});
+  igual(res, {estado: 'RECIBIDA_CON_DIFERENCIAS', diferencias: [{item: 12, nombre: 'Colchón', unidad: 'unidad', enviada: 10, recibida: 8},
+    {item: 14, nombre: 'Kit alimentario', unidad: 'kit', enviada: 3, recibida: 0}], distintas: []});
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, '/api/emergencia/entregas/31/recibir/');
   assert.equal(calls[0].method, 'POST');
@@ -204,7 +206,7 @@ test('enviarRecepcion: 201 también es éxito; sin observación no se manda el c
   const recepcion = await k.abrirRecepcion(entrega, 7);
   const calls = router(r, async () => response(201, {estado: 'RECIBIDA', diferencias: []}));
   const res = await enviar(k, entrega, recepcion, {cantidades: {12: '10', 14: '3'}, observacion: '   '});
-  igual(res, {estado: 'RECIBIDA', diferencias: []});
+  igual(res, {estado: 'RECIBIDA', diferencias: [], distintas: []});
   igual(campos(calls[0]).map(([n]) => n), ['uuid_cliente', 'cantidades[12]', 'cantidades[14]', 'remito']);
 });
 
@@ -215,7 +217,7 @@ test('enviarRecepcion: sin red no manda nada ni bloquea; con datos inválidos ta
   r.setOnline(false);
   await assert.rejects(enviar(k, entrega, recepcion), (error) => error.code === 'SIN_RED' && error.clasificacion.tipo === 'sin_red');
   assert.equal(calls.length, 0);
-  assert.equal((await k.abrirRecepcion(entrega, 7)).bloqueada, false);
+  assert.equal((await k.abrirRecepcion(entrega, 7)).incierto, false);
   r.setOnline(true);
   await assert.rejects(enviar(k, entrega, recepcion, {remito: null}),
     (error) => error.code === 'VALIDACION_LOCAL' && error.clasificacion.errores.remito[0] === k.FALTA_REMITO);
@@ -236,7 +238,7 @@ test('idempotencia: tras red caída, timeout, 5xx o 429 el reintento sale con el
   const k2 = r.reload('./emergenciaKits');
   const reabierta = await k2.abrirRecepcion(entrega, 7);
   assert.equal(reabierta.uuid_cliente, recepcion.uuid_cliente);
-  assert.equal(reabierta.bloqueada, true);
+  assert.equal(reabierta.incierto, true);
   igual(reabierta.cantidades, {12: '8', 14: '0'});
   assert.equal(reabierta.observacion, '  Faltan dos  ');
   assert.equal(await k2.guardarRecepcion(reabierta.owner, 31, {cantidades: {12: '1', 14: '1'}}), false, 'bloqueada: no se cambia');
@@ -257,7 +259,7 @@ test('el multipart sale con tiempo máximo (timeoutDelEnvio de la cola): un cort
   const error = await enviar(k, entrega, recepcion).catch((e) => e);
   assert.ok(señal, 'con timeoutMs el pedido lleva AbortSignal');
   assert.equal(error.clasificacion.tipo, 'reintentable');
-  assert.equal((await k.abrirRecepcion(entrega, 7)).bloqueada, true);
+  assert.equal((await k.abrirRecepcion(entrega, 7)).incierto, true);
 });
 
 test('409 con estado_actual: no se reintenta y la recepción se cierra', async () => {
@@ -287,12 +289,12 @@ test('400 y 413: el back no escribió nada; se desbloquea y se corrige con el MI
   const e400 = await enviar(k, entrega, recepcion).catch((e) => e);
   igual(e400.clasificacion.errores, {remito: ['No es JPEG.']});
   let abierta = await k.abrirRecepcion(entrega, 7);
-  assert.equal(abierta.bloqueada, false);
+  assert.equal(abierta.incierto, false);
   assert.equal(await k.guardarRecepcion(abierta.owner, 31, {cantidades: {12: '9', 14: '0'}}), true);
   const e413 = await enviar(k, entrega, abierta, {cantidades: {12: '9', 14: '0'}}).catch((e) => e);
   assert.equal(e413.clasificacion.tipo, 'pesada');
   abierta = await k.abrirRecepcion(entrega, 7);
-  assert.equal(abierta.bloqueada, false);
+  assert.equal(abierta.incierto, false);
   await enviar(k, entrega, abierta, {cantidades: {12: '9', 14: '0'}});
   igual(calls.map(uuidDe), Array(3).fill(recepcion.uuid_cliente));
   assert.equal(campos(calls[2])[1][1], '9');
@@ -304,13 +306,20 @@ test('409 UUID_EN_USO: queda bloqueada; solo descartando el intento sale con un 
   const respuestas = [() => response(409, {detail: 'Ese identificador de envío ya se usó en otra recepción.', code: 'UUID_EN_USO'}), recibirOk];
   const calls = router(r, async (call, todas) => respuestas[todas.length - 1]());
   assert.equal((await enviar(k, entrega, recepcion).catch((e) => e)).clasificacion.tipo, 'uuid_en_uso');
-  assert.equal((await k.abrirRecepcion(entrega, 7)).bloqueada, true);
-  const nuevo = await k.descartarIntento(recepcion.owner, 31);
+  const tras409 = await k.abrirRecepcion(entrega, 7);
+  assert.equal(tras409.uuidEnUso, true);
+  assert.equal(tras409.incierto, false);
+  assert.equal(await k.guardarRecepcion(tras409.owner, 31, {cantidades: {12: '1', 14: '1'}}), false, 'con uuid en uso no se edita');
+  await assert.rejects(enviar(k, entrega, tras409), (error) => error.code === 'UUID_EN_USO');
+  assert.equal(calls.length, 1, 'con ese uuid no se vuelve a mandar');
+  const nuevo = await k.descartarIntento(recepcion, 31);
   assert.match(nuevo, UUID);
   assert.notEqual(nuevo, recepcion.uuid_cliente);
   const abierta = await k.abrirRecepcion(entrega, 7);
   assert.equal(abierta.uuid_cliente, nuevo);
-  assert.equal(abierta.bloqueada, false);
+  assert.equal(abierta.incierto, false);
+  assert.equal(abierta.uuidEnUso, false);
+  assert.equal(abierta.descartado, true);
   igual(abierta.cantidades, {12: '8', 14: '0'}, 'lo cargado se conserva');
   await enviar(k, entrega, abierta);
   igual(calls.map(uuidDe), [recepcion.uuid_cliente, nuevo]);
@@ -325,7 +334,7 @@ test('403 SIN_MODULO: pasa por el perfil (verificarSinModulo) y no queda bloquea
   const error = await enviar(k, entrega, recepcion).catch((e) => e);
   igual(error.clasificacion, {tipo: 'sin_modulo', mensaje: 'El usuario no recibe kits en ningún dispositivo.', verificacion: 'actualizado'});
   igual(calls.map((c) => c.url), ['/api/emergencia/entregas/31/recibir/', '/api/emergencia/perfil/']);
-  assert.equal((await k.abrirRecepcion(entrega, 7)).bloqueada, false);
+  assert.equal((await k.abrirRecepcion(entrega, 7)).incierto, false);
 });
 
 test('hayConexion: en web manda navigator.onLine, en nativo NetInfo', async () => {
@@ -351,4 +360,169 @@ test('hayConexion: en web manda navigator.onLine, en nativo NetInfo', async () =
   dejar();
   igual(vistos, [false, true]);
   assert.equal(handlers.size, 0);
+});
+
+// ---- Revisión: intento incierto, recepciones huérfanas, escrituras ----
+
+test('incierto: 413 y 403 no lo destraban (no prueban nada del pedido anterior); 400 sí', async () => {
+  const {r, k, entrega} = await preparar();
+  const recepcion = await k.abrirRecepcion(entrega, 7);
+  const respuestas = [fallaDeRed, () => response(413, {detail: 'Too large'}),
+    () => response(403, {detail: 'No.', code: 'SIN_MODULO'}), () => response(400, {cantidades: ['Mal.'], code: 'VALIDACION'})];
+  let n = 0;
+  router(r, async (call) => (call.url.endsWith('/perfil/') ? response(200, {kits: true}) : respuestas[n++]()));
+  await enviar(k, entrega, recepcion).catch(() => {});
+  const e413 = await enviar(k, entrega, recepcion).catch((e) => e);
+  assert.equal(e413.clasificacion.tipo, 'pesada');
+  assert.equal(e413.recepcion.incierto, true);
+  assert.equal((await k.abrirRecepcion(entrega, 7)).incierto, true);
+  const e403 = await enviar(k, entrega, recepcion).catch((e) => e);
+  assert.equal(e403.recepcion.incierto, true);
+  assert.equal((await k.abrirRecepcion(entrega, 7)).incierto, true);
+  const e400 = await enviar(k, entrega, recepcion).catch((e) => e);
+  assert.equal(e400.recepcion.incierto, false, 'el back respondió y no escribió nada con este uuid');
+  assert.equal((await k.abrirRecepcion(entrega, 7)).incierto, false);
+});
+
+test('incierto: el reintento puede salir sin remito; sin ser incierto, no', async () => {
+  const {r, k, entrega} = await preparar();
+  const recepcion = await k.abrirRecepcion(entrega, 7);
+  await assert.rejects(enviar(k, entrega, recepcion, {remito: null}), (error) => error.code === 'VALIDACION_LOCAL');
+  const respuestas = [fallaDeRed, recibirOk];
+  const calls = router(r, async (call, todas) => respuestas[todas.length - 1]());
+  await enviar(k, entrega, recepcion).catch(() => {});
+  await enviar(k, entrega, recepcion, {remito: null});
+  igual(campos(calls[1]).map(([n]) => n), ['uuid_cliente', 'cantidades[12]', 'cantidades[14]', 'observacion']);
+  assert.equal(uuidDe(calls[1]), uuidDe(calls[0]));
+});
+
+test('incierto: no se puede descartar el intento (solo tras UUID_EN_USO)', async () => {
+  const {r, k, entrega} = await preparar();
+  const recepcion = await k.abrirRecepcion(entrega, 7);
+  router(r, async () => fallaDeRed());
+  await enviar(k, entrega, recepcion).catch(() => {});
+  assert.equal(await k.descartarIntento(recepcion, 31), null);
+  assert.equal((await k.abrirRecepcion(entrega, 7)).uuid_cliente, recepcion.uuid_cliente);
+});
+
+const RECIBIDA_GET = () => response(200, {...ENTREGA, estado: 'RECIBIDA_CON_DIFERENCIAS', recibida_en: '2026-11-12T15:02:00-03:00',
+  lineas: ENTREGA.lineas.map((l) => ({...l, recibida: l.item === 12 ? 8 : 0}))});
+const CONFLICTO = () => response(409, {detail: 'Entrega 2026-K-000031 ya la recibió alguien a las 15:02.', estado_actual: 'RECIBIDA_CON_DIFERENCIAS'});
+
+test('409 RECIBIDA tras un intento incierto: consulta §11 y dice qué quedó registrado', async () => {
+  const {r, k, entrega} = await preparar();
+  const recepcion = await k.abrirRecepcion(entrega, 7);
+  const respuestas = [fallaDeRed, CONFLICTO];
+  let n = 0;
+  const calls = router(r, async (call) => (call.method === 'GET' ? RECIBIDA_GET() : respuestas[n++]()));
+  await enviar(k, entrega, recepcion).catch(() => {});
+  const error = await enviar(k, entrega, recepcion).catch((e) => e);
+  assert.equal(error.clasificacion.tipo, 'conflicto');
+  assert.equal(calls.at(-1).url, '/api/emergencia/entregas/31/');
+  assert.match(error.clasificacion.mensaje, /^La recepción de esta entrega ya figura registrada\./);
+  assert.match(error.clasificacion.mensaje, /Colchón: 8 de 10\nKit alimentario: 0 de 3$/);
+  igual(error.clasificacion.registrada.lineas.map((l) => l.recibida), [8, 0]);
+});
+
+test('409 RECIBIDA tras descartar un intento también consulta §11; sin incierto ni descarte, no', async () => {
+  const {r, k, entrega} = await preparar();
+  const recepcion = await k.abrirRecepcion(entrega, 7);
+  const respuestas = [() => response(409, {detail: 'x', code: 'UUID_EN_USO'}), CONFLICTO];
+  let n = 0;
+  const calls = router(r, async (call) => (call.method === 'GET' ? RECIBIDA_GET() : respuestas[n++]()));
+  await enviar(k, entrega, recepcion).catch(() => {});
+  const uuid = await k.descartarIntento(recepcion, 31);
+  const error = await enviar(k, entrega, {...recepcion, uuid_cliente: uuid}).catch((e) => e);
+  assert.ok(error.clasificacion.registrada);
+  assert.ok(calls.some((c) => c.method === 'GET'));
+  const otro = await preparar();
+  const rec2 = await otro.k.abrirRecepcion(otro.entrega, 7);
+  const calls2 = router(otro.r, async (call) => (call.method === 'GET' ? RECIBIDA_GET() : CONFLICTO()));
+  const e2 = await enviar(otro.k, otro.entrega, rec2).catch((e) => e);
+  assert.equal(e2.clasificacion.registrada, undefined);
+  assert.equal(e2.clasificacion.mensaje, 'Entrega 2026-K-000031 ya la recibió alguien a las 15:02.');
+  assert.ok(!calls2.some((c) => c.method === 'GET'));
+});
+
+test('200 con otras cantidades que las mandadas (el back devolvió el primer envío): `distintas` lo dice', async () => {
+  const {r, k, entrega} = await preparar();
+  const recepcion = await k.abrirRecepcion(entrega, 7);
+  router(r, async () => response(200, {estado: 'RECIBIDA_CON_DIFERENCIAS', diferencias: [{item: 12, enviada: 10, recibida: 5}]}));
+  const res = await enviar(k, entrega, recepcion);
+  igual(res.distintas, [{item: 12, nombre: 'Colchón', mandada: 8, registrada: 5}, {item: 14, nombre: 'Kit alimentario', mandada: 0, registrada: 3}]);
+  assert.equal(k.textoDeDistinta(res.distintas[0]), 'Colchón: mandaste 8, quedó 5');
+});
+
+test('recepcionesAbiertas: una incierta que ya no está pendiente se consulta y se avisa (registrada, cancelada, sin confirmar); sin red se conserva', async () => {
+  const {r, k, entrega} = await preparar();
+  const abrirIncierta = async (id, numero) => {
+    const e = k.normalizarEntrega({...ENTREGA, id, numero});
+    const rec = await k.abrirRecepcion(e, 7);
+    r.setFetch(fallaDeRed);
+    await enviar(k, e, rec).catch(() => {});
+  };
+  await abrirIncierta(31, 'K-31');
+  await abrirIncierta(32, 'K-32');
+  await abrirIncierta(33, 'K-33');
+  await abrirIncierta(34, 'K-34');
+  await k.abrirRecepcion(k.normalizarEntrega({...ENTREGA, id: 35}), 7);
+  router(r, async (call) => {
+    if (call.url.endsWith('/31/')) return RECIBIDA_GET();
+    if (call.url.endsWith('/32/')) return response(200, {...ENTREGA, id: 32, estado: 'CANCELADA'});
+    if (call.url.endsWith('/33/')) return response(404, {detail: 'No encontrado.'});
+    return fallaDeRed();
+  });
+  const res = await k.recepcionesAbiertas(7, []);
+  igual(res.abiertas, []);
+  assert.equal(res.avisos.length, 3);
+  assert.match(res.avisos[0], /^Entrega K-31: La recepción de esta entrega ya figura registrada\.\nColchón: 8 de 10/);
+  assert.match(res.avisos[1], /^Entrega K-32: la mesa la canceló/);
+  assert.equal(res.avisos[2], `Entrega K-33: ${k.TEXTO_SIN_CONFIRMAR}`);
+  assert.equal((await k.abrirRecepcion(entrega, 7)).recuperada, false, 'la registrada se olvida');
+  const k34 = await k.abrirRecepcion(k.normalizarEntrega({...ENTREGA, id: 34}), 7);
+  assert.equal(k34.incierto, true, 'sin red no se pudo consultar: se conserva');
+  assert.equal((await k.abrirRecepcion(k.normalizarEntrega({...ENTREGA, id: 35}), 7)).recuperada, false, 'la no incierta se olvida sin consultar');
+});
+
+test('una recepción olvidada no vuelve como huérfana: guardar no la recrea; enviar y descartar la recrean con su dispositivo', async () => {
+  const {r, k, entrega} = await preparar();
+  const recepcion = await k.abrirRecepcion(entrega, 7);
+  await k.recepcionesAbiertas(7, []);
+  assert.equal(await k.guardarRecepcion(recepcion.owner, 31, {cantidades: {12: '1', 14: '1'}}), false);
+  assert.equal(recepcion.dispositivo, 7);
+  router(r, async () => fallaDeRed());
+  await enviar(k, entrega, recepcion).catch(() => {});
+  assert.equal((await k.abrirRecepcion(entrega, null)).dispositivo, 7, 'vuelve con su dispositivo');
+  igual(await k.recepcionesAbiertas(7, [31]), {abiertas: ['31'], avisos: []});
+  const otra = k.normalizarEntrega({...ENTREGA, id: 40});
+  const rec40 = await k.abrirRecepcion(otra, 7);
+  await k.recepcionesAbiertas(7, [31]);
+  await k.descartarIntento(rec40, 40);
+  assert.equal((await k.abrirRecepcion(otra, null)).dispositivo, 7, 'descartar la recrea con su dispositivo');
+  igual(await k.recepcionesAbiertas(7, [31, 40]), {abiertas: ['31', '40'], avisos: []});
+});
+
+test('no escribe si nada cambió (otra pestaña no pisa lo que escribió esta)', async () => {
+  const escrituras = [];
+  const mapa = new Map();
+  const storage = {
+    getItem: async (key) => mapa.get(key) ?? null,
+    setItem: async (key, value) => { escrituras.push(key); mapa.set(key, value); },
+    removeItem: async (key) => { escrituras.push(key); mapa.delete(key); },
+  };
+  const r = await setup('android', {mocks: {'@react-native-async-storage/async-storage': {default: storage}}});
+  r.setFetch(async () => response(200, {token: 'tok', user_id: 7, username: 'g', modulos: ['emergencia']}));
+  await r.api.loginBecas({username: 'g', password: 'x'});
+  const k = r.load('./emergenciaKits');
+  const entrega = k.normalizarEntrega(ENTREGA);
+  const rec = await k.abrirRecepcion(entrega, 7);
+  const propias = () => escrituras.filter((key) => key.startsWith('emergencia_kits_recepciones')).length;
+  assert.equal(propias(), 1);
+  await k.abrirRecepcion(entrega, 7);
+  await k.guardarRecepcion(rec.owner, 31, {cantidades: {12: '10', 14: '3'}, observacion: ''});
+  await k.guardarRecepcion(rec.owner, 99, {cantidades: {}});
+  await k.recepcionesAbiertas(7, [31]);
+  assert.equal(propias(), 1, 'reabrir, guardar lo mismo, guardar una que no existe y podar sin cambios no escriben');
+  await k.guardarRecepcion(rec.owner, 31, {cantidades: {12: '9', 14: '3'}});
+  assert.equal(propias(), 2);
 });

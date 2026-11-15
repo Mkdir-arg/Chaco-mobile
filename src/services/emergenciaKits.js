@@ -3,7 +3,7 @@ import NetInfo from '@react-native-community/netinfo';
 import * as Crypto from 'expo-crypto';
 import { Platform } from 'react-native';
 import { getBecasToken, getStoredBecasUser } from './becasApi';
-import { esConflictoDeEstado, esUuidEnUso, recibirEntrega } from './emergenciaApi';
+import { esConflictoDeEstado, esUuidEnUso, getEntrega, recibirEntrega } from './emergenciaApi';
 import { timeoutDelEnvio } from './emergenciaCola';
 import { esSinModulo } from './sinModulo';
 import { erroresDelServidor } from '../utils/emergencia';
@@ -22,6 +22,8 @@ export const TEXTO_UUID_EN_USO = 'Este intento de recepción no se puede mandar:
 export const TEXTO_NO_ENCONTRADA = 'Esta entrega ya no está disponible para vos. Se vuelve a cargar la lista de tus dispositivos.';
 export const TEXTO_REMITO_PESADO = 'La foto del remito es demasiado pesada para enviarla: sacala de nuevo o elegí otra.';
 export const TEXTO_VALIDACION = 'El servidor rechazó algunos datos. Corregí lo marcado y volvé a tocar «Recibir».';
+export const TEXTO_REGISTRADA = 'La recepción de esta entrega ya figura registrada.';
+export const TEXTO_SIN_CONFIRMAR = 'No se pudo confirmar qué pasó con una recepción que habías mandado: revisala desde el backoffice o consultá con la mesa.';
 export const TEXTO_SESION = 'La sesión venció: volvé a entrar. La recepción queda abierta con el mismo identificador.';
 export const FALTA_CANTIDAD = 'Falta la cantidad: poné 0 si no llegó nada.';
 export const CANTIDAD_INVALIDA = 'Tiene que ser un número entero, 0 o más.';
@@ -64,6 +66,7 @@ export const normalizarEntrega = (entrega) => {
       nombre: textoPlano(linea.nombre) || `Ítem ${linea.item}`,
       unidad: textoPlano(linea.unidad),
       enviada: entero(linea.enviada),
+      recibida: linea.recibida == null ? null : entero(linea.recibida),
     }));
   return {
     id: entrega.id,
@@ -120,8 +123,10 @@ export const textoDeDiferencia = ({ nombre, enviada, recibida }) => {
   return `${nombre}: llegaron ${recibida} de ${enviada} (${detalle})`;
 };
 
-// Validación de cliente antes de mandar. { lineas: { <item>: mensaje }, remito: [..] }.
-export const validarRecepcion = ({ entrega, cantidades = {}, remito = null } = {}) => {
+// Validación de cliente antes de mandar. { lineas: { <item>: mensaje }, remito: [..] }. Con un
+// intento `incierto` el remito no hace falta: el reenvío con el mismo uuid no se vuelve a validar
+// (§12, «ni siquiera hace falta el remito»).
+export const validarRecepcion = ({ entrega, cantidades = {}, remito = null, incierto = false } = {}) => {
   const errores = {};
   const lineas = {};
   (entrega?.lineas || []).forEach((linea) => {
@@ -129,7 +134,7 @@ export const validarRecepcion = ({ entrega, cantidades = {}, remito = null } = {
     if (mensaje) lineas[String(linea.item)] = [mensaje];
   });
   if (Object.keys(lineas).length) errores.lineas = lineas;
-  if (!remito?.uri && !remito?.file) errores.remito = [FALTA_REMITO];
+  if (!incierto && !remito?.uri && !remito?.file) errores.remito = [FALTA_REMITO];
   return errores;
 };
 
@@ -234,9 +239,13 @@ export const escucharRed = (alCambiar) => {
 };
 
 // ---- Recepción abierta (AsyncStorage, por usuario) ----
-// { <entregaId>: { uuid_cliente, dispositivo, cantidades, observacion, bloqueada } }. `bloqueada`:
-// ya salió un pedido con ese uuid cuya respuesta no llegó; las cantidades no se cambian hasta
-// saber si llegó (un reintento con el mismo uuid devuelve lo de la primera vez).
+// { <entregaId>: { uuid_cliente, dispositivo, numero, cantidades, observacion, incierto, uuid_en_uso,
+// descartado } }.
+// - `incierto`: salió al menos un pedido con este uuid sin respuesta que diga si se escribió. Mientras
+//   tanto nada se cambia (cantidades, observación ni foto) y solo se reintenta con el mismo uuid: el
+//   back devuelve lo del primer pedido e ignora el cuerpo nuevo.
+// - `uuid_en_uso`: 409 UUID_EN_USO; solo se sigue descartando el intento (uuid nuevo).
+// - `descartado`: ya se descartó un intento; un 409 RECIBIDA* puede ser el propio.
 const CLAVE_RECEPCIONES = 'emergencia_kits_recepciones';
 const claveDe = (owner) => `${CLAVE_RECEPCIONES}:${owner}`;
 const crearUuid = () => String(Crypto.randomUUID()).toLowerCase();
@@ -261,10 +270,13 @@ const escribirTodas = async (owner, todas) => {
   if (Object.keys(todas).length) await AsyncStorage.setItem(claveDe(owner), JSON.stringify(todas));
   else await AsyncStorage.removeItem(claveDe(owner));
 };
+// Lee, aplica `cambio` y escribe solo si algo cambió: una pestaña que no cambia nada no pisa lo que
+// escribió otra.
 const modificar = (owner, cambio) => enOrden(async () => {
   const todas = await leerTodas(owner);
-  const resultado = cambio(todas);
-  await escribirTodas(owner, todas);
+  const antes = JSON.stringify(todas);
+  const resultado = await cambio(todas);
+  if (JSON.stringify(todas) !== antes) await escribirTodas(owner, todas);
   return resultado;
 });
 
@@ -275,9 +287,15 @@ const ownerActual = async () => {
 
 const crearError = (code, message, extra = {}) => Object.assign(new Error(message), { code, ...extra });
 
+const estadoDe = (guardada) => ({
+  incierto: guardada?.incierto === true,
+  uuidEnUso: guardada?.uuid_en_uso === true,
+  descartado: guardada?.descartado === true,
+});
+
 // Abre (o recupera) la recepción de una entrega: fija el usuario y el token de esta pantalla y el
-// uuid_cliente, que se guarda en el acto. Devuelve { owner, token, uuid_cliente, cantidades,
-// observacion, bloqueada, recuperada }.
+// uuid_cliente, que se guarda en el acto. Devuelve { owner, token, uuid_cliente, dispositivo, numero,
+// cantidades, observacion, incierto, uuidEnUso, descartado, recuperada }.
 export const abrirRecepcion = async (entrega, dispositivoId = null) => {
   const [owner, token] = await Promise.all([ownerActual(), getBecasToken()]);
   if (!owner || !token) throw crearError('SIN_SESION', 'No hay sesión iniciada.');
@@ -288,19 +306,20 @@ export const abrirRecepcion = async (entrega, dispositivoId = null) => {
     if (previa?.uuid_cliente) {
       const cantidades = Object.fromEntries(Object.keys(iniciales)
         .map((item) => [item, typeof previa.cantidades?.[item] === 'string' ? previa.cantidades[item] : iniciales[item]]));
-      todas[id] = { ...previa, cantidades, dispositivo: previa.dispositivo ?? dispositivoId };
-      return { owner, token, uuid_cliente: previa.uuid_cliente, cantidades, observacion: textoPlano(previa.observacion),
-        bloqueada: previa.bloqueada === true, recuperada: true };
+      todas[id] = { ...previa, cantidades, dispositivo: previa.dispositivo ?? dispositivoId, numero: previa.numero || entrega.numero };
+      return { owner, token, uuid_cliente: previa.uuid_cliente, dispositivo: todas[id].dispositivo, numero: todas[id].numero,
+        cantidades, observacion: textoPlano(previa.observacion), ...estadoDe(previa), recuperada: true };
     }
-    todas[id] = { uuid_cliente: crearUuid(), dispositivo: dispositivoId, cantidades: iniciales, observacion: '', bloqueada: false };
-    return { owner, token, uuid_cliente: todas[id].uuid_cliente, cantidades: iniciales, observacion: '', bloqueada: false, recuperada: false };
+    todas[id] = { uuid_cliente: crearUuid(), dispositivo: dispositivoId, numero: entrega.numero, cantidades: iniciales, observacion: '' };
+    return { owner, token, uuid_cliente: todas[id].uuid_cliente, dispositivo: dispositivoId, numero: entrega.numero,
+      cantidades: iniciales, observacion: '', ...estadoDe(null), recuperada: false };
   });
 };
 
-// Guarda lo tipeado. No toca una recepción ya cerrada ni cambia su uuid.
+// Guarda lo tipeado. No crea una recepción que no existe, ni toca una incierta o con uuid en uso.
 export const guardarRecepcion = (owner, entregaId, { cantidades, observacion } = {}) => modificar(owner, (todas) => {
   const actual = todas[String(entregaId)];
-  if (!actual || actual.bloqueada) return false;
+  if (!actual || actual.incierto || actual.uuid_en_uso) return false;
   todas[String(entregaId)] = {
     ...actual,
     ...(cantidades ? { cantidades: { ...cantidades } } : {}),
@@ -314,65 +333,165 @@ export const cerrarRecepcion = (owner, entregaId) => modificar(owner, (todas) =>
   return true;
 });
 
-// Descartar el intento: uuid nuevo, sin bloqueo, con lo cargado. Devuelve el uuid nuevo.
-export const descartarIntento = (owner, entregaId) => modificar(owner, (todas) => {
-  const actual = todas[String(entregaId)] || {};
+// Descartar el intento: solo después de un 409 UUID_EN_USO (ese uuid no escribió nada en esta
+// entrega). uuid nuevo, con lo cargado. `recepcion` aporta dispositivo y número si la entrada ya no
+// estaba. Devuelve el uuid nuevo, o null si no se puede descartar (intento incierto).
+export const descartarIntento = (recepcion, entregaId) => modificar(recepcion.owner, (todas) => {
+  const actual = todas[String(entregaId)];
+  if (actual?.incierto) return null;
   const uuid = crearUuid();
-  todas[String(entregaId)] = { ...actual, uuid_cliente: uuid, bloqueada: false };
+  todas[String(entregaId)] = {
+    ...(actual || {}),
+    dispositivo: actual?.dispositivo ?? recepcion.dispositivo ?? null,
+    numero: actual?.numero || recepcion.numero,
+    uuid_cliente: uuid,
+    uuid_en_uso: false,
+    incierto: false,
+    descartado: true,
+  };
   return uuid;
 });
 
-// Al traer las pendientes de un dispositivo: se olvidan las recepciones abiertas de ese
-// dispositivo cuya entrega ya no está pendiente (la recibió otro, la canceló la mesa). Devuelve los
-// ids de las que siguen abiertas.
+const ESTADOS_RECIBIDA = ['RECIBIDA', 'RECIBIDA_CON_DIFERENCIAS'];
+
+// «Colchón: 8 de 10 · Kit alimentario: 3 de 3», con lo que el back registró (§11, lineas[].recibida).
+export const textoDeRegistrada = (entrega) => (entrega?.lineas || [])
+  .map((linea) => `${linea.nombre}: ${linea.recibida == null ? '¿?' : linea.recibida} de ${linea.enviada}`).join('\n');
+
+// §11 para decir qué quedó registrado. null si no se pudo consultar.
+const consultarRegistrada = async (entregaId) => {
+  try {
+    return normalizarEntrega(await getEntrega(entregaId));
+  } catch {
+    return null;
+  }
+};
+
+// Al traer las pendientes de un dispositivo: las recepciones abiertas de ese dispositivo cuya
+// entrega ya no está pendiente se olvidan. Si era una incierta (se mandó y no se supo qué pasó),
+// antes se consulta §11 y se avisa: registrada (con lo que quedó), cancelada o sin confirmar; sin
+// red se conserva para otra vez. Devuelve { abiertas: [ids], avisos: [textos] }.
 export const recepcionesAbiertas = async (dispositivoId, idsPendientes = []) => {
   const owner = await ownerActual();
-  if (!owner) return [];
+  if (!owner) return { abiertas: [], avisos: [] };
   const vigentes = new Set(idsPendientes.map(String));
-  return modificar(owner, (todas) => {
-    Object.entries(todas).forEach(([id, recepcion]) => {
-      if (String(recepcion?.dispositivo) === String(dispositivoId) && !vigentes.has(id)) delete todas[id];
-    });
-    return Object.keys(todas).filter((id) => vigentes.has(id));
-  });
+  const todas = await enOrden(() => leerTodas(owner));
+  const avisos = [];
+  const borrar = [];
+  for (const [id, recepcion] of Object.entries(todas)) {
+    if (String(recepcion?.dispositivo) !== String(dispositivoId) || vigentes.has(id)) continue;
+    if (!recepcion?.incierto) {
+      borrar.push(id);
+      continue;
+    }
+    let entrega = null;
+    try {
+      entrega = normalizarEntrega(await getEntrega(id));
+    } catch (error) {
+      const clasificacion = clasificarErrorRecepcion(error);
+      if (clasificacion.tipo === 'reintentable' || clasificacion.tipo === 'sesion') continue;
+    }
+    const nombre = `Entrega ${recepcion.numero || entrega?.numero || id}`;
+    if (entrega && ESTADOS_RECIBIDA.includes(entrega.estado)) {
+      avisos.push(`${nombre}: ${TEXTO_REGISTRADA}\n${textoDeRegistrada(entrega)}`);
+    } else if (entrega?.estado === 'CANCELADA') {
+      avisos.push(`${nombre}: la mesa la canceló; tu recepción no quedó registrada.`);
+    } else {
+      avisos.push(`${nombre}: ${TEXTO_SIN_CONFIRMAR}`);
+    }
+    borrar.push(id);
+  }
+  await modificar(owner, (actuales) => { borrar.forEach((id) => { delete actuales[id]; }); });
+  return { abiertas: Object.keys(todas).filter((id) => vigentes.has(id) && !borrar.includes(id)), avisos };
 };
 
 const bytesDe = (asset) => Number(asset?.fileSize || asset?.size || asset?.file?.size) || 0;
 
-// §12. Valida, mira la red, marca la recepción como bloqueada (desde acá el pedido puede llegar),
+// Lo que quedó registrado por línea según el 200 (las que no vienen en `diferencias` llegaron
+// completas) contra lo que se mandó: si no coincide (el back devolvió el primer envío), se dice.
+const cantidadesDistintas = (entrega, enviadas, respuesta) => {
+  const porItem = new Map((Array.isArray(respuesta?.diferencias) ? respuesta.diferencias : [])
+    .map((dif) => [String(dif?.item), entero(dif?.recibida)]));
+  return (entrega?.lineas || []).flatMap((linea) => {
+    const clave = String(linea.item);
+    const registrada = porItem.has(clave) ? porItem.get(clave) : linea.enviada;
+    return registrada === enviadas[clave] ? [] : [{ item: linea.item, nombre: linea.nombre, mandada: enviadas[clave], registrada }];
+  });
+};
+
+// §12. Valida, mira la red, marca la recepción como incierta (desde acá el pedido puede llegar),
 // manda con el uuid y el token de la recepción y la cierra con 200/201. Un error sale con
-// `clasificacion` (clasificarErrorRecepcion); 400 y 413 la desbloquean (el back no escribió nada),
-// 409 de estado y 404 la cierran.
+// `clasificacion` (clasificarErrorRecepcion) y `recepcion` ({ incierto, uuidEnUso, descartado }):
+// - 400: el back respondió y no escribió nada → deja de ser incierta.
+// - 413 y 403: no prueban nada sobre un pedido anterior → queda como estaba antes de este.
+// - 409 UUID_EN_USO: ese uuid no escribió nada acá → solo se descarta.
+// - 409 de estado y 404 la cierran; con un 409 RECIBIDA* después de un intento incierto o
+//   descartado se consulta §11 por si la recepción registrada es la propia.
+// - red, timeout, 5xx, 429, 401, otros: incierta.
 export const enviarRecepcion = async ({ entrega, recepcion, cantidades = {}, remito = null, observacion = '' }) => {
-  const errores = validarRecepcion({ entrega, cantidades, remito });
+  const id = String(entrega.id);
+  const { owner, token, uuid_cliente: uuid } = recepcion;
+  const guardada = (await enOrden(() => leerTodas(owner)))[id];
+  const previo = estadoDe(guardada);
+  const errores = validarRecepcion({ entrega, cantidades, remito, incierto: previo.incierto });
   if (hayErroresRecepcion(errores)) {
-    throw crearError('VALIDACION_LOCAL', 'Hay datos para corregir.', { clasificacion: { tipo: 'validacion', mensaje: 'Corregí lo marcado.', errores } });
+    throw crearError('VALIDACION_LOCAL', 'Hay datos para corregir.', { clasificacion: { tipo: 'validacion', mensaje: 'Corregí lo marcado.', errores }, recepcion: previo });
+  }
+  if (previo.uuidEnUso) {
+    throw crearError('UUID_EN_USO', TEXTO_UUID_EN_USO, { clasificacion: { tipo: 'uuid_en_uso', mensaje: TEXTO_UUID_EN_USO }, recepcion: previo });
   }
   if (!await hayConexion()) {
-    throw crearError('SIN_RED', TEXTO_SIN_RED, { clasificacion: { tipo: 'sin_red', mensaje: TEXTO_SIN_RED } });
+    throw crearError('SIN_RED', TEXTO_SIN_RED, { clasificacion: { tipo: 'sin_red', mensaje: TEXTO_SIN_RED }, recepcion: previo });
   }
-  const { owner, token, uuid_cliente: uuid } = recepcion;
   const numeros = armarCantidades(entrega, cantidades);
   const nota = String(observacion || '').trim();
   await modificar(owner, (todas) => {
-    const actual = todas[String(entrega.id)] || {};
-    todas[String(entrega.id)] = { ...actual, uuid_cliente: uuid, cantidades: { ...cantidades }, observacion: String(observacion || ''), bloqueada: true };
+    const actual = todas[id] || {};
+    todas[id] = {
+      ...actual,
+      dispositivo: actual.dispositivo ?? recepcion.dispositivo ?? null,
+      numero: actual.numero || entrega.numero,
+      uuid_cliente: uuid,
+      cantidades: { ...cantidades },
+      observacion: String(observacion || ''),
+      incierto: true,
+    };
+  });
+  // Solo actualiza si la entrada sigue ahí (otra pestaña o la lista pudo cerrarla).
+  const marcar = (cambios) => modificar(owner, (todas) => {
+    if (todas[id]) Object.assign(todas[id], cambios);
   });
   try {
     const respuesta = await recibirEntrega(entrega.id, { uuid_cliente: uuid, cantidades: numeros, remito, observacion: nota },
       { timeoutMs: timeoutDelEnvio(bytesDe(remito)), token });
     await cerrarRecepcion(owner, entrega.id);
-    return resultadoDeRecepcion(respuesta, entrega);
+    return { ...resultadoDeRecepcion(respuesta, entrega), distintas: cantidadesDistintas(entrega, numeros, respuesta) };
   } catch (error) {
     const clasificacion = clasificarErrorRecepcion(error);
-    if (['validacion', 'pesada', 'sin_modulo'].includes(clasificacion.tipo)) {
-      await modificar(owner, (todas) => {
-        if (todas[String(entrega.id)]) todas[String(entrega.id)].bloqueada = false;
-      });
+    let estado = { ...previo, incierto: true };
+    if (clasificacion.tipo === 'validacion') {
+      estado = { ...previo, incierto: false };
+    } else if (['pesada', 'sin_modulo', 'sesion'].includes(clasificacion.tipo)) {
+      estado = previo;
+    } else if (clasificacion.tipo === 'uuid_en_uso') {
+      estado = { ...previo, incierto: false, uuidEnUso: true };
     } else if (['conflicto', 'no_encontrada'].includes(clasificacion.tipo)) {
+      if (clasificacion.tipo === 'conflicto' && ESTADOS_RECIBIDA.includes(clasificacion.estadoActual)
+        && (previo.incierto || previo.descartado)) {
+        const registrada = await consultarRegistrada(entrega.id);
+        if (registrada) {
+          clasificacion.registrada = registrada;
+          clasificacion.mensaje = `${TEXTO_REGISTRADA} Puede ser la que mandaste antes; quedó así:\n${textoDeRegistrada(registrada)}`;
+        }
+      }
       await cerrarRecepcion(owner, entrega.id);
+      error.clasificacion = clasificacion;
+      error.recepcion = { ...previo, incierto: false };
+      throw error;
     }
+    await marcar({ incierto: estado.incierto, uuid_en_uso: estado.uuidEnUso });
     error.clasificacion = clasificacion;
+    error.recepcion = estado;
     throw error;
   }
 };
@@ -388,3 +507,6 @@ export const resultadoDeRecepcion = (respuesta, entrega) => {
   const estado = textoPlano(respuesta?.estado) || (diferencias.length ? 'RECIBIDA_CON_DIFERENCIAS' : 'RECIBIDA');
   return { estado, diferencias };
 };
+
+// «Colchón: mandaste 9, quedó 8».
+export const textoDeDistinta = ({ nombre, mandada, registrada }) => `${nombre}: mandaste ${mandada}, quedó ${registrada}`;

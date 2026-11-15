@@ -545,6 +545,40 @@ test('EmergenciaApp M3: recibida y 409 vuelven a las entregas; 404 a los disposi
   } finally { await ui.close(); }
 });
 
+test('EmergenciaApp M3: mientras se manda la recepción no hay flecha de volver ni se puede salir', async () => {
+  const ui = await montarApp();
+  const banner = () => ui.tree.root.findByType('Banner');
+  try {
+    await renderer.act(async () => { ui.pantallas.inicio.onAbrir({clave: 'kits', titulo: 'Recepción de kits'}); });
+    await renderer.act(async () => { ui.pantallas.kitsDispositivos.onElegir({id: 7, nombre: 'Club'}, {unico: false}); });
+    await renderer.act(async () => { ui.pantallas.kitsEntregas.onAbrir({id: 31, numero: 'K-31', lineas: []}); });
+    assert.equal(banner().props.showBackButton, true);
+    await renderer.act(async () => { ui.pantallas.kitsRecibir.onEnviando(true); });
+    assert.equal(banner().props.showBackButton, false);
+    await renderer.act(async () => { banner().props.onBackPress(); });
+    assert.equal(banner().props.title, 'Recibir entrega', 'volver no hace nada mientras se manda');
+    await renderer.act(async () => { ui.pantallas.kitsRecibir.onEnviando(false); });
+    assert.equal(banner().props.showBackButton, true);
+    await renderer.act(async () => { banner().props.onBackPress(); });
+    assert.equal(banner().props.title, 'Club');
+  } finally { await ui.close(); }
+});
+
+test('EmergenciaApp M3: al volver por un 404 a «mis dispositivos» no se entra directo (sin bucle con un solo dispositivo)', async () => {
+  const ui = await montarApp();
+  try {
+    await renderer.act(async () => { ui.pantallas.inicio.onAbrir({clave: 'kits', titulo: 'Recepción de kits'}); });
+    assert.equal(ui.pantallas.kitsDispositivos.entrarDirecto, true);
+    await renderer.act(async () => { ui.pantallas.kitsDispositivos.onElegir({id: 7, nombre: 'Club'}, {unico: true}); });
+    await renderer.act(async () => { ui.pantallas.kitsEntregas.onNoEncontrado(); });
+    assert.equal(ui.pantallas.kitsDispositivos.entrarDirecto, false);
+    await renderer.act(async () => { ui.pantallas.kitsDispositivos.onElegir({id: 7, nombre: 'Club'}, {unico: false}); });
+    await renderer.act(async () => { ui.pantallas.kitsEntregas.onAbrir({id: 31, numero: 'K-31', lineas: []}); });
+    await renderer.act(async () => { ui.pantallas.kitsRecibir.onTerminar('no_encontrada'); });
+    assert.equal(ui.pantallas.kitsDispositivos.entrarDirecto, false);
+  } finally { await ui.close(); }
+});
+
 test('EmergenciaApp M3: el botón de sincronizar recarga las listas de kits, sin el aviso de M1', async () => {
   const ui = await montarApp();
   try {

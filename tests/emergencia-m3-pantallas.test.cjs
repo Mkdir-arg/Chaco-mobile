@@ -110,6 +110,13 @@ async function entorno(rutas) {
 }
 const uuidDe = call => call.init.body.fields.find(([nombre]) => nombre === 'uuid_cliente')[1];
 const camposDe = call => call.init.body.fields.map(([nombre, valor]) => [nombre, typeof valor === 'string' ? valor : {...valor}]);
+// El texto de estado va sobre su propio fondo de statusTones (contraste en tema oscuro).
+const fondoDe = (tree, texto) => {
+  const nodo = tree.root.findAllByType('Text').find(n => text(n) === texto);
+  assert.ok(nodo, 'Falta ' + texto);
+  const estilos = [].concat(nodo.parent.props.style || []).flat();
+  return estilos.find(e => e && e.backgroundColor)?.backgroundColor;
+};
 const posts = calls => calls.filter(c => c.method === 'POST' && c.url.endsWith('/recibir/'));
 
 // ---- Mis dispositivos ----
@@ -219,7 +226,7 @@ test('Entregas: marca la recepción sin terminar; vacía lo dice; 404 vuelve a m
 
 const REMITO_SELECTOR = {uri: 'file:///cache/remito.heic', fileName: 'IMG_1.HEIC'};
 
-async function montarRecibir(rutas, {online = true, entrega = ENTREGA, antes} = {}) {
+async function montarRecibir(rutas, {online = true, entrega = ENTREGA, antes, jpeg} = {}) {
   const env = await entorno(rutas);
   env.runtime.setOnline(online);
   if (antes) await antes(env);
@@ -227,22 +234,26 @@ async function montarRecibir(rutas, {online = true, entrega = ENTREGA, antes} = 
   const liberadas = [];
   const terminados = [];
   const sinModulo = [];
+  const borrados = [];
+  const olvidados = [];
+  const enviando = [];
   Object.assign(env.mocks, {
-    '../services/webAttachments': {forgetWebFile: () => true},
+    'expo-file-system/legacy': {deleteAsync: async (uri) => { borrados.push(uri); }},
+    '../services/webAttachments': {forgetWebFile: (uri) => { olvidados.push(uri); return true; }},
     '../services/imagePicker': {
       requestCameraPermissionsAsync: async () => ({granted: true}),
       launchCameraAsync: async () => ({canceled: false, assets: [REMITO_SELECTOR]}),
       launchImageLibraryAsync: async () => ({canceled: false, assets: [REMITO_SELECTOR]}),
     },
     '../utils/jpeg': {
-      aJpeg: async (asset) => { conversiones.push(asset); return {uri: `file:///cache/ImageManipulator/remito-${conversiones.length}.jpg`, fileName: `remito-${conversiones.length}.jpg`, mimeType: 'image/jpeg', fileSize: 4096}; },
+      aJpeg: jpeg || (async (asset) => { conversiones.push(asset); return {uri: `file:///cache/ImageManipulator/remito-${conversiones.length}.jpg`, fileName: `remito-${conversiones.length}.jpg`, mimeType: 'image/jpeg', fileSize: 4096}; }),
       liberarJpeg: (asset) => { if (asset) liberadas.push(asset.uri); return !!asset; },
     },
   });
   const Screen = loadScreen('src/screens/EmergenciaRecibirEntregaScreen.js', env.mocks);
   const normalizada = env.kits.normalizarEntrega(entrega);
   const ui = await render(Screen, {entrega: normalizada, dispositivoId: 7, onTerminar: (m, d) => terminados.push([m, plano(d)]),
-    onSinModulo: m => sinModulo.push(m)});
+    onSinModulo: m => sinModulo.push(m), onEnviando: v => enviando.push(v)});
   const sacarRemito = async () => {
     await ui.pressButton('Sacar foto del remito');
     const [titulo, , opciones] = env.alerts.at(-1);
@@ -254,7 +265,7 @@ async function montarRecibir(rutas, {online = true, entrega = ENTREGA, antes} = 
     assert.ok(opcion, 'Falta la opción ' + texto);
     await renderer.act(async () => { await opcion.onPress(); await esperar(5); });
   };
-  return {...env, ...ui, conversiones, liberadas, terminados, sinModulo, sacarRemito, aceptarAlerta, entrega: normalizada};
+  return {...env, ...ui, conversiones, liberadas, terminados, sinModulo, borrados, olvidados, enviando, sacarRemito, aceptarAlerta, entrega: normalizada};
 }
 const ok = (estado = 'RECIBIDA', diferencias = []) => () => response(200, {estado, diferencias});
 
@@ -266,6 +277,7 @@ test('Recibir: precarga lo enviado, sin diferencias manda el multipart exacto de
     assert.equal(ui.input('Cantidad recibida de Colchón').props.keyboardType, 'number-pad');
     assert.ok(ui.labels().includes('Enviado: 10 unidad'));
     assert.ok(ui.labels().includes('Coincide con lo enviado.'));
+    assert.equal(fondoDe(ui.tree, 'Coincide con lo enviado.'), '#ECFDF5');
     await ui.sacarRemito();
     assert.deepEqual(ui.conversiones.map(a => a.uri), ['file:///cache/remito.heic'], 'la foto pasa por aJpeg');
     await ui.escribir('Observación', 'Llegó mojado un colchón');
@@ -276,9 +288,11 @@ test('Recibir: precarga lo enviado, sin diferencias manda el multipart exacto de
     assert.match(uuidDe(post), /^[0-9a-f-]{36}$/);
     assert.deepEqual(camposDe(post), [['uuid_cliente', uuidDe(post)], ['cantidades[12]', '10'], ['cantidades[14]', '3'],
       ['observacion', 'Llegó mojado un colchón'], ['remito', {uri: 'file:///cache/ImageManipulator/remito-1.jpg', name: 'remito-1.jpg', type: 'image/jpeg'}]]);
-    assert.deepEqual(ui.terminados, [['recibida', {estado: 'RECIBIDA', diferencias: []}]]);
+    assert.deepEqual(ui.terminados, [['recibida', {estado: 'RECIBIDA', diferencias: [], distintas: []}]]);
     assert.equal(ui.toasts.at(-1).message, 'Entrega 2026-K-000031 recibida completa.');
     assert.deepEqual(ui.liberadas, ['file:///cache/ImageManipulator/remito-1.jpg'], 'el JPEG enviado se suelta');
+    assert.deepEqual(ui.borrados, ['file:///cache/ImageManipulator/remito-1.jpg'], 'y en nativo se borra el temporal');
+    assert.deepEqual(ui.enviando, [true, false], 'avisa al padre mientras manda');
   } finally { await ui.close(); }
 });
 
@@ -311,6 +325,7 @@ test('Recibir: muestra la diferencia por línea y pide confirmar; «Revisar» no
     const labels = ui.labels();
     assert.ok(labels.includes('Faltan 2'));
     assert.ok(labels.includes('Faltan 3'));
+    assert.equal(fondoDe(ui.tree, 'Faltan 2'), '#FFF8F1');
     assert.ok(labels.includes('Diferencias con lo enviado:\nColchón: llegaron 8 de 10 (faltan 2)\nKit alimentario: llegaron 0 de 3 (faltan 3)'));
     await ui.sacarRemito();
     await ui.pressButton('Recibir');
@@ -510,5 +525,150 @@ test('Recibir: un segundo toque mientras se manda no hace nada', async () => {
     assert.equal(posts(ui.calls).length, 1);
     await renderer.act(async () => { soltar(); await esperar(5); });
     assert.equal(ui.terminados.length, 1);
+  } finally { await ui.close(); }
+});
+
+// ---- Revisión: intento incierto, volver durante el envío, fotos ----
+
+const fallaDeRed = () => Promise.reject(new TypeError('Load failed'));
+
+test('Recibir incierto: nada se cambia (ni la foto), no hay «Descartar» ni ante un rechazo, y 413 no lo destraba', async () => {
+  const respuestas = [fallaDeRed, () => response(418, {detail: 'Tetera.'}), () => response(413, {detail: 'Too large'}), ok()];
+  const ui = await montarRecibir((call, todas) => respuestas[posts(todas).length - 1]());
+  try {
+    await ui.sacarRemito();
+    await ui.pressButton('Recibir');
+    assert.ok(ui.labels().includes('Ya mandaste esta recepción y no se pudo confirmar si llegó. Nada se puede cambiar: «Reintentar» manda la misma (no hace falta volver a sacar la foto) y no se duplica.'));
+    assert.equal(ui.button('Cambiar').props.disabled, true, 'la foto tampoco se cambia');
+    assert.equal(ui.pressables().find(p => p.props.accessibilityLabel === 'Quitar foto del remito').props.disabled, true);
+    await ui.pressButton('Reintentar');
+    assert.ok(ui.labels().includes('Tetera.'));
+    assert.equal(ui.button('Descartar este intento'), undefined, 'tras un rechazo con intento incierto no se descarta');
+    await ui.pressButton('Reintentar');
+    assert.ok(ui.labels().includes('La foto del remito es demasiado pesada para enviarla: sacala de nuevo o elegí otra.'));
+    assert.equal(ui.input('Cantidad recibida de Colchón').props.editable, false, '413 no prueba nada del primer pedido');
+    assert.ok(ui.button('Reintentar'));
+    await ui.pressButton('Reintentar');
+    const enviados = posts(ui.calls);
+    assert.equal(new Set(enviados.map(uuidDe)).size, 1);
+    assert.equal(ui.terminados[0][0], 'recibida');
+  } finally { await ui.close(); }
+});
+
+test('Recibir incierto recuperado: el reintento sale sin foto (§12 no la pide con el mismo uuid)', async () => {
+  let uuid = null;
+  const ui = await montarRecibir(ok(), {antes: async ({kits, runtime}) => {
+    const entrega = kits.normalizarEntrega(ENTREGA);
+    const r = await kits.abrirRecepcion(entrega, 7);
+    uuid = r.uuid_cliente;
+    const previo = runtime.load('./emergenciaKits');
+    runtime.setFetch(fallaDeRed);
+    await previo.enviarRecepcion({entrega, recepcion: r, cantidades: {12: '9', 14: '3'}, remito: {uri: 'file:///r.jpg', fileName: 'r.jpg'}}).catch(() => {});
+    runtime.setFetch(async (url, init = {}) => {
+      const call = {url: String(url).replace('https://example.test', ''), method: init.method || 'GET', init};
+      return response(200, {estado: 'RECIBIDA_CON_DIFERENCIAS', diferencias: [{item: 12, enviada: 10, recibida: 9}]}, {}, call);
+    });
+  }});
+  try {
+    assert.equal(ui.button('Reintentar').props.disabled, false);
+    assert.equal(ui.input('Cantidad recibida de Colchón').props.value, '9');
+    assert.ok(!ui.toasts.some(t => t.message.startsWith('Recuperamos')), 'no pide sacar la foto otra vez');
+    await ui.pressButton('Reintentar');
+    assert.ok(!ui.labels().includes('Falta la foto del remito.'));
+    assert.equal(ui.terminados[0][0], 'recibida');
+    assert.ok(uuid);
+  } finally { await ui.close(); }
+});
+
+test('Recibir: 409 RECIBIDA después de un intento incierto consulta la entrega y dice qué quedó registrado', async () => {
+  const respuestas = [fallaDeRed, () => response(409, {detail: 'Entrega 2026-K-000031 ya la recibió Ana a las 15:02.', estado_actual: 'RECIBIDA_CON_DIFERENCIAS'})];
+  const ui = await montarRecibir((call, todas) => {
+    if (call.method === 'GET') return response(200, {...ENTREGA, estado: 'RECIBIDA_CON_DIFERENCIAS',
+      lineas: ENTREGA.lineas.map(l => ({...l, recibida: l.item === 12 ? 9 : 3}))});
+    return respuestas[posts(todas).length - 1]();
+  });
+  try {
+    await ui.escribir('Cantidad recibida de Colchón', '9');
+    await ui.sacarRemito();
+    await ui.pressButton('Recibir');
+    await ui.aceptarAlerta('Recibir igual');
+    await ui.pressButton('Reintentar');
+    assert.ok(ui.calls.some(c => c.method === 'GET' && c.url === '/api/emergencia/entregas/31/'), 'consulta §11');
+    const [titulo, mensaje] = ui.alerts.at(-1);
+    assert.equal(titulo, 'La recepción ya figura registrada');
+    assert.match(mensaje, /Colchón: 9 de 10\nKit alimentario: 3 de 3/);
+    assert.equal(ui.terminados[0][0], 'conflicto');
+  } finally { await ui.close(); }
+});
+
+test('Recibir: si el 200 trae otras cantidades que las mandadas, lo dice', async () => {
+  const ui = await montarRecibir(() => response(200, {estado: 'RECIBIDA', diferencias: []}));
+  try {
+    await ui.escribir('Cantidad recibida de Colchón', '8');
+    await ui.sacarRemito();
+    await ui.pressButton('Recibir');
+    await ui.aceptarAlerta('Recibir igual');
+    const [titulo, mensaje] = ui.alerts.at(-1);
+    assert.equal(titulo, 'Quedó registrada con otras cantidades');
+    assert.match(mensaje, /Colchón: mandaste 8, quedó 10/);
+  } finally { await ui.close(); }
+});
+
+test('Recibir: quitar la foto limpia el error del servidor sobre el remito; los mensajes repetidos no chocan', async () => {
+  const ui = await montarRecibir(() => response(400, {remito: ['No es JPEG.', 'No es JPEG.'], 'cantidades[12]': ['Mal.', 'Mal.'], code: 'VALIDACION'}));
+  const avisosReact = [];
+  const original = console.error;
+  console.error = (...args) => { avisosReact.push(args.map(String).join(' ')); };
+  try {
+    await ui.sacarRemito();
+    await ui.pressButton('Recibir');
+    assert.equal(ui.labels().filter(l => l === 'No es JPEG.').length, 2);
+    assert.equal(ui.labels().filter(l => l === 'Mal.').length, 2);
+    assert.ok(!avisosReact.some(a => /same key/.test(a)), avisosReact.join('\n'));
+    await ui.press('Quitar foto del remito');
+    assert.ok(!ui.labels().includes('No es JPEG.'));
+  } finally { console.error = original; await ui.close(); }
+});
+
+test('Recibir web: el File del selector se suelta siempre, también si ya era un JPEG que entra', async () => {
+  plataforma.OS = 'web';
+  try {
+    const ui = await montarRecibir(ok(), {jpeg: async (asset) => ({...asset, file: {size: 10}, mimeType: 'image/jpeg', fileSize: 10})});
+    try {
+      await ui.sacarRemito();
+      assert.deepEqual(ui.olvidados, ['file:///cache/remito.heic']);
+      await ui.pressButton('Recibir');
+      assert.deepEqual(ui.borrados, [], 'en web no hay temporales de ImageManipulator');
+    } finally { await ui.close(); }
+  } finally { plataforma.OS = 'android'; }
+});
+
+test('Entregas: una recepción incierta cuya entrega ya no está pendiente se consulta y se avisa, no se borra en silencio', async () => {
+  const ui = await montarEntregas((call) => {
+    if (call.url === '/api/emergencia/entregas/31/') {
+      return response(200, {...ENTREGA, estado: 'RECIBIDA', lineas: ENTREGA.lineas.map(l => ({...l, recibida: l.enviada}))});
+    }
+    if (call.url.endsWith('/recibir/')) return Promise.reject(new TypeError('Load failed'));
+    return response(200, [PREPARADA]);
+  }, {antes: async ({kits}) => {
+    const entrega = kits.normalizarEntrega(ENTREGA);
+    const r = await kits.abrirRecepcion(entrega, 7);
+    await kits.enviarRecepcion({entrega, recepcion: r, cantidades: {12: '10', 14: '3'}, remito: {uri: 'file:///r.jpg'}}).catch(() => {});
+  }});
+  try {
+    const aviso = ui.labels().find(l => l.startsWith('Entrega 2026-K-000031: La recepción de esta entrega ya figura registrada.'));
+    assert.ok(aviso, ui.labels().join(' | '));
+    assert.match(aviso, /Colchón: 10 de 10/);
+  } finally { await ui.close(); }
+});
+
+test('Mis dispositivos: con `entrarDirecto={false}` (vuelta por 404) no entra solo aunque haya uno', async () => {
+  const env = await entorno(() => response(200, [{id: 7, nombre: 'Club', recibe_kits: true, entregas_pendientes: 1}]));
+  const elegidos = [];
+  const Screen = loadScreen('src/screens/EmergenciaMisDispositivosScreen.js', env.mocks);
+  const ui = await render(Screen, {onElegir: (d) => elegidos.push(d), onSinModulo: () => {}, entrarDirecto: false});
+  try {
+    assert.deepEqual(elegidos, []);
+    assert.equal(ui.pressables().length, 1);
   } finally { await ui.close(); }
 });

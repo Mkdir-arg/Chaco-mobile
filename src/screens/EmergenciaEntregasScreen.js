@@ -22,6 +22,7 @@ export default function EmergenciaEntregasScreen({ dispositivo, onAbrir, onNoEnc
   const { theme, typography } = useTheme();
   const [entregas, setEntregas] = useState(null);
   const [abiertas, setAbiertas] = useState([]);
+  const [avisos, setAvisos] = useState([]);
   const [error, setError] = useState('');
   const [cargando, setCargando] = useState(true);
   const [refrescando, setRefrescando] = useState(false);
@@ -34,10 +35,12 @@ export default function EmergenciaEntregasScreen({ dispositivo, onAbrir, onNoEnc
     if (silencioso) setRefrescando(true);
     try {
       const lista = normalizarEntregas(await getEntregasDispositivo(dispositivoId, { pendientes: true }));
-      const enCurso = await recepcionesAbiertas(dispositivoId, lista.map((item) => item.id)).catch(() => []);
+      const enCurso = await recepcionesAbiertas(dispositivoId, lista.map((item) => item.id)).catch(() => null);
       if (!montado.current) return;
       setEntregas(lista);
-      setAbiertas(enCurso);
+      setAbiertas(enCurso?.abiertas || []);
+      // Un aviso de una recepción incierta que se resolvió se muestra hasta salir de la pantalla.
+      if (enCurso?.avisos?.length) setAvisos((prev) => [...prev, ...enCurso.avisos]);
       setError('');
     } catch (e) {
       if (!montado.current) return;
@@ -113,6 +116,11 @@ export default function EmergenciaEntregasScreen({ dispositivo, onAbrir, onNoEnc
         </View>
       ) : null}
       {error ? <CustomButton title="Reintentar" variant="secondary" iconLeft="refresh" onPress={() => cargar({ silencioso: true })} /> : null}
+      {avisos.map((texto, indice) => (
+        <View key={`aviso-${indice}`} accessibilityRole="alert" style={[styles.aviso, { backgroundColor: statusTones.info.bg, borderColor: statusTones.info.bd }]}>
+          <Text style={[styles.texto, { color: statusTones.info.tx, fontFamily: typography.semibold }]}>{texto}</Text>
+        </View>
+      ))}
       {(entregas || []).map(tarjeta)}
       {entregas && !entregas.length ? (
         <View style={styles.centro}>

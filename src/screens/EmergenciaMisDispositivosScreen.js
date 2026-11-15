@@ -13,10 +13,11 @@ export const SIN_DISPOSITIVOS = 'No recibís kits en ningún dispositivo. Pedí 
 export const ERROR_SIN_RED = 'Sin conexión: no se pudo traer tus dispositivos. La recepción de kits necesita señal.';
 
 // M3-0 · «Recepción de kits»: los dispositivos donde el usuario recibe kits (§9, `recibe_kits`).
-// Con uno solo se entra directo a sus entregas (`onElegir(dispositivo, { unico: true })`).
+// Con uno solo se entra directo a sus entregas (`onElegir(dispositivo, { unico: true })`), salvo con
+// `entrarDirecto={false}` (se volvió acá por un 404: entrar otra vez sería un bucle).
 // `recarga` cambia cuando se pide volver a consultar (botón de sincronizar del Banner).
 // `onSinModulo(mensaje)`: 403 SIN_MODULO.
-export default function EmergenciaMisDispositivosScreen({ onElegir, onSinModulo, recarga = 0 }) {
+export default function EmergenciaMisDispositivosScreen({ onElegir, onSinModulo, recarga = 0, entrarDirecto = true }) {
   const { theme, typography } = useTheme();
   const [dispositivos, setDispositivos] = useState(null);
   const [error, setError] = useState('');
@@ -25,7 +26,7 @@ export default function EmergenciaMisDispositivosScreen({ onElegir, onSinModulo,
   const montado = useRef(true);
   // El valor con el que se montó no pide nada: solo un cambio posterior.
   const recargaInicial = useRef(recarga);
-  const entroDirecto = useRef(false);
+  const entroDirecto = useRef(!entrarDirecto);
 
   const cargar = useCallback(async ({ silencioso = false } = {}) => {
     if (silencioso) setRefrescando(true);

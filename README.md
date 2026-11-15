@@ -263,14 +263,22 @@ salir) y admite una observación. Con diferencias, «Recibir» pide confirmació
   el tiempo máximo de la cola de M1 (`timeoutDelEnvio`).
 - **Idempotencia**: el `uuid_cliente` nace al abrir la recepción y se guarda en
   AsyncStorage por usuario y entrega, con las cantidades y la observación (nunca la foto),
-  así un cierre accidental no lo cambia. Tras un error de red, timeout, 5xx o 429 la
-  recepción queda **fija** (el pedido pudo haber llegado) y «Reintentar» manda lo mismo con
-  el mismo uuid; con `Retry-After` el botón espera. 200/201 la cierran.
-- Errores: 409 con `estado_actual` muestra `detail` y vuelve a las entregas; 409
-  `UUID_EN_USO` solo deja seguir descartando el intento (uuid nuevo, lo cargado se
-  conserva); 404 vuelve a «mis dispositivos»; 403 `SIN_MODULO` vuelve a pedir el perfil y
-  va al inicio; 400 `VALIDACION` marca cada línea o el remito y se corrige con el mismo
-  uuid; 413 pide otra foto del remito.
+  así un cierre accidental no lo cambia. Si un envío queda **incierto** (red, timeout, 5xx,
+  429, 401 o un rechazo desconocido: el pedido pudo haber llegado), nada se cambia
+  (cantidades, observación ni foto) y «Reintentar» manda lo mismo con el mismo uuid, sin
+  foto si ya no está (§12 no la pide en el reenvío); con `Retry-After` el botón espera. Un
+  413 o un 403 no lo destraban (no dicen nada del pedido anterior); un 400 sí. 200/201 la
+  cierran, y si el back registró otras cantidades que las mandadas, se avisa.
+- Mientras se manda no se puede volver (el `Banner` esconde la flecha).
+- Errores: 409 con `estado_actual` muestra `detail` y vuelve a las entregas; si había un
+  intento incierto o descartado y la entrega figura recibida, consulta `GET entregas/{id}/`
+  y muestra lo registrado. 409 `UUID_EN_USO` solo deja seguir descartando el intento (uuid
+  nuevo, lo cargado se conserva); es el único caso con «Descartar». 404 vuelve a «mis
+  dispositivos» sin volver a entrar directo; 403 `SIN_MODULO` vuelve a pedir el perfil y va
+  al inicio; 400 `VALIDACION` marca cada línea o el remito; 413 pide otra foto del remito.
+- Una recepción incierta cuya entrega ya no figura pendiente no se borra en silencio: la
+  lista de entregas consulta la entrega y avisa si quedó registrada (con lo recibido), si la
+  mesa la canceló o si no se pudo confirmar; sin red se conserva para otra vez.
 
 > **Despliegue:** `expo-image-manipulator` es un módulo nativo. Desde 1.2.13 el
 > Formulario 1 importa `src/utils/jpeg.js`: Android/iOS necesitan **un build nuevo**
