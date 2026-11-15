@@ -79,6 +79,8 @@ export default function EmergenciaApp({ onCambiarModulo }) {
   // Una acción con conexión mandándose (recibir kits, aceptar o rechazar una derivación, agregar una
   // persona): no se sale de la pantalla hasta saber el resultado.
   const [enviando, setEnviando] = useState(false);
+  // Hasta cuándo (ms) el back pidió no buscar por DNI (429 de §13.2): sobrevive a volver y re-entrar.
+  const [esperaBuscarHasta, setEsperaBuscarHasta] = useState(0);
   // La pasada de fondo en curso (su promesa) y si hay una manual: la manual espera a la de fondo.
   const fondo = useRef(null);
   const manual = useRef(false);
@@ -268,7 +270,7 @@ export default function EmergenciaApp({ onCambiarModulo }) {
   const elegirDispositivoLlegadas = (dispositivo, { unico = false } = {}) => setPantalla({ vista: 'llegadas_buscar', dispositivo, unico, dni: '', n: 1 });
   const verDerivacion = (busqueda) => setPantalla((actual) => ({ ...actual, vista: 'llegadas_derivacion', busqueda, dni: busqueda.dni || actual.dni }));
   const verIntegrantes = (caso, dni) => setPantalla((actual) => ({
-    ...actual, vista: 'llegadas_integrantes', caso, dni: dni ?? actual.dni, n: (actual.n || 0) + 1,
+    ...actual, vista: 'llegadas_integrantes', caso, dni: dni ?? actual.dni, n: (actual.n || 0) + 1, recargada: false,
   }));
   const llegadaNoEncontrada = () => {
     setEnviando(false);
@@ -285,7 +287,12 @@ export default function EmergenciaApp({ onCambiarModulo }) {
     setPantalla((actual) => {
       const caso = actual.caso || actual.busqueda?.derivacion?.caso || null;
       const base = { dispositivo: actual.dispositivo, unico: actual.unico, dni: actual.dni || '', n: (actual.n || 0) + 1 };
-      if (clasificacion.destino === 'integrantes' && caso) return { ...base, vista: 'llegadas_integrantes', caso };
+      // Guarda contra el bucle: si ya se recargó una vez esta misma pantalla de integrantes del mismo caso
+      // por un 409, no se vuelve a montar: se busca de nuevo.
+      const mismaRecargada = actual.vista === 'llegadas_integrantes' && actual.recargada && String(actual.caso?.id) === String(caso?.id);
+      if (clasificacion.destino === 'integrantes' && caso && !mismaRecargada) {
+        return { ...base, vista: 'llegadas_integrantes', caso, recargada: true };
+      }
       if (clasificacion.destino === 'derivacion' && base.dni) return { ...base, vista: 'llegadas_buscar', autoBuscar: true };
       return { ...base, vista: 'llegadas_buscar', autoBuscar: false };
     });
@@ -345,7 +352,8 @@ export default function EmergenciaApp({ onCambiarModulo }) {
         ) : null}
         {vista === 'llegadas_buscar' ? (
           <EmergenciaLlegadaBuscarScreen key={`buscar-${pantalla.dispositivo?.id}-${pantalla.n}`} dispositivo={pantalla.dispositivo}
-            dniInicial={pantalla.dni} autoBuscar={!!pantalla.autoBuscar} onDerivacion={verDerivacion} onIntegrantes={verIntegrantes}
+            dniInicial={pantalla.dni} autoBuscar={!!pantalla.autoBuscar} esperaHasta={esperaBuscarHasta} onEspera={setEsperaBuscarHasta}
+            onDerivacion={verDerivacion} onIntegrantes={verIntegrantes}
             onNoEncontrado={llegadaNoEncontrada} onSinModulo={sinModulo} onProximamente={proximamente} />
         ) : null}
         {vista === 'llegadas_derivacion' ? (

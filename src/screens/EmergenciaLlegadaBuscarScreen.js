@@ -24,9 +24,10 @@ export const AYUDA_DNI = 'El DNI del responsable o de cualquier persona ya confi
 //   la próxima versión: `onProximamente(titulo)`.
 // - 429: cuenta regresiva con Retry-After; 404 → `onNoEncontrado`; 403 SIN_MODULO → `onSinModulo(mensaje)`.
 // `dniInicial` y `autoBuscar`: la recarga por `estado_actual` (§13.1) vuelve acá con el DNI, y con
-// DERIVADO busca sola. `aviso`: el `detail` del 409 que trajo acá.
+// DERIVADO busca sola. `esperaHasta` (ms) y `onEspera(hasta)`: la cuenta del 429 vive en el padre y
+// sobrevive a volver y re-entrar (el tope es del usuario, no de la pantalla).
 export default function EmergenciaLlegadaBuscarScreen({
-  dispositivo, dniInicial = '', autoBuscar = false, aviso = null,
+  dispositivo, dniInicial = '', autoBuscar = false, esperaHasta: esperaInicial = 0, onEspera,
   onDerivacion, onIntegrantes, onNoEncontrado, onSinModulo, onProximamente,
 }) {
   const { theme, typography } = useTheme();
@@ -38,7 +39,7 @@ export default function EmergenciaLlegadaBuscarScreen({
   const [errorDni, setErrorDni] = useState([]);
   const [falla, setFalla] = useState(null);
   const [sinRed, setSinRed] = useState(false);
-  const [esperaHasta, setEsperaHasta] = useState(0);
+  const [esperaHasta, setEsperaHasta] = useState(esperaInicial);
   const [ahora, setAhora] = useState(Date.now());
   const montado = useRef(true);
   const buscandoRef = useRef(false);
@@ -50,7 +51,7 @@ export default function EmergenciaLlegadaBuscarScreen({
         const abierta = await abrirSesion();
         if (!montado.current) return;
         setSesion(abierta);
-        if (autoBuscar && dniInicial) ejecutar(abierta, cleanDigits(dniInicial));
+        if (autoBuscar && dniInicial && !(esperaInicial > Date.now())) ejecutar(abierta, cleanDigits(dniInicial));
       } catch (e) {
         if (montado.current) setErrorSesion(e?.message || 'No hay sesión iniciada.');
       }
@@ -112,8 +113,10 @@ export default function EmergenciaLlegadaBuscarScreen({
         return;
       }
       if (c.espera) {
+        const hasta = Date.now() + c.espera;
         setAhora(Date.now());
-        setEsperaHasta(Date.now() + c.espera);
+        setEsperaHasta(hasta);
+        onEspera?.(hasta);
       }
       setFalla(c);
     } finally {
@@ -124,7 +127,11 @@ export default function EmergenciaLlegadaBuscarScreen({
 
   const tocarBuscar = async () => {
     if (buscandoRef.current || !sesion || esperando) return;
-    if (!await hayConexion()) {
+    // Se toma antes de mirar la red: dos toques seguidos no pasan los dos.
+    buscandoRef.current = true;
+    const hay = await hayConexion();
+    buscandoRef.current = false;
+    if (!hay) {
       if (montado.current) setSinRed(true);
       return;
     }
@@ -167,7 +174,6 @@ export default function EmergenciaLlegadaBuscarScreen({
       keyboardShouldPersistTaps="handled"
       keyboardDismissMode={keyboardDismissModeFor(Platform.OS === 'ios' ? 'interactive' : 'on-drag')}>
       {sinRed ? avisoDe('warning', TEXTO_SIN_RED, 'cloud-offline-outline') : null}
-      {aviso?.texto ? avisoDe(aviso.tono || 'info', aviso.texto, 'information-circle-outline') : null}
 
       <View style={tarjeta}>
         <Text accessibilityRole="header" style={[styles.titulo, { color: theme.colors.text, fontFamily: typography.bold }]}>{TITULO_BUSCAR}</Text>

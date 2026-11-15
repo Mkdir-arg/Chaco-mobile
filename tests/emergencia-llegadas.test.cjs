@@ -120,7 +120,7 @@ test('clasificarErrorLlegada: cada respuesta del contrato, por status y code', a
   const v = l.clasificarErrorLlegada({status: 400, payload: {code: 'VALIDACION', detail: 'Ingresá un DNI válido', dni: ['Ingresá un DNI válido'], non_field_errors: ['Ingresá un DNI válido']}}, {campos: ['dni']});
   igual(v.errores, {dni: ['Ingresá un DNI válido']});
   assert.equal(tipo({status: 400, payload: {detail: 'JSON parse error'}}), 'rechazo', 'un 400 sin code no es VALIDACION');
-  igual(l.clasificarErrorLlegada({status: 429, payload: {detail: 'x'}, retryAfter: 30000}), {tipo: 'espera', mensaje: l.TEXTO_ESPERAR, espera: 30000});
+  igual(l.clasificarErrorLlegada({status: 429, payload: {detail: 'x'}, retryAfter: 30000}), {tipo: 'espera', mensaje: l.TEXTO_ESPERAR_ACCION, espera: 30000});
   assert.equal(tipo({network: true}), 'reintentable');
   assert.equal(tipo({network: true, timeout: true}), 'reintentable');
   assert.equal(tipo({status: 503, payload: {}}), 'reintentable');
@@ -334,15 +334,85 @@ test('integrantes: GET de §13.5; 409 con estado_actual va al router', async () 
   igual(await clasificacion(l.cargarIntegrantes(sesion, 184)).then(c => [c.tipo, c.destino]), ['conflicto', 'derivacion']);
 });
 
-test('agregar persona: POST con el uuid de la pantalla; el reintento con el mismo uuid no suma otra', async () => {
+test('agregar persona: el uuid se guarda por usuario y caso; el reintento (también tras recargar la app) manda el MISMO', async () => {
   const {r, l, sesion} = await preparar();
   let intento = 0;
   const calls = router(r, () => { intento += 1; return intento === 1 ? fallaDeRed() : response(intento === 2 ? 201 : 200, {integrante: FILA(8), total_declarado: 8}); });
-  const uuid = l.nuevoUuidAgregar();
-  igual(await clasificacion(l.agregarPersona(sesion, 184, uuid)).then(c => [c.tipo, c.mensaje]), ['reintentable', l.TEXTO_AGREGAR_INCIERTO]);
-  const r1 = await l.agregarPersona(sesion, 184, uuid);
-  const r2 = await l.agregarPersona(sesion, 184, uuid);
-  igual([r1.integrante.n, r1.total_declarado, r2.integrante.n], [8, 8, 8]);
-  igual(calls.map(c => [c.method, c.url, c.body.uuid_cliente]), [0, 1, 2].map(() => ['POST', '/api/emergencia/casos/184/integrantes/', uuid]));
-  await assert.rejects(l.agregarPersona(sesion, 184, ''), /uuid_cliente/);
+  assert.equal(await l.agregarPendiente(sesion, 184), null);
+  igual(await clasificacion(l.agregarPersona(sesion, 184)).then(c => [c.tipo, c.mensaje]), ['reintentable', l.TEXTO_AGREGAR_INCIERTO]);
+  const pendiente = await l.agregarPendiente(sesion, 184);
+  assert.match(pendiente, UUID);
+  assert.equal(await l.agregarPendiente(sesion, 190), null, 'es por caso');
+  // Otra instancia del módulo (la app cerrada y vuelta a abrir) ve el mismo uuid.
+  const l2 = r.reload('./emergenciaLlegadas');
+  assert.equal(await l2.agregarPendiente(sesion, 184), pendiente);
+  const r1 = await l2.agregarPersona(sesion, 184);
+  igual([r1.integrante.n, r1.total_declarado], [8, 8]);
+  assert.equal(await l2.agregarPendiente(sesion, 184), null, 'el 2xx lo olvida');
+  await l2.agregarPersona(sesion, 184);
+  const uuids = calls.map(c => c.body.uuid_cliente);
+  igual(calls.map(c => [c.method, c.url]), [0, 1, 2].map(() => ['POST', '/api/emergencia/casos/184/integrantes/']));
+  igual([uuids[0] === pendiente, uuids[1] === pendiente, uuids[2] === pendiente], [true, true, false], 'la persona siguiente es otro pedido');
+});
+
+test('agregar persona: 400, 404 y 409 olvidan el uuid; red, timeout, 5xx, WAF, 429 y 403 lo conservan', async () => {
+  const {r, l, sesion} = await preparar();
+  const casos = [
+    [() => response(400, {code: 'VALIDACION', detail: 'x', uuid_cliente: ['x']}), false],
+    [() => response(404, {detail: 'No encontrado.'}), false],
+    [() => response(409, {detail: 'Cerrado.', estado_actual: 'CERRADO'}), false],
+    [() => response(409, {detail: 'En uso.', code: 'UUID_EN_USO'}), false],
+    [fallaDeRed, true],
+    [() => response(503, {}), true],
+    [() => ({status: 200, ok: false, headers: {get: n => (n.toLowerCase() === 'content-type' ? 'text/html' : null)}, text: async () => '<html>WAF</html>'}), true],
+    [() => response(429, {detail: 'x'}, {'Retry-After': '5'}), true],
+    [(call) => (call.url.endsWith('/perfil/') ? response(200, {llegadas: false}) : response(403, {detail: 'x', code: 'SIN_MODULO'})), true],
+  ];
+  for (const [respuesta, conserva] of casos) {
+    router(r, respuesta);
+    const error = await l.agregarPersona(sesion, 184).catch(e => e);
+    assert.ok(error?.clasificacion, 'tiene que fallar');
+    assert.equal(!!await l.agregarPendiente(sesion, 184), conserva, `${error.clasificacion.tipo} ${conserva ? 'conserva' : 'olvida'}`);
+    if (conserva) {
+      router(r, () => response(200, {integrante: FILA(3), total_declarado: 3}));
+      await l.agregarPersona(sesion, 184);
+    }
+  }
+  l.LIMITES.accionMs = 20;
+  try {
+    router(r, nunca);
+    await l.agregarPersona(sesion, 184).catch(() => {});
+    assert.ok(await l.agregarPendiente(sesion, 184), 'timeout conserva');
+  } finally { l.LIMITES.accionMs = 30000; }
+});
+
+test('429: la búsqueda lo dice con el texto del tope de búsquedas; aceptar, con el genérico', async () => {
+  const {r, l, sesion} = await preparar();
+  router(r, () => response(429, {detail: 'x'}, {'Retry-After': '5'}));
+  assert.equal((await clasificacion(l.buscar(sesion, 7, '30111222'))).mensaje, l.TEXTO_ESPERAR);
+  assert.equal((await clasificacion(l.aceptar(sesion, l.normalizarBusqueda(BUSQUEDA).derivacion))).mensaje, l.TEXTO_ESPERAR_ACCION);
+  assert.equal((await clasificacion(l.agregarPersona(sesion, 184))).mensaje, l.TEXTO_ESPERAR_ACCION);
+});
+
+// Caso conocido, documentado (MINOR 4 de la revisión del PR #28): becasRequest relee el token y no
+// acepta uno fijo, así que si otra sesión entra entre el chequeo previo de emergenciaApi y esa lectura,
+// un 401 del token viejo invalida la sesión NUEVA. Se arregla cuando becasRequest acepte `token` (como
+// uploadMultipart); becasApi.js está reservado por otra sesión.
+test('sesión: un 401 del token viejo en la carrera no debería cerrar la sesión nueva', {todo: 'requiere token fijo en becasRequest (becasApi.js reservado)'}, async () => {
+  const r = await setup('web');
+  r.setFetch(async () => response(200, {token: 'tok', user_id: 7, username: 'guardia', modulos: ['emergencia']}));
+  await r.api.loginBecas({username: 'guardia', password: 'x'});
+  const l = r.load('./emergenciaLlegadas');
+  const sesion = await l.abrirSesion();
+  router(r, () => response(401, {detail: 'Invalid token.'}));
+  const leer = r.legacy.get.bind(r.legacy);
+  let lecturas = 0;
+  // La 2.ª lectura (la de becasRequest) llega cuando otra persona ya entró: su token es 'tok-otra'.
+  r.legacy.get = (clave) => {
+    if (clave === 'becas_auth_token' && ++lecturas === 2) r.legacy.set(clave, 'tok-otra');
+    return leer(clave);
+  };
+  await l.buscar(sesion, 7, '30111222').catch(() => {});
+  r.legacy.get = leer;
+  assert.equal(await r.api.getBecasToken(), 'tok-otra');
 });

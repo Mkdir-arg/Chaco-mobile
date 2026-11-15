@@ -6,7 +6,7 @@ import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
 import {
   TEXTO_SIN_RED, abrirSesion, agregarPersona, cargarIntegrantes, cierreDisponible, clasificarErrorLlegada, escucharRed,
-  esSoloLectura, estadoDeIntegrante, hayConexion, nuevoUuidAgregar, textoDeCrecimiento, textoDelContador,
+  agregarPendiente, esSoloLectura, estadoDeIntegrante, hayConexion, textoDeCrecimiento, textoDelContador,
 } from '../services/emergenciaLlegadas';
 import { statusTones } from '../theme/statusBadges';
 import { fontSizes, radii } from '../theme';
@@ -48,8 +48,6 @@ export default function EmergenciaIntegrantesScreen({
   const pedido = useRef(0);
   const recargaInicial = useRef(recarga);
   const agregandoRef = useRef(false);
-  // uuid del «Agregar persona» en curso: se conserva hasta saber el resultado (el reintento no suma otra).
-  const uuidAgregar = useRef(null);
   const casoId = casoInicial?.id;
 
   const cargar = async ({ silencioso = false } = {}) => {
@@ -68,7 +66,10 @@ export default function EmergenciaIntegrantesScreen({
       const c = e?.clasificacion || clasificarErrorLlegada(e);
       if (c.tipo === 'obsoleto') return;
       if (c.tipo === 'conflicto') {
-        onConflicto?.(c);
+        // El GET de integrantes solo abre con el ingreso aceptado (§13.5). Un 409 acá con un estado que
+        // el router manda a integrantes (CERRADO o ALOJADO sin ingreso aceptado, p. ej. la mesa cerró el
+        // caso después de un rechazo) volvería a montar esta misma pantalla sin fin: se busca de nuevo.
+        onConflicto?.(c.destino === 'integrantes' ? { ...c, destino: 'buscar' } : c);
         return;
       }
       if (c.tipo === 'no_encontrado') {
@@ -100,6 +101,8 @@ export default function EmergenciaIntegrantesScreen({
         if (!montado.current) return;
         sesionRef.current = abierta;
         setSesion(abierta);
+        // Un «Agregar persona» que quedó sin resultado (otra entrada, la app cerrada): se ofrece reintentarlo.
+        agregarPendiente(abierta, casoId).then((uuid) => { if (montado.current && uuid) setReintentoAgregar(true); }).catch(() => {});
         await cargar();
       } catch (e) {
         if (montado.current) {
@@ -131,20 +134,20 @@ export default function EmergenciaIntegrantesScreen({
 
   const mandarAgregar = async () => {
     if (agregandoRef.current || !sesionRef.current) return;
+    // Se toma antes de mirar la red: dos toques seguidos no pasan los dos.
+    agregandoRef.current = true;
     if (!await hayConexion()) {
+      agregandoRef.current = false;
       if (!montado.current) return;
       setSinRed(true);
       showAlert('Sin conexión', TEXTO_SIN_RED, [{ text: 'Entendido' }]);
       return;
     }
-    agregandoRef.current = true;
-    if (!uuidAgregar.current) uuidAgregar.current = nuevoUuidAgregar();
     setAgregando(true);
     setFalla(null);
     avisarEnviando(true);
     try {
-      const r = await agregarPersona(sesionRef.current, casoId, uuidAgregar.current);
-      uuidAgregar.current = null;
+      const r = await agregarPersona(sesionRef.current, casoId);
       if (!montado.current) return;
       setReintentoAgregar(false);
       showToast({ type: 'success', message: `Se sumó la persona ${r.integrante?.n ?? r.total_declarado} a la familia.` });
@@ -152,8 +155,6 @@ export default function EmergenciaIntegrantesScreen({
     } catch (e) {
       const c = e?.clasificacion || clasificarErrorLlegada(e);
       if (c.tipo === 'obsoleto') return;
-      // El back respondió sobre el estado: el uuid no escribió nada (o no importa más); el próximo es otro.
-      if (['conflicto', 'no_encontrado', 'validacion', 'uuid_en_uso'].includes(c.tipo)) uuidAgregar.current = null;
       if (c.tipo === 'conflicto') {
         onConflicto?.(c);
         return;
@@ -167,7 +168,7 @@ export default function EmergenciaIntegrantesScreen({
         return;
       }
       if (!montado.current) return;
-      setReintentoAgregar(!!uuidAgregar.current);
+      setReintentoAgregar(!!await agregarPendiente(sesionRef.current, casoId).catch(() => null));
       if (c.tipo === 'sin_red') {
         setSinRed(true);
         return;
@@ -182,8 +183,8 @@ export default function EmergenciaIntegrantesScreen({
 
   const tocarAgregar = () => {
     if (agregandoRef.current) return;
-    // Reintento de un «Agregar» incierto: el mismo pedido, sin volver a preguntar.
-    if (uuidAgregar.current) {
+    // Reintento de un «Agregar» incierto: el mismo pedido (el uuid guardado), sin volver a preguntar.
+    if (reintentoAgregar) {
       mandarAgregar();
       return;
     }

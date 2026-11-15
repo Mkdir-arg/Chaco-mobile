@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Crypto from 'expo-crypto';
 import { getBecasToken, getStoredBecasUser } from './becasApi';
 import {
@@ -24,6 +25,7 @@ export { escucharRed, hayConexion } from './emergenciaKits';
 // ---- Textos ----
 export const TEXTO_SIN_RED = 'Sin conexión: no podés buscar familias ni reservar camas. La llegada de familias necesita señal; probá cuando vuelva la red.';
 export const TEXTO_ESPERAR = 'Hiciste muchas búsquedas seguidas. Esperá a que termine la cuenta para volver a buscar.';
+export const TEXTO_ESPERAR_ACCION = 'El servidor pidió esperar antes de volver a intentar.';
 export const TEXTO_REINTENTAR_LECTURA = 'No se pudo hablar con el servidor. Probá de nuevo.';
 export const TEXTO_ACEPTAR_INCIERTO = 'No se pudo confirmar si la derivación se aceptó. «Reintentar» la vuelve a mandar: si ya había quedado aceptada, seguís con los integrantes.';
 export const TEXTO_RECHAZAR_INCIERTO = 'No se pudo confirmar si el rechazo llegó. «Reintentar» lo vuelve a mandar: si ya había llegado, el caso figura de vuelta en la mesa.';
@@ -291,7 +293,7 @@ export const clasificarErrorLlegada = (error, { campos = [] } = {}) => {
     return { tipo: 'validacion', mensaje: detalle || 'El servidor rechazó el pedido.', errores: Object.keys(errores).length ? errores : { generales: [detalle || 'El servidor rechazó el pedido.'] } };
   }
   if (status === 429 && !error?.unexpectedHtml) {
-    return { tipo: 'espera', mensaje: TEXTO_ESPERAR, espera: Number(error?.retryAfter) > 0 ? Number(error.retryAfter) : null };
+    return { tipo: 'espera', mensaje: TEXTO_ESPERAR_ACCION, espera: Number(error?.retryAfter) > 0 ? Number(error.retryAfter) : null };
   }
   if (error?.network === true || error?.unexpectedHtml === true || !status || status >= 500 || status === 408 || status === 429) {
     return { tipo: 'reintentable', mensaje: TEXTO_REINTENTAR_LECTURA, espera: Number(error?.retryAfter) > 0 ? Number(error.retryAfter) : null };
@@ -337,8 +339,14 @@ export const buscar = async (sesion, dispositivoId, dni) => {
   if (validarDni(limpio)) {
     throw crearError('VALIDACION_LOCAL', DNI_INVALIDO, { clasificacion: { tipo: 'validacion', mensaje: DNI_INVALIDO, errores: { dni: [DNI_INVALIDO] } } });
   }
-  const payload = await conSesion(sesion, (op) => buscarFamilia(dispositivoId, limpio, op), { timeoutMs: LIMITES.lecturaMs, campos: ['dni'] });
-  return normalizarBusqueda(payload);
+  try {
+    const payload = await conSesion(sesion, (op) => buscarFamilia(dispositivoId, limpio, op), { timeoutMs: LIMITES.lecturaMs, campos: ['dni'] });
+    return normalizarBusqueda(payload);
+  } catch (error) {
+    // El 429 de acá es el tope de búsquedas por DNI (§13.2): se dice con ese texto.
+    if (error.clasificacion?.tipo === 'espera') error.clasificacion.mensaje = TEXTO_ESPERAR;
+    throw error;
+  }
 };
 
 const crearUuid = () => String(Crypto.randomUUID()).toLowerCase();
@@ -407,16 +415,63 @@ export const rechazar = async (sesion, derivacion, { motivo, observacion } = {},
 export const cargarIntegrantes = async (sesion, casoId) => normalizarIntegrantes(
   await conSesion(sesion, (op) => getIntegrantes(casoId, op), { timeoutMs: LIMITES.lecturaMs }));
 
-// «Agregar persona» (§13.5): idempotente por `uuid_cliente`. La pantalla genera el uuid al tocar y lo
-// conserva hasta saber el resultado: el reintento con el mismo uuid devuelve la misma fila.
-export const nuevoUuidAgregar = crearUuid;
-export const agregarPersona = async (sesion, casoId, uuidCliente) => {
+// «Agregar persona» (§13.5): idempotente por `uuid_cliente`. El uuid nace al mandar y se guarda en
+// AsyncStorage (por usuario y caso) hasta saber el resultado, como la recepción abierta de M3: volver,
+// re-entrar, la recarga del router o cerrar la app no lo cambian, y el reintento con el mismo uuid
+// devuelve la misma fila (no suma una persona fantasma).
+// - Se olvida con 2xx y con las respuestas que dicen en qué quedó: 400 VALIDACION, 404 y 409.
+// - Se conserva con red, timeout, 5xx, página del WAF, 429, 403 y 401: el pedido pudo haber llegado.
+const CLAVE_AGREGAR = 'emergencia_llegadas_agregar';
+const claveAgregar = (owner) => `${CLAVE_AGREGAR}:${owner}`;
+let colaAgregar = Promise.resolve();
+const enOrdenAgregar = (tarea) => {
+  const resultado = colaAgregar.then(tarea, tarea);
+  colaAgregar = resultado.catch(() => {});
+  return resultado;
+};
+const leerAgregar = async (owner) => {
   try {
-    const payload = await conSesion(sesion, (op) => agregarIntegrante(casoId, { uuid_cliente: uuidCliente }, op),
+    const crudo = await AsyncStorage.getItem(claveAgregar(owner));
+    const valor = crudo ? JSON.parse(crudo) : {};
+    return valor && typeof valor === 'object' && !Array.isArray(valor) ? valor : {};
+  } catch {
+    return {};
+  }
+};
+const modificarAgregar = (owner, cambio) => enOrdenAgregar(async () => {
+  const todas = await leerAgregar(owner);
+  const resultado = cambio(todas);
+  if (Object.keys(todas).length) await AsyncStorage.setItem(claveAgregar(owner), JSON.stringify(todas));
+  else await AsyncStorage.removeItem(claveAgregar(owner));
+  return resultado;
+});
+
+// El uuid de un «Agregar persona» sin resultado en este caso, o null.
+export const agregarPendiente = async (sesion, casoId) => {
+  if (!sesion?.owner) return null;
+  const todas = await enOrdenAgregar(() => leerAgregar(sesion.owner));
+  return typeof todas[String(casoId)] === 'string' ? todas[String(casoId)] : null;
+};
+
+const RESUELVEN_AGREGAR = ['validacion', 'no_encontrado', 'conflicto', 'uuid_en_uso'];
+
+export const agregarPersona = async (sesion, casoId) => {
+  const id = String(casoId);
+  const uuid = await modificarAgregar(sesion.owner, (todas) => {
+    if (typeof todas[id] !== 'string') todas[id] = crearUuid();
+    return todas[id];
+  });
+  const olvidar = () => modificarAgregar(sesion.owner, (todas) => { if (todas[id] === uuid) delete todas[id]; });
+  try {
+    const payload = await conSesion(sesion, (op) => agregarIntegrante(casoId, { uuid_cliente: uuid }, op),
       { timeoutMs: LIMITES.accionMs });
-    return { integrante: normalizarIntegrante(payload?.integrante), total_declarado: entero(payload?.total_declarado) };
+    await olvidar();
+    return { integrante: normalizarIntegrante(payload?.integrante), total_declarado: entero(payload?.total_declarado), uuid };
   } catch (error) {
-    if (error.clasificacion?.tipo === 'reintentable') error.clasificacion.mensaje = TEXTO_AGREGAR_INCIERTO;
+    const tipo = error.clasificacion?.tipo;
+    if (RESUELVEN_AGREGAR.includes(tipo)) await olvidar();
+    if (tipo === 'reintentable') error.clasificacion.mensaje = TEXTO_AGREGAR_INCIERTO;
+    error.uuid = uuid;
     throw error;
   }
 };

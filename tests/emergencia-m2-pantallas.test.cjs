@@ -327,6 +327,31 @@ test('Buscar: un segundo toque mientras busca no pide de nuevo; la respuesta tra
   assert.deepEqual(ui.eventos, [], 'desmontada, la respuesta tardía se descarta');
 });
 
+test('Buscar: toques sin espera entre medio (la red tarda en contestar) mandan una sola búsqueda', async () => {
+  const ui = await montarBuscar(() => response(200, BUSQUEDA));
+  try {
+    await ui.escribir('DNI', '30111222');
+    await renderer.act(async () => { const p = ui.button('Buscar').props.onPress; p(); p(); p(); await esperar(10); });
+    assert.equal(api(ui.calls).length, 1);
+  } finally { await ui.close(); }
+});
+
+test('Buscar: la espera del 429 viene del padre (sobrevive a re-entrar) y se le avisa la nueva', async () => {
+  const esperas = [];
+  const ui = await montarBuscar(() => response(429, {detail: 'x'}, {'Retry-After': '20'}), {props: {onEspera: h => esperas.push(h)}});
+  try {
+    await ui.escribir('DNI', '30111222');
+    await ui.pressButton('Buscar');
+    assert.equal(esperas.length, 1);
+    assert.ok(esperas[0] > Date.now() + 15000);
+  } finally { await ui.close(); }
+  const otra = await montarBuscar(() => response(200, BUSQUEDA), {props: {esperaHasta: Date.now() + 10000, dniInicial: '30111222', autoBuscar: true}});
+  try {
+    assert.ok(otra.button('Buscar en 10 s') || otra.button('Buscar en 9 s'), 'botones: ' + otra.titulos());
+    assert.equal(api(otra.calls).length, 0, 'ni la búsqueda automática sale durante la espera');
+  } finally { await otra.close(); }
+});
+
 test('Buscar: con `autoBuscar` (recarga por DERIVADO) busca sola con el DNI que trae', async () => {
   const ui = await montarBuscar(() => response(200, BUSQUEDA), {props: {dniInicial: '30111222', autoBuscar: true}});
   try {
@@ -434,7 +459,7 @@ test('Derivación: timeout → «Reintentar aceptar»; el 409 INGRESO_EN_CURSO d
     assert.equal(ui.button('Rechazar').props.disabled, true, 'con un aceptar incierto no se rechaza');
     await ui.pressButton('Reintentar aceptar');
     assert.deepEqual(ui.eventos, [['aceptada', CASO, 'ya_aceptada']]);
-    assert.equal(ui.toasts.at(-1).message, 'La derivación ya figura aceptada: seguís con los integrantes.');
+    assert.deepEqual(plano(ui.toasts.at(-1)), {type: 'info', message: 'La derivación ya la aceptó Guardia a las 10:20.'}, 'el detail del servidor dice quién y cuándo');
   } finally { await ui.close(); }
 });
 
@@ -481,6 +506,8 @@ test('Derivación: rechazo incierto → «Reintentar rechazo» sin volver a preg
     assert.deepEqual(b.body, a.body);
     assert.equal(ui.eventos[0][0], 'rechazada');
     assert.equal(ui.eventos[0][1].resultado, 'ya_rechazada');
+    assert.deepEqual(plano(ui.toasts.at(-1)), {type: 'info', message: 'La derivación ya fue rechazada o el ingreso se canceló. Buscá a la familia de nuevo.'},
+      'se ve el detail del servidor, no un texto genérico');
   } finally { await ui.close(); }
 });
 
@@ -497,6 +524,22 @@ test('Derivación: un segundo toque mientras acepta no manda otro; volver queda 
     assert.deepEqual(ui.enviando, [true, false]);
     assert.equal(ui.eventos[0][0], 'aceptada');
   } finally { await ui.close(); }
+});
+
+test('Derivación: toques sin espera entre medio en «Aceptar» (NetInfo tarda) mandan un solo POST', async () => {
+  const ui = await montarDerivacion(() => response(200, ACEPTACION));
+  try {
+    await renderer.act(async () => { const p = ui.button('Aceptar y reservar camas').props.onPress; p(); p(); await esperar(10); });
+    assert.equal(posts(ui.calls, 'aceptar').length, 1);
+    assert.equal(ui.eventos.length, 1);
+  } finally { await ui.close(); }
+  const sinRed = await montarDerivacion(() => response(200, ACEPTACION), {online: false});
+  try {
+    await sinRed.pressButton('Aceptar y reservar camas');
+    sinRed.runtime.setOnline(true);
+    await sinRed.pressButton('Aceptar y reservar camas');
+    assert.equal(posts(sinRed.calls, 'aceptar').length, 1, 'sin red se libera el toque para el siguiente');
+  } finally { await sinRed.close(); }
 });
 
 test('Derivación sin red: no manda nada y lo avisa; 404 y 403 SIN_MODULO van al padre', async () => {
@@ -582,6 +625,53 @@ test('Integrantes: 409 al cargar va al router; 404 y 403 al padre', async () => 
   } finally { await ui.close(); }
   const ajena = await montarIntegrantes(() => response(404, {detail: 'No encontrado.'}));
   try { assert.deepEqual(ajena.eventos, [['no_encontrado']]); } finally { await ajena.close(); }
+});
+
+test('Integrantes (B1): un 409 del propio GET con CERRADO o ALOJADO no vuelve a integrantes: va a buscar, una sola vez', async () => {
+  for (const estado of ['CERRADO', 'ALOJADO', 'INGRESO_EN_CURSO']) {
+    const ui = await montarIntegrantes(() => response(409, {detail: `El caso 2026-000184 está ${estado}.`, estado_actual: estado}));
+    try {
+      await esperar(20);
+      assert.deepEqual(ui.eventos.map(e => [e[0], e[1].destino, e[1].estadoActual, e[1].mensaje]),
+        [['conflicto', 'buscar', estado, `El caso 2026-000184 está ${estado}.`]], estado);
+      assert.equal(api(ui.calls).length, 1);
+    } finally { await ui.close(); }
+  }
+});
+
+test('Integrantes: «Agregar persona» sin resultado sobrevive a salir y re-entrar: ofrece reintentar con el MISMO uuid', async () => {
+  let posteos = 0;
+  const env = await entorno((call) => {
+    if (call.method === 'POST') { posteos += 1; return posteos === 1 ? fallaDeRed() : response(200, {integrante: FILA(3), total_declarado: 3}); }
+    return response(200, INTEGRANTES);
+  });
+  const Screen = loadScreen('src/screens/EmergenciaIntegrantesScreen.js', env.mocks);
+  const props = {caso: CASO, onConflicto: () => {}, onNoEncontrado: () => {}, onSinModulo: () => {}, onProximamente: () => {}, onEnviando: () => {}};
+  const primera = await render(Screen, props);
+  await primera.pressButton('Agregar persona');
+  await env.aceptarAlerta('Agregar');
+  assert.ok(primera.button('Reintentar agregar persona'));
+  await primera.close();
+  const segunda = await render(Screen, props);
+  try {
+    assert.ok(segunda.button('Reintentar agregar persona'), 'botones: ' + segunda.titulos());
+    const alertas = env.alerts.length;
+    await segunda.pressButton('Reintentar agregar persona');
+    assert.equal(env.alerts.length, alertas, 'el reintento no vuelve a preguntar');
+    const [a, b] = env.calls.filter(c => c.method === 'POST');
+    assert.equal(b.body.uuid_cliente, a.body.uuid_cliente);
+    assert.ok(segunda.button('Agregar persona'));
+  } finally { await segunda.close(); }
+});
+
+test('Integrantes: toques sin espera entre medio en «Agregar» mandan un solo POST', async () => {
+  const ui = await montarIntegrantes((call) => (call.method === 'POST' ? response(201, {integrante: FILA(3), total_declarado: 3}) : response(200, INTEGRANTES)));
+  try {
+    await ui.pressButton('Agregar persona');
+    const agregar = ui.alerts.at(-1)[2].find(o => o.text === 'Agregar').onPress;
+    await renderer.act(async () => { agregar(); agregar(); await esperar(10); });
+    assert.equal(ui.calls.filter(c => c.method === 'POST').length, 1);
+  } finally { await ui.close(); }
 });
 
 test('Integrantes sin red: no hay lectura guardada; avisa y deja reintentar', async () => {
@@ -684,8 +774,13 @@ test('EmergenciaApp M2: «Llegada de familias» -> dispositivos (llegadas) -> bu
     assert.equal(ui.pantallas.integrantes.caso.id, 184);
     await ui.atras();
     assert.equal(ui.vista(), 'buscar');
+    // La espera del 429 queda en el padre: al re-entrar a buscar, sigue.
+    await ui.hacer(() => ui.pantallas.buscar.onEspera(123456789));
     await ui.atras();
     assert.equal(ui.vista(), 'dispositivos');
+    await ui.hacer(() => ui.pantallas.dispositivos.onElegir({id: 7, nombre: 'Club Sarmiento'}, {unico: false}));
+    assert.equal(ui.pantallas.buscar.esperaHasta, 123456789);
+    await ui.atras();
     await ui.atras();
     assert.equal(ui.titulo(), 'Hola, Ana');
     // Con un solo dispositivo, volver desde buscar va al inicio.
@@ -710,12 +805,22 @@ test('EmergenciaApp M2: el router de §13.1 recarga la pantalla de cada estado_a
     assert.equal(ui.vista(), 'integrantes');
     assert.equal(ui.pantallas.integrantes.caso.id, 184);
     assert.deepEqual(ui.alerts.at(-1).slice(0, 2), ['El caso cambió', 'Ya la aceptó Juan.']);
-    // Desde integrantes: ALOJADO vuelve a montar los integrantes (en lectura).
+    // B1: esa pantalla ya es una recarga; otro 409 que la mandaría a sí misma va a buscar (sin bucle).
+    await ui.hacer(() => ui.pantallas.integrantes.onConflicto({tipo: 'conflicto', destino: 'integrantes', estadoActual: 'CERRADO', mensaje: 'El caso está cerrado.'}));
+    assert.equal(ui.vista(), 'buscar');
+    assert.deepEqual([ui.pantallas.buscar.dniInicial, ui.pantallas.buscar.autoBuscar], ['30111222', false]);
+    // Entrando normal (aceptada): ALOJADO vuelve a montar los integrantes (en lectura) una vez; la segunda, a buscar.
+    await alDerivacion();
+    await ui.hacer(() => ui.pantallas.derivacion.onAceptada(CASO));
     const antes = ui.pantallas.integrantes;
     await ui.hacer(() => ui.pantallas.integrantes.onConflicto({tipo: 'conflicto', destino: 'integrantes', estadoActual: 'ALOJADO', mensaje: 'Ya figura alojada.'}));
     assert.equal(ui.vista(), 'integrantes');
     assert.notEqual(ui.pantallas.integrantes, antes);
+    await ui.hacer(() => ui.pantallas.integrantes.onConflicto({tipo: 'conflicto', destino: 'integrantes', estadoActual: 'ALOJADO', mensaje: 'Ya figura alojada.'}));
+    assert.equal(ui.vista(), 'buscar');
     // DERIVADO: vuelve a buscar sola con el DNI.
+    await alDerivacion();
+    await ui.hacer(() => ui.pantallas.derivacion.onAceptada(CASO));
     await ui.hacer(() => ui.pantallas.integrantes.onConflicto({tipo: 'conflicto', destino: 'derivacion', estadoActual: 'DERIVADO', mensaje: 'Buscá de nuevo.'}));
     assert.equal(ui.vista(), 'buscar');
     assert.deepEqual([ui.pantallas.buscar.dniInicial, ui.pantallas.buscar.autoBuscar], ['30111222', true]);

@@ -70,13 +70,15 @@ export default function EmergenciaDerivacionScreen({
   // Lo común a aceptar y rechazar: un solo envío a la vez, la red, el aviso al padre y los errores.
   const enviar = async (accion, hacer) => {
     if (enviandoRef.current || !sesion) return;
+    // Se toma antes de mirar la red (en nativo NetInfo tarda): dos toques seguidos no pasan los dos.
+    enviandoRef.current = true;
     if (!await hayConexion()) {
+      enviandoRef.current = false;
       if (!montado.current) return;
       setSinRed(true);
       showAlert('Sin conexión', TEXTO_SIN_RED, [{ text: 'Entendido' }]);
       return;
     }
-    enviandoRef.current = true;
     if (montado.current) {
       setSinRed(false);
       setEnviando(accion);
@@ -132,7 +134,8 @@ export default function EmergenciaDerivacionScreen({
   const tocarAceptar = () => enviar('aceptar', async () => {
     const r = await aceptar(sesion, derivacion, { incierto: incierto === 'aceptar' });
     if (r.resultado === 'ya_aceptada') {
-      showToast({ type: 'info', message: r.mensaje });
+      // El detail del servidor dice quién la aceptó y cuándo (este teléfono antes, u otra guardia).
+      showToast({ type: 'info', message: r.detalle || r.mensaje });
     } else if (r.faltantes > 0) {
       showAlert('Derivación aceptada con camas de menos', r.mensaje || `Faltan ${r.faltantes} camas. Se puede seguir.`, [{ text: 'Entendido' }]);
     } else {
@@ -143,7 +146,9 @@ export default function EmergenciaDerivacionScreen({
 
   const mandarRechazo = () => enviar('rechazar', async () => {
     const r = await rechazar(sesion, derivacion, { motivo, observacion }, { incierto: incierto === 'rechazar' });
-    showToast({ type: 'success', message: r.resultado === 'ya_rechazada' ? r.mensaje : 'Derivación rechazada: el caso vuelve a la mesa.' });
+    // Tras un intento incierto, el detail dice qué pasó (el rechazo propio, la mesa o el vencimiento).
+    if (r.resultado === 'ya_rechazada') showToast({ type: 'info', message: r.detalle || r.mensaje });
+    else showToast({ type: 'success', message: 'Derivación rechazada: el caso vuelve a la mesa.' });
     onRechazada?.(r);
   });
 
