@@ -366,8 +366,10 @@ export const becasUploadFile = async (path, { fileUri, fileField = 'archivo', fi
   })
 );
 
-export const becasRequest = async (path, options = {}) => {
-  const token = await getBecasToken();
+// `options.token`, si viene, es el de la sesión con la que se armó el pedido (como en
+// uploadMultipart): se usa ese y no se relee, así un 401 invalida solo si sigue vigente. No va a fetch.
+export const becasRequest = async (path, { token: tokenDelPedido = null, ...options } = {}) => {
+  const token = tokenDelPedido ?? await getBecasToken();
   const headers = {
     Accept: 'application/json',
     ...(options.body ? { 'Content-Type': 'application/json' } : {}),

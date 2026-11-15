@@ -90,3 +90,24 @@ test('cola sin token no envía solicitudes; los pendientes de otro usuario no se
   assert.equal(calls, 0);
   assert.equal(sql.prepare('SELECT status FROM outbox_relevamientos').get().status, 'PENDING');
 });
+
+test('becasRequest con `token` explícito: lo usa sin releer, un 401 viejo no borra la sesión nueva y no llega a fetch', async () => {
+  const {api, values, setFetch} = await setup();
+  let expired = 0;
+  api.subscribeBecasSessionExpired(() => expired++);
+  values.set('becas_auth_token', 'new-token');
+  values.set('user_data', JSON.stringify({id: 8}));
+  const pedidos = [];
+  setFetch(async (url, init) => { pedidos.push(init); return response(401, {detail: 'Invalid token.'}); });
+  await assert.rejects(api.becasRequest('/a', {method: 'POST', body: {x: 1}, token: 'old-token'}),
+    (e) => e.status === 401 && e.requestToken === 'old-token');
+  assert.equal(pedidos[0].headers.Authorization, 'Token old-token');
+  assert.equal('token' in pedidos[0], false, 'la opción no se propaga a fetch');
+  assert.equal(pedidos[0].body, JSON.stringify({x: 1}));
+  assert.equal(values.get('becas_auth_token'), 'new-token');
+  assert.equal(expired, 0);
+  await assert.rejects(api.becasRequest('/a'), (e) => e.status === 401);
+  assert.equal(pedidos[1].headers.Authorization, 'Token new-token', 'sin `token`, relee la sesión como siempre');
+  assert.equal(values.has('becas_auth_token'), false);
+  assert.equal(expired, 1);
+});
