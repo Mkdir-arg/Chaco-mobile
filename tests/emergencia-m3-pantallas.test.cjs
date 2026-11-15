@@ -104,6 +104,7 @@ async function entorno(rutas) {
     '../utils/dates': runtime.dates,
     '../services/emergenciaApi': runtime.load('./emergenciaApi'),
     '../services/emergenciaKits': kits,
+    '../services/emergenciaLlegadas': runtime.load('./emergenciaLlegadas'),
     '../services/sinModulo': runtime.load('./sinModulo'),
   };
   return {runtime, calls, toasts, alerts, kits, mocks};

@@ -1,4 +1,5 @@
-// Llamadas a /api/emergencia/ que usan M1 (ingreso de familias) y M3 (recepción de kits). El
+// Llamadas a /api/emergencia/ que usan M1 (ingreso de familias), M2 (llegada de familias) y M3
+// (recepción de kits). El
 // contrato es docs/internal/contrato-app-emergencia.md de Chaco-Back; los nombres de campos son
 // los de ahí, sin traducir. El perfil vive en emergenciaPerfil.js.
 //
@@ -23,6 +24,10 @@ export const RUTAS = {
   entregasDispositivo: (id) => `${BASE}dispositivos/${encodeURIComponent(id)}/entregas/`,
   entrega: (id) => `${BASE}entregas/${encodeURIComponent(id)}/`,
   recibirEntrega: (id) => `${BASE}entregas/${encodeURIComponent(id)}/recibir/`,
+  buscarFamilia: (id, dni) => `${BASE}dispositivos/${encodeURIComponent(id)}/buscar/?dni=${encodeURIComponent(dni)}`,
+  aceptarDerivacion: (id) => `${BASE}derivaciones/${encodeURIComponent(id)}/aceptar/`,
+  rechazarDerivacion: (id) => `${BASE}derivaciones/${encodeURIComponent(id)}/rechazar/`,
+  integrantes: (id) => `${BASE}casos/${encodeURIComponent(id)}/integrantes/`,
 };
 
 // §4: Emergencia no tiene padrones; consulta solo Base de Personas.
@@ -167,6 +172,62 @@ export const recibirEntrega = async (entregaId, { uuid_cliente, cantidades = {},
   if (presente(observacion)) fields.observacion = observacion;
   const files = [archivoJpeg('remito', remito)].filter(Boolean);
   return conVerificacion(() => uploadMultipart(RUTAS.recibirEntrega(entregaId), { fields, files, timeoutMs, token }));
+};
+
+// ---- M2 · Llegada de familias (§13.1 a §13.5) ----
+// Todo M2 es JSON y con conexión. becasRequest relee el token en cada pedido y no corta por tiempo,
+// así que acá:
+// - `token` es el de la sesión con la que se abrió la pantalla: becasRequest lo usa tal cual (no relee
+//   la sesión), así un pedido de la persona anterior nunca sale con el token de la siguiente, y su 401
+//   invalida solo si ese token sigue vigente. La respuesta que llega con otra sesión ya abierta la
+//   descarta emergenciaLlegadas (`obsoleto`).
+// - `timeoutMs` aborta el fetch y sale con un error `network` + `timeout`, como uploadMultipart.
+export const errorObsoleto = () => Object.assign(new Error('La sesión cambió: este pedido era de otra sesión.'), { obsoleto: true });
+const errorPorTiempo = () => Object.assign(new Error('El servidor tardó demasiado en responder.'), { network: true, timeout: true });
+
+const pedirJson = async (path, { method = 'GET', body, token = null, timeoutMs = null } = {}) => {
+  const controller = Number(timeoutMs) > 0 && typeof AbortController === 'function' ? new AbortController() : null;
+  const pedido = becasRequest(path, {
+    method,
+    ...(body !== undefined ? { body } : {}),
+    ...(token ? { token } : {}),
+    ...(controller ? { signal: controller.signal } : {}),
+  });
+  if (!(Number(timeoutMs) > 0)) return pedido;
+  let timer;
+  const limite = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      controller?.abort();
+      reject(errorPorTiempo());
+    }, Number(timeoutMs));
+  });
+  const conCorte = pedido.catch((error) => { throw controller?.signal.aborted ? errorPorTiempo() : error; });
+  return Promise.race([conCorte, limite]).finally(() => clearTimeout(timer));
+};
+
+// §13.2. `dni`: solo dígitos (el back normaliza igual). 429 trae `retryAfter`.
+export const buscarFamilia = (dispositivoId, dni, opciones = {}) => conVerificacion(
+  () => pedirJson(RUTAS.buscarFamilia(dispositivoId, dni), opciones));
+
+// §13.3. `uuid_cliente` no se guarda en el back: aceptar NO es idempotente (un reintento da 409 con
+// `estado_actual: INGRESO_EN_CURSO`).
+export const aceptarDerivacion = (derivacionId, { uuid_cliente } = {}, opciones = {}) => conVerificacion(
+  () => pedirJson(RUTAS.aceptarDerivacion(derivacionId), { ...opciones, method: 'POST', body: presente(uuid_cliente) ? { uuid_cliente } : {} }));
+
+// §13.4. `observacion` va solo si hay (obligatoria con `OTRO`, la valida el back).
+export const rechazarDerivacion = (derivacionId, { motivo, observacion } = {}, opciones = {}) => {
+  const body = { motivo };
+  if (presente(observacion)) body.observacion = String(observacion).trim();
+  return conVerificacion(() => pedirJson(RUTAS.rechazarDerivacion(derivacionId), { ...opciones, method: 'POST', body }));
+};
+
+// §13.5.
+export const getIntegrantes = (casoId, opciones = {}) => conVerificacion(() => pedirJson(RUTAS.integrantes(casoId), opciones));
+
+// §13.5 «Agregar persona»: idempotente por `uuid_cliente` (201 la primera vez, 200 el reenvío).
+export const agregarIntegrante = (casoId, { uuid_cliente } = {}, opciones = {}) => {
+  exigirUuid(uuid_cliente);
+  return conVerificacion(() => pedirJson(RUTAS.integrantes(casoId), { ...opciones, method: 'POST', body: { uuid_cliente } }));
 };
 
 const es409 = (error) => Number(error?.status) === 409 && !error?.unexpectedHtml;

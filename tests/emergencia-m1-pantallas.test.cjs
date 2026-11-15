@@ -431,6 +431,9 @@ async function montarApp({pendientes = 0, resumen = null, enCurso = null, sync =
     '../screens/EmergenciaMisDispositivosScreen': {__esModule: true, default: capturar('kitsDispositivos')},
     '../screens/EmergenciaEntregasScreen': {__esModule: true, default: capturar('kitsEntregas')},
     '../screens/EmergenciaRecibirEntregaScreen': {__esModule: true, default: capturar('kitsRecibir')},
+    '../screens/EmergenciaLlegadaBuscarScreen': {__esModule: true, default: capturar('llegadasBuscar')},
+    '../screens/EmergenciaDerivacionScreen': {__esModule: true, default: capturar('llegadasDerivacion')},
+    '../screens/EmergenciaIntegrantesScreen': {__esModule: true, default: capturar('llegadasIntegrantes')},
     '../services/emergenciaCola': {
       syncPendientes: async () => { llamadas.sync += 1; llamadas.orden.push('sync'); return sync ? sync() : {synced: 0}; },
       getPendingCount: async () => pendientes,
@@ -476,8 +479,8 @@ test('EmergenciaApp: «Ingreso de familias» abre Mis envíos, de ahí el formul
     assert.equal(ui.tree.root.findByType('Banner').props.title, 'Ingreso de familias');
     await renderer.act(async () => { ui.tree.root.findByType('Banner').props.onBackPress(); });
     assert.equal(ui.tree.root.findByType('Banner').props.title, 'Hola, Ana');
-    // «Llegada de familias» (M2) sigue en «Próximamente».
-    await renderer.act(async () => { ui.pantallas.inicio.onAbrir({clave: 'llegadas', titulo: 'Llegada de familias'}); });
+    // Un acceso que esta versión no conoce queda en «Próximamente».
+    await renderer.act(async () => { ui.pantallas.inicio.onAbrir({clave: 'otro', titulo: 'Algo nuevo'}); });
     assert.equal(ui.alerts.at(-1)[0], 'Próximamente');
   } finally { await ui.close(); }
 });

@@ -14,7 +14,7 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
 (async () => {
   const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
   try {
-    fs.writeFileSync(entry, original + `\nimport service from './src/services/relevamientoService';\nimport * as api from './src/services/becasApi';\nimport * as emergencia from './src/services/emergenciaCola';\nimport * as kits from './src/services/emergenciaKits';\nimport * as emergenciaApi from './src/services/emergenciaApi';\nimport { API_CONFIG } from './src/config/apiConfig';\nimport NetInfo from '@react-native-community/netinfo';\nwindow.__pwaTest = {service, api, emergencia, kits, emergenciaApi, netinfo: NetInfo, config: API_CONFIG};\n`);
+    fs.writeFileSync(entry, original + `\nimport service from './src/services/relevamientoService';\nimport * as api from './src/services/becasApi';\nimport * as emergencia from './src/services/emergenciaCola';\nimport * as kits from './src/services/emergenciaKits';\nimport * as emergenciaApi from './src/services/emergenciaApi';\nimport * as llegadas from './src/services/emergenciaLlegadas';\nimport { API_CONFIG } from './src/config/apiConfig';\nimport NetInfo from '@react-native-community/netinfo';\nwindow.__pwaTest = {service, api, emergencia, kits, emergenciaApi, llegadas, netinfo: NetInfo, config: API_CONFIG};\n`);
     try {
       run(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['expo','export','--clear','--platform','web','--output-dir','dist-browser']);
       // Runtime setting intentionally differs from the Expo build-time URL.
@@ -31,12 +31,13 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
       fecha_hasta:'2099-12-31T23:59:59-03:00',definicion_formulario:{version:3,globales:[],requisitos:[]}};
     let posts=0, uploads=0, rejectUpload=true, casos=0, localidades=0;
     const recepciones=[];
+    const m2={buscar:0,aceptar:[],integrantes:0};
     const launch = async () => {
       const ctx = await chromium.launchPersistentContext(profile, {headless:true,
         ...(process.env.CHROME_PATH ? {executablePath:process.env.CHROME_PATH} : {})});
       await ctx.route('https://pwa-runtime.test/**', async route => {
         const req = route.request(); const url = req.url();
-        let status=200, body=[];
+        let status=200, body=[], extra={};
         if (url.endsWith('/auth/token/')) body={token:'test-token',user_id:7,username:'territorial'};
         else if (req.method()==='POST' && url.endsWith('/adjuntos/')) {
           uploads++;
@@ -64,9 +65,32 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
           if(recepciones.length===1) status=503;
           body=recepciones.length===1?{detail:'Servicio no disponible'}:{estado:'RECIBIDA_CON_DIFERENCIAS',diferencias:[{item:12,enviada:10,recibida:8},{item:14,enviada:3,recibida:0}]};
         }
+        else if(req.method()==='GET' && url.endsWith('/api/emergencia/dispositivos/9/buscar/?dni=30111222')) {
+          m2.buscar++;
+          assert.equal(req.headers()['authorization'],'Token test-token');
+          if(m2.buscar===1) {status=429;body={detail:'Request was throttled.'};extra={'Retry-After':'1','Access-Control-Expose-Headers':'Retry-After'};}
+          else body={resultado:'DERIVACION',dni:'30111222',plazas_libres:9,mensaje:'',alojada_aca:null,alojada_en:'',alojada_desde:null,
+            derivacion:{id:55,estado:'PENDIENTE',plazas_pedidas:2,vence_en:'2026-11-12T12:00:00-03:00',vencida:false,derivada_en:'2026-11-12T10:00:00-03:00',
+              derivada_por:'Ana López',caso:{id:184,numero:'2026-000184',estado:'DERIVADO',prioridad:'ALTA',total_declarado:2},
+              responsable:{nombre:'Rosa',apellido:'Benítez',dni:'30111222'},grupo:{adultos_f:1,menores_m:1},necesidades:['embarazo'],telefono:'',observaciones:''}};
+        }
+        else if(req.method()==='POST' && url.endsWith('/api/emergencia/derivaciones/55/aceptar/')) {
+          assert.match(req.headers()['content-type'],/application\/json/);
+          m2.aceptar.push(JSON.parse(req.postData()||'{}'));
+          // El primero se corta (la respuesta se pierde); el reintento ve el caso ya en curso.
+          if(m2.aceptar.length===1) {await route.abort('connectionreset');return;}
+          status=409;body={detail:'La derivación ya la aceptó Guardia a las 10:20. Recargá la pantalla para seguir con el ingreso.',estado_actual:'INGRESO_EN_CURSO'};
+        }
+        else if(req.method()==='GET' && url.endsWith('/api/emergencia/casos/184/integrantes/')) {
+          m2.integrantes++;
+          body={caso:{id:184,numero:'2026-000184',estado:'INGRESO_EN_CURSO',prioridad:'ALTA',total_declarado:2},
+            integrantes:[{n:1,estado:'SIN_CONFIRMAR',ficha_completa:false,persona:null,plaza:null,parentesco:'',confirmada_en:null,egresado_en:null},
+              {n:2,estado:'SIN_CONFIRMAR',ficha_completa:false,persona:null,plaza:null,parentesco:'',confirmada_en:null,egresado_en:null}],
+            confirmadas:0,total_declarado:2,declaradas_al_relevar:2,con_ficha_incompleta:0};
+        }
         else if(url.endsWith('/relevamientos/')) body=[campaign];
         else if(url.endsWith('/relevamientos/1/')) body=campaign;
-        await route.fulfill({status,contentType:'application/json',headers:{'Access-Control-Allow-Origin':'http://localhost:4174','Access-Control-Allow-Credentials':'true','Access-Control-Allow-Headers':'authorization,content-type','Access-Control-Allow-Methods':'GET,POST,OPTIONS'},body:JSON.stringify(body)});
+        await route.fulfill({status,contentType:'application/json',headers:{'Access-Control-Allow-Origin':'http://localhost:4174','Access-Control-Allow-Credentials':'true','Access-Control-Allow-Headers':'authorization,content-type','Access-Control-Allow-Methods':'GET,POST,OPTIONS',...extra},body:JSON.stringify(body)});
       });
       return ctx;
     };
@@ -277,6 +301,43 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
       {uuid:abiertaM3,c12:'8',c14:'0',obs:'Faltan',remito:false}]);
     assert.deepEqual(errors,[]);
     console.log('PASS: Emergencia M3 without network blocked, uuid survives reload, 503 retry with same uuid (without photo), cantidades[id] with 0, JPEG remito.');
+    // Emergencia M2 (parte 1): sin red no sale nada; la búsqueda respeta el 429 con Retry-After; aceptar
+    // no es idempotente: la respuesta perdida y el reintento con 409 INGRESO_EN_CURSO es «se hizo» y se
+    // sigue a los integrantes.
+    await context.setOffline(true);
+    await page.waitForFunction(()=>navigator.onLine===false);
+    const sinRedM2=await page.evaluate(async()=>{
+      const l=window.__pwaTest.llegadas;
+      const sesion=await l.abrirSesion();
+      try { await l.buscar(sesion,9,'30111222'); return 'salió'; } catch(e){ return e.clasificacion&&e.clasificacion.tipo; }
+    });
+    assert.equal(sinRedM2,'sin_red');
+    assert.equal(m2.buscar,0,'sin red la búsqueda no sale');
+    await context.setOffline(false);
+    await page.waitForFunction(()=>navigator.onLine===true);
+    const flujoM2=await page.evaluate(async()=>{
+      const {llegadas:l,emergenciaApi:e}=window.__pwaTest;
+      const dispositivos=l.dispositivosQueAdmiten(await e.getMisDispositivos());
+      const sesion=await l.abrirSesion();
+      let espera=null;
+      try { await l.buscar(sesion,dispositivos[0].id,'30.111.222'); } catch(err){ espera=err.clasificacion; }
+      await new Promise(resolve=>setTimeout(resolve,espera.espera));
+      const busqueda=await l.buscar(sesion,dispositivos[0].id,'30111222');
+      let primero=null;
+      try { await l.aceptar(sesion,busqueda.derivacion); } catch(err){ primero={tipo:err.clasificacion.tipo,incierto:err.incierto}; }
+      const segundo=await l.aceptar(sesion,busqueda.derivacion,{incierto:primero.incierto});
+      const integrantes=await l.cargarIntegrantes(sesion,segundo.caso.id);
+      return {dispositivos,espera:{tipo:espera.tipo,ms:espera.espera},paso:l.pasoDeBusqueda(busqueda),primero,
+        segundo:{resultado:segundo.resultado,caso:segundo.caso.id},contador:l.textoDelContador(integrantes),cierre:l.cierreDisponible(integrantes)};
+    });
+    assert.deepEqual(flujoM2,{dispositivos:[{id:9,nombre:'Escuela 12',plazas_libres:0,derivaciones_pendientes:0}],espera:{tipo:'espera',ms:1000},
+      paso:'derivacion',primero:{tipo:'reintentable',incierto:true},segundo:{resultado:'ya_aceptada',caso:184},contador:'0 de 2 confirmadas',cierre:'cancelar'});
+    assert.equal(m2.buscar,2);
+    assert.equal(m2.aceptar.length,2);
+    assert.match(m2.aceptar[0].uuid_cliente,/^[0-9a-f-]{36}$/);
+    assert.equal(m2.integrantes,1);
+    assert.deepEqual(errors,[]);
+    console.log('PASS: Emergencia M2 offline blocked, search 429 with Retry-After, accept lost response + 409 INGRESO_EN_CURSO treated as done, integrantes.');
   } finally {
     fs.writeFileSync(entry,original);
     await context?.close(); server?.kill(); fs.rmSync(profile,{recursive:true,force:true});
