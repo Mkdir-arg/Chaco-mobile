@@ -49,6 +49,8 @@ const RETENCION_MS = 7 * 24 * 60 * 60 * 1000;
 export const ERROR_ARCHIVO_LOCAL_FALTANTE = 'ARCHIVO_LOCAL_FALTANTE';
 export const ERROR_VALIDACION_LOCAL = 'VALIDACION_LOCAL';
 export const ERROR_FOTO_INVALIDA = 'FOTO_INVALIDA';
+export const ERROR_FOTOS_PESADAS = 'FOTOS_PESADAS';
+const MENSAJE_FOTOS_PESADAS = 'Las fotos son demasiado pesadas para enviarlas: cambialas por otras o quitá alguna y volvé a enviar.';
 
 let sqliteDbPromise = null;
 let sqliteInitPromise = null;
@@ -123,7 +125,10 @@ const separarFotosDelPayload = async (db) => {
   const viejas = await db.getAllAsync(
     `SELECT op_id, payload_json FROM ${TABLA_OUTBOX} WHERE payload_json LIKE '%"fotos":%'`);
   for (const fila of viejas) {
-    const { fotos = {}, ...payload } = safeParse(fila.payload_json, {}) || {};
+    const viejo = safeParse(fila.payload_json, null);
+    // El LIKE también encuentra un "fotos": dentro del formulario de una fila ya migrada.
+    if (!viejo || typeof viejo !== 'object' || !('fotos' in viejo)) continue;
+    const { fotos = {}, ...payload } = viejo;
     await db.runAsync(`UPDATE ${TABLA_OUTBOX} SET payload_json = ?, fotos_json = ? WHERE op_id = ?`,
       JSON.stringify(payload), JSON.stringify(fotos || {}), fila.op_id);
   }
@@ -131,19 +136,21 @@ const separarFotosDelPayload = async (db) => {
 
 // Nativo: un archivo de la carpeta propia que no nombra ninguna fila quedó de un proceso cortado
 // (copiado y sin guardar en la base, o borrado de la fila sin borrar el archivo). Corre al abrir la
-// base, antes de que ponerFoto pueda copiar nada.
+// base, antes de que ponerFoto pueda copiar nada. Se compara por NOMBRE de archivo: en iOS la
+// ruta del contenedor cambia al actualizar la app y las filas guardan la URI de antes.
 const barrerFotosHuerfanas = async (db) => {
   if (Platform.OS === 'web' || typeof FileSystem.readDirectoryAsync !== 'function') return;
   try {
     const dir = await FileSystem.getInfoAsync(ATTACHMENTS_DIR);
     if (!dir?.exists) return;
     const usadas = new Set();
-    const juntar = (json) => Object.values(safeParse(json, {}) || {}).forEach((item) => { if (item?.uri) usadas.add(item.uri); });
+    const juntar = (json) => Object.values(safeParse(json, {}) || {}).forEach((item) => {
+      if (item?.uri) usadas.add(nombreDeArchivo(item.uri));
+    });
     (await db.getAllAsync(`SELECT fotos_json FROM ${TABLA_BORRADORES}`)).forEach((fila) => juntar(fila.fotos_json));
     (await db.getAllAsync(`SELECT fotos_json FROM ${TABLA_OUTBOX}`)).forEach((fila) => juntar(fila.fotos_json));
     for (const nombre of await FileSystem.readDirectoryAsync(ATTACHMENTS_DIR)) {
-      const uri = `${ATTACHMENTS_DIR}/${nombre}`;
-      if (!usadas.has(uri)) await borrarUri(uri);
+      if (!usadas.has(nombre)) await borrarUri(`${ATTACHMENTS_DIR}/${nombre}`);
     }
   } catch {
     // Un barrido que falla no cambia nada para el agente: se intenta en la próxima apertura.
@@ -238,7 +245,23 @@ const getConnectivitySnapshot = async () => {
 const CAMPOS_FOTO = FOTOS.map(({ clave }) => clave);
 const sanitizeFileName = (value = 'foto.jpg') =>
   String(value).replace(/[^\w.-]/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '') || 'foto.jpg';
-const isPersistentUri = (uri = '') => String(uri).startsWith(ATTACHMENTS_DIR);
+const SUBCARPETA_FOTOS = '/attachments/emergencia/';
+const nombreDeArchivo = (uri = '') => String(uri).split('/').pop();
+// Una foto de la carpeta propia, de este contenedor o de uno anterior (iOS lo cambia al actualizar
+// la app): se reconoce por la subcarpeta y se resuelve por nombre contra la carpeta actual.
+const esFotoPropia = (uri = '') => {
+  const texto = String(uri || '');
+  if (!texto.startsWith('file:')) return false;
+  const i = texto.lastIndexOf(SUBCARPETA_FOTOS);
+  const nombre = i >= 0 ? texto.slice(i + SUBCARPETA_FOTOS.length) : '';
+  return !!nombre && !nombre.includes('/');
+};
+const uriActual = (uri) => (esFotoPropia(uri) ? `${ATTACHMENTS_DIR}/${nombreDeArchivo(uri)}` : uri);
+const resolverFotos = (fotos = {}) => {
+  if (Platform.OS === 'web') return fotos || {};
+  return Object.fromEntries(Object.entries(fotos || {})
+    .map(([campo, item]) => [campo, item?.uri ? { ...item, uri: uriActual(item.uri) } : item]));
+};
 
 const borrarUri = async (uri) => {
   try {
@@ -248,8 +271,8 @@ const borrarUri = async (uri) => {
   }
 };
 const borrarArchivo = async (item) => {
-  if (Platform.OS === 'web' || !isPersistentUri(item?.uri)) return;
-  await borrarUri(item.uri);
+  if (Platform.OS === 'web' || !esFotoPropia(item?.uri)) return;
+  await borrarUri(uriActual(item.uri));
 };
 const borrarFotos = async (fotos = {}) => {
   for (const item of Object.values(fotos || {})) await borrarArchivo(item);
@@ -269,7 +292,7 @@ const persistirFoto = async (asset, { temporal = false } = {}) => {
     const persisted = await persistWebAttachment({ uri: asset.uri, mimeType: 'image/jpeg', size });
     return { uri: persisted.uri, fileName, mimeType: 'image/jpeg', size: persisted.size ?? size };
   }
-  if (isPersistentUri(asset.uri)) return { uri: asset.uri, fileName, mimeType: 'image/jpeg', size };
+  if (esFotoPropia(asset.uri)) return { uri: uriActual(asset.uri), fileName, mimeType: 'image/jpeg', size };
   const dir = await FileSystem.getInfoAsync(ATTACHMENTS_DIR);
   if (!dir.exists) await FileSystem.makeDirectoryAsync(ATTACHMENTS_DIR, { intermediates: true });
   const destino = `${ATTACHMENTS_DIR}/${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${fileName}`;
@@ -286,7 +309,7 @@ const fotosQueFaltan = async (fotos = {}) => {
   for (const [campo, item] of Object.entries(fotos || {})) {
     if (!item?.uri || String(item.uri).startsWith('content://')) continue;
     try {
-      const info = await FileSystem.getInfoAsync(item.uri);
+      const info = await FileSystem.getInfoAsync(uriActual(item.uri));
       if (!info?.exists) faltan.push(campo);
     } catch {
       faltan.push(campo);
@@ -301,7 +324,7 @@ const mapBorrador = (row) => row && ({
   tipo: 'borrador',
   uuid_cliente: row.uuid_cliente,
   datos: { ...datosIniciales(), ...safeParse(row.datos_json, {}) },
-  fotos: safeParse(row.fotos_json, {}) || {},
+  fotos: resolverFotos(safeParse(row.fotos_json, {}) || {}),
   errores: safeParse(row.errores_json, null),
   code: row.error_code || null,
   creado_en: row.created_at,
@@ -382,9 +405,12 @@ export const ponerFoto = async (uuid, campo, asset, { temporal = false } = {}) =
     const anterior = borrador.fotos[campo];
     const fotos = { ...borrador.fotos, [campo]: item };
     const db = await withDb();
-    await db.runAsync(
+    const result = await db.runAsync(
       `UPDATE ${TABLA_BORRADORES} SET fotos_json = ?, updated_at = ? WHERE owner_user_id = ? AND uuid_cliente = ?`,
       JSON.stringify(fotos), nowIso(), ownerId, String(uuid));
+    // El borrador se encoló o descartó mientras se copiaba la foto: la anterior es de la cola (o ya
+    // no está) y no se toca; la copia nueva se borra en el catch.
+    if (!Number(result?.changes || 0)) throw createError('SIN_BORRADOR', 'El borrador ya no existe.');
     if (anterior?.uri && anterior.uri !== item.uri) await borrarArchivo(anterior);
     return item;
   } catch (error) {
@@ -479,7 +505,7 @@ const readOperations = async (ownerId, where = '1 = 1', ...args) => {
 const leerFotosDeOperacion = async (opId) => {
   const db = await withDb();
   const row = await db.getFirstAsync(`SELECT fotos_json FROM ${TABLA_OUTBOX} WHERE op_id = ?`, opId);
-  return safeParse(row?.fotos_json, {}) || {};
+  return resolverFotos(safeParse(row?.fotos_json, {}) || {});
 };
 
 export const getEnvio = async (uuid) => {
@@ -652,6 +678,11 @@ export const clasificarError = (error) => {
   if (status === 400 && !error?.unexpectedHtml) {
     return { accion: 'borrador', errores: erroresDelServidor(payload), info: { ...info, code: 'VALIDACION' } };
   }
+  // 413: el multipart excede el límite (del back, o del WAF/ingress en HTML). Mandarlo igual no
+  // cambia nada: vuelve a borrador para cambiar las fotos.
+  if (status === 413) {
+    return { accion: 'borrador', errores: { fotos: [MENSAJE_FOTOS_PESADAS] }, info: { ...info, code: ERROR_FOTOS_PESADAS, message: MENSAJE_FOTOS_PESADAS, detail: MENSAJE_FOTOS_PESADAS } };
+  }
   if (status === 429) return { accion: 'espera', espera: error?.retryAfter ?? PAUSED_RETRY_MS, info: { ...info, code: 'RATE_LIMITED' } };
   if (esFallaTransitoria(error)) return { accion: 'reintento', espera: error?.retryAfter ?? null, info };
   return { accion: 'permanente', info: { ...info, code: code || 'RECHAZADA' } };
@@ -675,6 +706,9 @@ const aplicarFalla = async (operation, error) => {
     const proximo = retryCount + 1;
     const espera = Math.min(MAX_ESPERA_REINTENTO_MS, Math.max(calculateBackoffMs(proximo), clasificado.espera || 0));
     await cerrarOperacion(operation.op_id, { status: 'PENDING', retryCount: proximo, info, nextRetryAt: en(espera) });
+  } else if (info.code === ERROR_FOTOS_PESADAS && !Object.keys(operation.fotos || {}).length) {
+    // Sin fotos no hay nada que cambiar en el borrador: queda con error, a la vista.
+    await cerrarOperacion(operation.op_id, { status: 'FAILED_PERMANENT', retryCount, info });
   } else if (accion === 'borrador') {
     await volverABorrador(operation, hayErrores(clasificado.errores)
       ? clasificado.errores : { non_field_errors: [info.detail || info.message] }, info.code);
@@ -726,9 +760,10 @@ export const syncPendientes = async () => {
     const errors = [];
     const ahora = Date.now();
     for (const pendiente of queue) {
-      if (!await sesionVigente(ownerId, token)) break;
+      // El backoff antes que la sesión: los que esperan no leen el storage.
       const proximo = pendiente.next_retry_at ? Date.parse(pendiente.next_retry_at) : null;
       if (proximo && Number.isFinite(proximo) && proximo > ahora) continue;
+      if (!await sesionVigente(ownerId, token)) break;
       if (!await marcarEnVuelo(pendiente.op_id)) continue;
       const operation = { ...pendiente, fotos: await leerFotosDeOperacion(pendiente.op_id) };
       // marcarEnVuelo y leer las fotos esperan a la base: otra sesión pudo entrar en el medio.
@@ -752,8 +787,11 @@ export const syncPendientes = async () => {
         }
         const { accion, info } = await aplicarFalla(operation, error);
         errors.push({ op_id: operation.op_id, message: info.message, code: info.code });
-        // Sesión o permiso: vale para todo lo que sigue en la cola, se corta la pasada.
+        // Sesión o permiso: vale para todo lo que sigue en la cola, se corta la pasada. Sin red o
+        // con un timeout, los que siguen fallarían igual (y cada uno esperaría su timeout): quedan
+        // para la próxima pasada.
         if (accion === 'sesion' || accion === 'sin_modulo') break;
+        if (error?.network === true || error?.timeout === true) break;
       }
     }
     return { synced, failed, errors };

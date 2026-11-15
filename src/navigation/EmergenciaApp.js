@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, StyleSheet } from 'react-native';
+import { Platform, View, StyleSheet } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
@@ -20,6 +20,24 @@ const RECONNECT_DELAY_MS = 1800;
 
 const TITULOS = { envios: 'Ingreso de familias', formulario: 'Relevar una familia' };
 
+// Al volver la red, `alVolver`. En web, el evento `online` del navegador (la cola mira
+// `navigator.onLine`: el estado guardado de NetInfo web puede seguir diciendo «sin internet»); en
+// nativo, NetInfo. Devuelve la función para dejar de escuchar.
+const escucharReconexion = (alVolver) => {
+  if (Platform.OS === 'web' && typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    const alEstarEnLinea = () => alVolver();
+    window.addEventListener('online', alEstarEnLinea);
+    return () => window.removeEventListener('online', alEstarEnLinea);
+  }
+  let conectado = null;
+  return NetInfo.addEventListener((state) => {
+    const hayRed = !!state?.isConnected && state?.isInternetReachable !== false;
+    const antes = conectado;
+    conectado = hayRed;
+    if (!antes && hayRed) alVolver();
+  });
+};
+
 // Módulo Emergencia: inicio con los accesos del perfil -> M1 («Ingreso de familias»: mis envíos y
 // el Formulario 1). Como Dispositivos, no importa nada de los otros módulos: comparte sesión, tema
 // y componentes. La cola de M1 se sincroniza solo mientras este árbol está montado.
@@ -39,7 +57,6 @@ export default function EmergenciaApp({ onCambiarModulo }) {
   // La pasada de fondo en curso (su promesa) y si hay una manual: la manual espera a la de fondo.
   const fondo = useRef(null);
   const manual = useRef(false);
-  const conectado = useRef(null);
   const reconexion = useRef(null);
   const montado = useRef(true);
 
@@ -78,14 +95,9 @@ export default function EmergenciaApp({ onCambiarModulo }) {
     // La lista de localidades se guarda al entrar y se refresca una vez por día (§5).
     getLocalidadesGuardadas().catch(() => {});
     const timer = setInterval(sincronizarDeFondo, SYNC_INTERVAL_MS);
-    const desuscribir = NetInfo.addEventListener((state) => {
-      const hayRed = !!state?.isConnected && state?.isInternetReachable !== false;
-      const antes = conectado.current;
-      conectado.current = hayRed;
-      if (!antes && hayRed) {
-        if (reconexion.current) clearTimeout(reconexion.current);
-        reconexion.current = setTimeout(sincronizarDeFondo, RECONNECT_DELAY_MS);
-      }
+    const desuscribir = escucharReconexion(() => {
+      if (reconexion.current) clearTimeout(reconexion.current);
+      reconexion.current = setTimeout(sincronizarDeFondo, RECONNECT_DELAY_MS);
     });
     return () => {
       montado.current = false;

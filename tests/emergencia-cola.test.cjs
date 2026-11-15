@@ -23,11 +23,12 @@ async function preparar(platform = 'android') {
   const copias = [];
   let existe = () => true;
   let directorio = [];
+  let alCopiar = async () => {};
   const fs = {
     readDirectoryAsync: async () => directorio,
     documentDirectory: 'file:///test/', EncodingType: {Base64: 'base64'},
     getInfoAsync: async (uri) => ({exists: existe(uri), size: 2048}),
-    copyAsync: async (args) => { copias.push(args); }, makeDirectoryAsync: async () => {},
+    copyAsync: async (args) => { copias.push(args); await alCopiar(args); }, makeDirectoryAsync: async () => {},
     readAsStringAsync: async () => '/9j/', deleteAsync: async (uri) => { borrados.push(uri); },
   };
   const r = await setup(platform, {mocks: {'expo-file-system/legacy': fs}});
@@ -36,7 +37,8 @@ async function preparar(platform = 'android') {
   await r.api.loginBecas({username: 'agente', password: 'x'});
   const cola = r.load('./emergenciaCola');
   const perfil = r.load('./emergenciaPerfil');
-  return {r, cola, perfil, borrados, copias, setExiste: (fn) => { existe = fn; }, setDirectorio: (lista) => { directorio = lista; }};
+  return {r, cola, perfil, borrados, copias, setExiste: (fn) => { existe = fn; }, setDirectorio: (lista) => { directorio = lista; },
+    setAlCopiar: (fn) => { alCopiar = fn; }};
 }
 
 const router = (r, handler) => {
@@ -689,4 +691,263 @@ test('web: la red la dice navigator.onLine, no el estado guardado de NetInfo (CI
   r.setOnline(true); r.setNavigator({onLine: false});
   assert.equal((await cola.syncPendientes()).offline, true);
   assert.equal(posts(calls).length, 1);
+});
+
+// ---- Revisión independiente de M1: contenedor de iOS, carrera de ponerFoto, 413, pasada y migración ----
+
+// En iOS la ruta del contenedor cambia al actualizar la app: las filas guardan la de antes.
+const VIEJO = 'file:///var/mobile/Containers/Data/Application/AAAA-OLD/Documents/attachments/emergencia/';
+const ACTUAL = 'file:///test/attachments/emergencia/';
+const aContenedorViejo = (json) => json.split(ACTUAL).join(VIEJO);
+
+test('nativo: el barrido compara por nombre de archivo: una URI de otro contenedor NO se borra', async () => {
+  const ctx = await preparar();
+  const {r, cola, borrados} = ctx;
+  r.sql.exec(`CREATE TABLE borradores_casos (uuid_cliente TEXT PRIMARY KEY NOT NULL, owner_user_id TEXT NOT NULL,
+    datos_json TEXT NOT NULL, fotos_json TEXT NOT NULL DEFAULT '{}', errores_json TEXT, error_code TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
+  r.sql.prepare(`INSERT INTO borradores_casos VALUES ('b1', '7', '{}', ?, NULL, NULL, 'x', 'x')`)
+    .run(JSON.stringify({foto_acceso: {uri: `${VIEJO}viva-borrador.jpg`}}));
+  r.sql.exec(`CREATE TABLE outbox_casos (op_id TEXT PRIMARY KEY NOT NULL, owner_user_id TEXT NOT NULL,
+    uuid_cliente TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'PENDING', payload_json TEXT NOT NULL,
+    fotos_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, started_at TEXT, ack_at TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0, next_retry_at TEXT, last_error TEXT, last_error_code TEXT,
+    last_error_json TEXT, resultado_json TEXT, updated_at TEXT NOT NULL)`);
+  r.sql.prepare(`INSERT INTO outbox_casos (op_id, owner_user_id, uuid_cliente, payload_json, fotos_json, created_at, updated_at)
+    VALUES ('o1', '7', 'u1', '{}', ?, 'x', 'x')`).run(JSON.stringify({foto_vivienda: {uri: `${VIEJO}viva-cola.jpg`}}));
+  ctx.setDirectorio(['viva-borrador.jpg', 'viva-cola.jpg', 'huerfana.jpg']);
+  await cola.getPendingCount();
+  assert.deepEqual(borrados, [`${ACTUAL}huerfana.jpg`], 'solo la que ninguna fila nombra');
+});
+
+test('nativo: un envío guardado con la URI de otro contenedor encuentra sus fotos por nombre, las manda y las borra', async () => {
+  const ctx = await preparar();
+  const {r, cola, borrados} = ctx;
+  await encolado(ctx);
+  const actuales = JSON.parse(op(r).fotos_json);
+  r.sql.prepare('UPDATE outbox_casos SET fotos_json = ?').run(aContenedorViejo(op(r).fotos_json));
+  assert.ok(op(r).fotos_json.includes(VIEJO));
+  // En el teléfono solo existe la carpeta del contenedor actual.
+  ctx.setExiste((uri) => uri.startsWith(ACTUAL));
+  const calls = router(r, async () => response(201, CREADO));
+  await cola.syncPendientes();
+  assert.equal(op(r).status, 'DONE', 'no la tomó como foto faltante');
+  const f = campos(posts(calls)[0]);
+  assert.equal(f.foto_vivienda.uri, actuales.foto_vivienda.uri);
+  assert.equal(f.foto_acceso.uri, actuales.foto_acceso.uri);
+  assert.ok(borrados.includes(actuales.foto_vivienda.uri) && borrados.includes(actuales.foto_acceso.uri), 'borra la del contenedor actual');
+  assert.ok(!borrados.some((u) => u.startsWith(VIEJO)));
+});
+
+test('nativo: un borrador guardado con la URI de otro contenedor muestra y borra la foto actual', async () => {
+  const ctx = await preparar();
+  const {r, cola, borrados} = ctx;
+  const b = await cola.abrirBorrador();
+  const vivienda = await cola.ponerFoto(b.uuid_cliente, 'foto_vivienda', jpeg('v.jpg'));
+  const acceso = await cola.ponerFoto(b.uuid_cliente, 'foto_acceso', jpeg('a.jpg'));
+  r.sql.prepare('UPDATE borradores_casos SET fotos_json = ?').run(aContenedorViejo(borradorRow(r, b.uuid_cliente).fotos_json));
+  const abierto = await cola.abrirBorrador();
+  assert.equal(abierto.fotos.foto_vivienda.uri, vivienda.uri, 'la miniatura usa la URI actual');
+  assert.equal(await cola.quitarFoto(b.uuid_cliente, 'foto_vivienda'), true);
+  assert.ok(borrados.includes(vivienda.uri));
+  // Reemplazar también borra la anterior en la carpeta actual.
+  await cola.ponerFoto(b.uuid_cliente, 'foto_acceso', jpeg('a2.jpg'));
+  assert.ok(borrados.includes(acceso.uri));
+  assert.ok(!borrados.some((u) => u.startsWith(VIEJO)));
+});
+
+test('ponerFoto: si el borrador se fue mientras se copiaba, borra la copia nueva, no toca la anterior y tira SIN_BORRADOR', async () => {
+  const ctx = await preparar();
+  const {r, cola, borrados, copias} = ctx;
+  const b = await cola.abrirBorrador();
+  const anterior = await cola.ponerFoto(b.uuid_cliente, 'foto_vivienda', jpeg('1.jpg'));
+  const fotosAntes = borradorRow(r, b.uuid_cliente).fotos_json;
+  // Mientras se copia la nueva, el borrador pasa a la cola (otra pantalla, el botón Enviar).
+  ctx.setAlCopiar(async () => {
+    r.sql.prepare('DELETE FROM borradores_casos WHERE uuid_cliente = ?').run(b.uuid_cliente);
+  });
+  await assert.rejects(cola.ponerFoto(b.uuid_cliente, 'foto_vivienda', jpeg('2.jpg')), (e) => e.code === 'SIN_BORRADOR');
+  const nueva = copias.at(-1).to;
+  assert.ok(borrados.includes(nueva), 'la copia nueva se borró');
+  assert.ok(!borrados.includes(anterior.uri), 'la anterior (ahora de la cola) sigue');
+  assert.ok(fotosAntes.includes(anterior.uri));
+});
+
+const html413 = () => ({status: 413, ok: false,
+  headers: {get: (n) => (String(n).toLowerCase() === 'content-type' ? 'text/html' : null)},
+  text: async () => '<html><body><h1>413 Request Entity Too Large</h1></body></html>'});
+
+test('413 (aunque venga en HTML del WAF/ingress) es permanente: vuelve a borrador para cambiar las fotos', async () => {
+  const ctx = await preparar();
+  const {r, cola, borrados} = ctx;
+  assert.equal(cola.clasificarError({status: 413, unexpectedHtml: true}).accion, 'borrador');
+  assert.equal(cola.clasificarError({status: 413, payload: {detail: 'Too large'}}).accion, 'borrador');
+  const {uuid} = await encolado(ctx);
+  const fotos = op(r).fotos_json;
+  let calls = router(r, async () => response(413, {detail: 'Request Entity Too Large'}));
+  const jsonRes = await cola.syncPendientes();
+  assert.equal(jsonRes.errors[0].code, cola.ERROR_FOTOS_PESADAS, 'un 413 en JSON también');
+  assert.match(JSON.parse(borradorRow(r, uuid).errores_json).fotos[0], /demasiado pesadas/);
+  // Corregido y reenviado, ahora el 413 llega en HTML del WAF.
+  r.setOnline(false);
+  await cola.encolarCaso(uuid, {relevadoEn: new Date(T0)});
+  r.setOnline(true);
+  calls = router(r, async () => html413());
+  const res = await cola.syncPendientes();
+  assert.equal(res.errors[0].code, cola.ERROR_FOTOS_PESADAS);
+  assert.equal(r.sql.prepare('SELECT COUNT(*) AS n FROM outbox_casos').get().n, 0, 'no queda en la cola');
+  const fila = borradorRow(r, uuid);
+  assert.equal(fila.error_code, cola.ERROR_FOTOS_PESADAS);
+  assert.match(JSON.parse(fila.errores_json).fotos[0], /demasiado pesadas/);
+  assert.equal(fila.fotos_json, fotos, 'las fotos siguen para poder cambiarlas');
+  assert.equal(borrados.filter((u) => u.startsWith(ACTUAL)).length, 0);
+  assert.equal((await cola.getEnvio(uuid)).estado, 'corregir');
+  r.setNow(T0 + 60 * MIN);
+  await cola.syncPendientes();
+  assert.equal(posts(calls).length, 1, 'no se reintenta solo');
+});
+
+test('413 sin fotos: queda con error a la vista, sin reintentar', async () => {
+  const ctx = await preparar();
+  const {r, cola} = ctx;
+  const {uuid} = await encolado(ctx, {fotos: false});
+  const calls = router(r, async () => html413());
+  await cola.syncPendientes();
+  assert.equal(op(r).status, 'FAILED_PERMANENT');
+  assert.equal(op(r).last_error_code, cola.ERROR_FOTOS_PESADAS);
+  assert.match((await cola.getEnvio(uuid)).detail, /demasiado pesadas/);
+  r.setNow(T0 + 60 * MIN);
+  await cola.syncPendientes();
+  assert.equal(posts(calls).length, 1);
+});
+
+test('sin red a mitad de la pasada se corta: los que siguen quedan para la próxima, sin gastar reintentos', async () => {
+  const ctx = await preparar();
+  const {r, cola} = ctx;
+  await encolado(ctx, {fotos: false});
+  await encolado(ctx, {fotos: false});
+  await encolado(ctx, {fotos: false});
+  const calls = router(r, async () => { throw new TypeError('Failed to fetch'); });
+  const res = await cola.syncPendientes();
+  assert.equal(posts(calls).length, 1);
+  assert.equal(res.failed, 1);
+  const filas = r.sql.prepare('SELECT status, retry_count FROM outbox_casos ORDER BY rowid').all();
+  assert.deepEqual(filas.map((f) => [f.status, f.retry_count]), [['PENDING', 1], ['PENDING', 0], ['PENDING', 0]]);
+  // Con red, la próxima pasada manda los que no se intentaron (el primero espera su backoff).
+  router(r, async () => response(201, CREADO));
+  assert.equal((await cola.syncPendientes()).synced, 2);
+});
+
+test('un timeout a mitad de la pasada también la corta', async () => {
+  const ctx = await preparar();
+  const {r, cola} = ctx;
+  await encolado(ctx, {fotos: false});
+  await encolado(ctx, {fotos: false});
+  const realSetTimeout = setTimeout;
+  r.setGlobal('setTimeout', (fn, ms, ...a) => realSetTimeout(fn, 0, ...a));
+  let calls;
+  try {
+    calls = router(r, async () => new Promise(() => {}));
+    await cola.syncPendientes();
+  } finally { r.setGlobal('setTimeout', realSetTimeout); }
+  assert.equal(posts(calls).length, 1, 'el segundo no espera otro timeout');
+  const filas = r.sql.prepare('SELECT status, retry_count FROM outbox_casos ORDER BY rowid').all();
+  assert.deepEqual(filas.map((f) => [f.status, f.retry_count]), [['PENDING', 1], ['PENDING', 0]]);
+});
+
+test('un 5xx no corta la pasada: el siguiente se intenta', async () => {
+  const ctx = await preparar();
+  const {r, cola} = ctx;
+  await encolado(ctx, {fotos: false});
+  await encolado(ctx, {fotos: false});
+  const calls = router(r, async () => response(503, {detail: 'caído'}));
+  await cola.syncPendientes();
+  assert.equal(posts(calls).length, 2);
+});
+
+test('los que esperan su backoff no leen la sesión del storage', async () => {
+  const ctx = await preparar();
+  const {r, cola} = ctx;
+  for (let i = 0; i < 3; i += 1) await encolado(ctx, {fotos: false});
+  const futuro = new Date(T0 + 10 * MIN).toISOString();
+  r.sql.prepare('UPDATE outbox_casos SET next_retry_at = ?').run(futuro);
+  const calls = router(r, async () => response(201, CREADO));
+  const lecturas = [];
+  const get = r.secure.get.bind(r.secure);
+  r.secure.get = (clave) => { lecturas.push(clave); return get(clave); };
+  try {
+    r.sql.prepare("UPDATE outbox_casos SET status = 'DISCARDED' WHERE rowid > (SELECT MIN(rowid) FROM outbox_casos)").run();
+    await cola.syncPendientes();
+    const conUno = lecturas.length;
+    r.sql.prepare("UPDATE outbox_casos SET status = 'PENDING'").run();
+    lecturas.length = 0;
+    await cola.syncPendientes();
+    assert.equal(lecturas.length, conUno, `tres en espera leen lo mismo que uno: ${lecturas}`);
+  } finally { r.secure.get = get; }
+  assert.equal(posts(calls).length, 0);
+});
+
+// ---- Migración de `fotos_json` (fotos que estaban dentro del payload) ----
+
+const crearOutboxVieja = (r, n) => {
+  r.sql.exec(`CREATE TABLE outbox_casos (op_id TEXT PRIMARY KEY NOT NULL, owner_user_id TEXT NOT NULL,
+    uuid_cliente TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'PENDING', payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL, started_at TEXT, ack_at TEXT, retry_count INTEGER NOT NULL DEFAULT 0, next_retry_at TEXT,
+    last_error TEXT, last_error_code TEXT, last_error_json TEXT, resultado_json TEXT, updated_at TEXT NOT NULL)`);
+  const fotos = [];
+  for (let i = 1; i <= n; i += 1) {
+    const foto = {uri: `${ACTUAL}v${i}.jpg`, fileName: `v${i}.jpg`, mimeType: 'image/jpeg', size: 10};
+    fotos.push(foto);
+    r.sql.prepare(`INSERT INTO outbox_casos (op_id, owner_user_id, uuid_cliente, payload_json, created_at, updated_at)
+      VALUES (?, '7', ?, ?, 'x', 'x')`).run(`o${i}`, `u${i}`, JSON.stringify({uuid_cliente: `u${i}`, datos: {uuid_cliente: `u${i}`, traslado: 'BOMBEROS', dni: '30111222', direccion: 'a', adultos_f: 1},
+        formulario: FORMULARIO, fotos: {foto_vivienda: foto}}));
+  }
+  return fotos;
+};
+const filasOutbox = (r) => r.sql.prepare('SELECT op_id, payload_json, fotos_json FROM outbox_casos ORDER BY rowid').all()
+  .map((f) => ({...f}));
+const migrada = (fila, foto) => !('fotos' in JSON.parse(fila.payload_json))
+  && JSON.stringify(JSON.parse(fila.fotos_json)) === JSON.stringify({foto_vivienda: foto});
+
+test('migración de fotos_json: abrir dos veces seguidas es idempotente', async () => {
+  const ctx = await preparar();
+  const {r} = ctx;
+  ctx.setExiste(() => true);
+  const fotos = crearOutboxVieja(r, 2);
+  ctx.setDirectorio(['v1.jpg', 'v2.jpg']);
+  assert.equal(await ctx.cola.getPendingCount(), 2);
+  const primera = filasOutbox(r);
+  assert.ok(primera.every((fila, i) => migrada(fila, fotos[i])));
+  const otra = r.reload('./emergenciaCola');
+  assert.equal(await otra.getPendingCount(), 2);
+  assert.deepEqual(filasOutbox(r), primera, 'la segunda apertura no cambia nada');
+  assert.equal(r.sql.prepare("SELECT COUNT(*) AS n FROM pragma_table_info('outbox_casos') WHERE name = 'fotos_json'").get().n, 1);
+  assert.deepEqual(ctx.borrados, [], 'el barrido respeta las fotos migradas');
+});
+
+test('migración de fotos_json cortada a mitad: la próxima apertura completa las filas que faltaron', async () => {
+  const ctx = await preparar();
+  const {r} = ctx;
+  const fotos = crearOutboxVieja(r, 3);
+  const prepare = r.sql.prepare.bind(r.sql);
+  let updates = 0;
+  r.sql.prepare = (q) => {
+    if (/^UPDATE outbox_casos SET payload_json = \?, fotos_json = \?/.test(q.trim()) && ++updates === 2) {
+      throw new Error('proceso cortado');
+    }
+    return prepare(q);
+  };
+  try {
+    await assert.rejects(ctx.cola.getPendingCount(), /proceso cortado/);
+  } finally { r.sql.prepare = prepare; }
+  const cortada = filasOutbox(r);
+  assert.ok(migrada(cortada[0], fotos[0]), 'la primera llegó a migrarse');
+  assert.ok('fotos' in JSON.parse(cortada[1].payload_json) && 'fotos' in JSON.parse(cortada[2].payload_json));
+  const otra = r.reload('./emergenciaCola');
+  assert.equal(await otra.getPendingCount(), 3);
+  assert.ok(filasOutbox(r).every((fila, i) => migrada(fila, fotos[i])), 'todas migradas');
+  const calls = router(r, async () => response(201, CREADO));
+  await otra.syncPendientes();
+  assert.equal(posts(calls).length, 3);
+  assert.ok(posts(calls).every((c) => campos(c).foto_vivienda), 'cada envío sale con su foto');
 });

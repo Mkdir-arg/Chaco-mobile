@@ -37,7 +37,7 @@ function loadScreen(relative, mocks, timers = {}) {
     plugins: ['@babel/plugin-transform-react-jsx', '@babel/plugin-transform-modules-commonjs']});
   const module = {exports: {}};
   const context = vm.createContext({console, setTimeout, clearTimeout, Date,
-    setInterval: timers.setInterval || (() => 0), clearInterval: timers.clearInterval || (() => {})});
+    setInterval: timers.setInterval || (() => 0), clearInterval: timers.clearInterval || (() => {}), ...(timers.globals || {})});
   vm.runInContext('(function(require,module,exports){' + code + '\n})', context)(
     name => { assert.ok(mocks[name], 'Missing screen mock: ' + name); return mocks[name]; }, module, module.exports);
   return module.exports.default;
@@ -415,13 +415,13 @@ test('Mis envíos: sin red muestra la lista guardada con aviso', async () => {
 
 // ---- EmergenciaApp ----
 
-async function montarApp({pendientes = 0, resumen = null, enCurso = null, sync = null, reintento = null} = {}) {
+async function montarApp({pendientes = 0, resumen = null, enCurso = null, sync = null, reintento = null, globals = {}} = {}) {
   const {mocks, toasts, alerts} = await baseMocks();
   const llamadas = {sync: 0, logout: 0, reintentar: 0, localidades: 0, intervalos: [], limpiados: [], desuscripto: 0, descartados: [], orden: []};
   const pantallas = {};
   const capturar = nombre => props => { pantallas[nombre] = props; return null; };
   Object.assign(mocks, {
-    '@react-native-community/netinfo': {__esModule: true, default: {addEventListener: () => () => { llamadas.desuscripto += 1; }}},
+    '@react-native-community/netinfo': {__esModule: true, default: {addEventListener: (fn) => { llamadas.netinfo = fn; return () => { llamadas.desuscripto += 1; }; }}},
     '../context/AuthContext': {useAuth: () => ({user: {nombre: 'Ana'}, logout() { llamadas.logout += 1; }})},
     '../components/Banner': {__esModule: true, default: 'Banner'},
     '../components/SettingsPanel': {__esModule: true, default: 'SettingsPanel'},
@@ -441,6 +441,7 @@ async function montarApp({pendientes = 0, resumen = null, enCurso = null, sync =
   const App = loadScreen('src/navigation/EmergenciaApp.js', mocks, {
     setInterval: (fn, ms) => { llamadas.intervalos.push(ms); return 99; },
     clearInterval: (id) => { llamadas.limpiados.push(id); },
+    globals,
   });
   const ui = await render(App, {});
   return {...ui, llamadas, pantallas, toasts, alerts};
@@ -700,5 +701,43 @@ test('EmergenciaApp: una pasada de fondo que entregó algo avisa a «Mis envíos
   try {
     await renderer.act(async () => { ui.pantallas.inicio.onAbrir({clave: 'relevar', titulo: 'Ingreso de familias'}); });
     assert.ok(ui.pantallas.envios.enviadosTick >= 1);
+  } finally { await ui.close(); }
+});
+
+// La reconexión: en web el evento `online` del navegador (como la cola, que mira navigator.onLine),
+// no NetInfo web, que puede seguir con una prueba hecha sin señal.
+const ventanaFalsa = () => {
+  const handlers = new Map();
+  return {handlers, addEventListener: (tipo, fn) => handlers.set(tipo, fn), removeEventListener: (tipo, fn) => {
+    if (handlers.get(tipo) === fn) handlers.delete(tipo);
+  }};
+};
+const inmediato = (fn) => setTimeout(fn, 0);
+
+test('EmergenciaApp web: al volver la red sincroniza por el evento `online`, no por NetInfo', async () => {
+  plataforma.OS = 'web';
+  const ventana = ventanaFalsa();
+  try {
+    const ui = await montarApp({globals: {window: ventana, setTimeout: inmediato}});
+    assert.equal(ui.llamadas.sync, 1);
+    assert.equal(ui.llamadas.netinfo, undefined, 'en web no escucha NetInfo');
+    assert.ok(ventana.handlers.has('online'));
+    await renderer.act(async () => { ventana.handlers.get('online')(); await esperar(5); });
+    assert.equal(ui.llamadas.sync, 2);
+    await ui.close();
+    assert.ok(!ventana.handlers.has('online'), 'deja de escuchar al desmontarse');
+  } finally { plataforma.OS = 'android'; }
+});
+
+test('EmergenciaApp nativo: al volver la red sincroniza por NetInfo', async () => {
+  const ventana = ventanaFalsa();
+  const ui = await montarApp({globals: {window: ventana, setTimeout: inmediato}});
+  try {
+    assert.equal(ventana.handlers.size, 0, 'en nativo no usa window');
+    assert.equal(typeof ui.llamadas.netinfo, 'function');
+    await renderer.act(async () => { ui.llamadas.netinfo({isConnected: false}); await esperar(5); });
+    assert.equal(ui.llamadas.sync, 1, 'sin red no sincroniza');
+    await renderer.act(async () => { ui.llamadas.netinfo({isConnected: true, isInternetReachable: true}); await esperar(5); });
+    assert.equal(ui.llamadas.sync, 2);
   } finally { await ui.close(); }
 });

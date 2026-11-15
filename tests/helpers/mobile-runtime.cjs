@@ -120,7 +120,9 @@ async function setup(platform = 'android', {secureStoreSeparado = false, mocks: 
     .run(JSON.stringify({...campaign, fecha_asignada: start, fecha_hasta: end}));
   return {definition: load('./definicionFormulario'), attachments: load('./webAttachments'), images: load('./webImages'), location: load('./ubicacion'), conditions: load('./condiciones'), identity: load('./identityLookup'), modulos: load('./modulos'), api, service, dates: load('../utils/dates'), values, secure, legacy, setSecureFalla: value => {secureFalla = value;}, sql, setPeriod,
     setNow: value => {currentTime = new Date(value).getTime();}, setOnline: value => {online = value;}, setFetch: handler => {fetchHandler = handler;}, setLocation: handler => {locationHandler = handler;},
-    setNavigator: value => {navigatorValue = value;}, setGlobal: (name, value) => {context[name] = value;}, setAppVersion: value => {appVersion = value;}, setFileInfo: handler => {fileInfoHandler = handler;}, load};
+    setNavigator: value => {navigatorValue = value;}, setGlobal: (name, value) => {context[name] = value;}, setAppVersion: value => {appVersion = value;}, setFileInfo: handler => {fileInfoHandler = handler;}, load,
+    // Otra instancia del módulo sobre la misma base: lo que ve la app al volver a abrirse.
+    reload: name => { modules.delete(name); return load(name); }};
 }
 // `headers` permite simular `Date` o `Retry-After`; sin él solo responde content-type,
 // como antes (cualquier otro header devuelve null, igual que fetch).
