@@ -7,7 +7,7 @@
 // significa «falta un permiso parcial», así que se vuelve a pedir el perfil antes de sacar el
 // módulo. El resultado ('quitado', 'actualizado' o 'sin_verificar') queda en
 // `error.verificacionSinModulo`, y el error sale igual.
-import { becasRequest, getBecasToken, uploadMultipart } from './becasApi';
+import { becasRequest, uploadMultipart } from './becasApi';
 import { verificarSinModulo } from './emergenciaPerfil';
 import { consultarIdentidad } from './identityLookup';
 import { normalizeDateText } from '../utils/dni';
@@ -177,21 +177,20 @@ export const recibirEntrega = async (entregaId, { uuid_cliente, cantidades = {},
 // ---- M2 · Llegada de familias (§13.1 a §13.5) ----
 // Todo M2 es JSON y con conexión. becasRequest relee el token en cada pedido y no corta por tiempo,
 // así que acá:
-// - `token` es el de la sesión con la que se abrió la pantalla. Si la sesión ya es otra, no se manda
-//   nada (`obsoleto`): un pedido de la persona anterior no sale con el token de la siguiente. El
-//   pedido lleva ese token en el encabezado, y el 401 de becasRequest invalida solo si el token
-//   guardado sigue siendo ese (es el mismo que se acaba de comparar).
+// - `token` es el de la sesión con la que se abrió la pantalla: becasRequest lo usa tal cual (no relee
+//   la sesión), así un pedido de la persona anterior nunca sale con el token de la siguiente, y su 401
+//   invalida solo si ese token sigue vigente. La respuesta que llega con otra sesión ya abierta la
+//   descarta emergenciaLlegadas (`obsoleto`).
 // - `timeoutMs` aborta el fetch y sale con un error `network` + `timeout`, como uploadMultipart.
 export const errorObsoleto = () => Object.assign(new Error('La sesión cambió: este pedido era de otra sesión.'), { obsoleto: true });
 const errorPorTiempo = () => Object.assign(new Error('El servidor tardó demasiado en responder.'), { network: true, timeout: true });
 
 const pedirJson = async (path, { method = 'GET', body, token = null, timeoutMs = null } = {}) => {
-  if (token && await getBecasToken() !== token) throw errorObsoleto();
   const controller = Number(timeoutMs) > 0 && typeof AbortController === 'function' ? new AbortController() : null;
   const pedido = becasRequest(path, {
     method,
     ...(body !== undefined ? { body } : {}),
-    ...(token ? { headers: { Authorization: `Token ${token}` } } : {}),
+    ...(token ? { token } : {}),
     ...(controller ? { signal: controller.signal } : {}),
   });
   if (!(Number(timeoutMs) > 0)) return pedido;

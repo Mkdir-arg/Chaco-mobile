@@ -289,7 +289,7 @@ salir) y admite una observación. Con diferencias, «Recibir» pide confirmació
   lista de entregas consulta la entrega y avisa si quedó registrada (con lo recibido), si la
   mesa la canceló o si no se pudo confirmar; sin red se conserva para otra vez.
 
-#### M2 · Llegada de familias, parte 1 (desde 1.2.15)
+#### M2 · Llegada de familias, parte 1 (desde 1.2.16)
 
 El acceso «Llegada de familias» (perfil con `llegadas`) abre «mis dispositivos» filtrado a los
 que tienen `admite` (la misma pantalla de M3 con `modo="llegadas"`: cada fila dice las
@@ -318,9 +318,12 @@ Reglas (`src/services/emergenciaLlegadas.js`):
 
 - **Con conexión, sin lectura guardada**: sin red (en web `navigator.onLine`, en nativo NetInfo)
   no sale ningún pedido y la pantalla lo avisa. Lecturas cortan a los 20 s y acciones a los 30 s.
-- **Sesión fijada al abrir**: cada pantalla toma usuario y token al montarse; si la sesión ya es
-  otra no se manda nada, el pedido lleva ese token, y la respuesta que llega con otra sesión se
-  descarta (y la de una búsqueda o una lectura que vuelve después de salir de la pantalla, también).
+- **Sesión fijada al abrir**: cada pantalla toma usuario y token al montarse y cada pedido sale con
+  ese token (`becasRequest(path, { token })`: nunca con el de otra sesión, y su 401 cierra la sesión
+  solo si sigue vigente). La respuesta que llega con otra sesión se descarta (y la de una búsqueda o
+  una lectura que vuelve después de salir de la pantalla, también).
+- «Agregar persona» guarda su `uuid_cliente` en AsyncStorage por usuario y caso hasta saber el
+  resultado: volver, re-entrar o cerrar la app no lo cambian (el reintento no suma otra persona).
 - **El estado es el del servidor**: ante un 409 se muestra `detail` y se recarga por
   `estado_actual` (el 409 de M2 no trae `code`): `DERIVADO` vuelve a buscar sola por el DNI;
   `INGRESO_EN_CURSO` va a los integrantes, y `ALOJADO`/`CERRADO` a los integrantes en lectura;
