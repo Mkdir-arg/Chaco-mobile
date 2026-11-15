@@ -188,6 +188,10 @@ se conecta directamente a esas integraciones externas.
 | `GET /api/emergencia/localidades/` | Localidades del Formulario 1 |
 | `POST /api/emergencia/casos/` | Enviar una familia (multipart, idempotente) |
 | `GET /api/emergencia/casos/mios/` | «Mis envíos» |
+| `GET /api/emergencia/mis-dispositivos/` | Dispositivos de la guardia (`recibe_kits`, `entregas_pendientes`) |
+| `GET /api/emergencia/dispositivos/{id}/entregas/?pendientes=1` | Entregas de kits por recibir |
+| `GET /api/emergencia/entregas/{id}/` | Una entrega con sus líneas |
+| `POST /api/emergencia/entregas/{id}/recibir/` | Recibir una entrega (multipart, idempotente, con conexión) |
 
 Los adjuntos se envían como multipart; los demás cuerpos normalmente como JSON.
 
@@ -239,6 +243,34 @@ fotos (dirección, localidad, GPS opcional y hasta dos fotos JPEG). Funciona sin
   verla sin red.
 - Las reglas de cliente (`src/utils/emergencia.js`) solo ayudan a cargar bien: las que
   valen son las del back.
+
+#### M3 · Recepción de kits (desde 1.2.14)
+
+El acceso «Recepción de kits» (perfil con `kits`) abre «mis dispositivos» filtrado a los
+que tienen `recibe_kits`; con uno solo entra directo a sus entregas. La lista de entregas
+pide `?pendientes=1` (en camino y preparadas) y muestra número, salida y un resumen de
+ítems. La recepción (`EmergenciaRecibirEntregaScreen`) precarga lo enviado en un input
+por línea (entero ≥ 0, `0` si no llegó nada), muestra faltantes y sobrantes, exige la
+foto del remito (pasa por `aJpeg`; se suelta con `liberarJpeg` al cambiarla, enviarla o
+salir) y admite una observación. Con diferencias, «Recibir» pide confirmación.
+
+- **No se encola**: necesita conexión. Sin red (en web `navigator.onLine`, en nativo
+  NetInfo) no se manda nada y la pantalla lo avisa.
+- La lógica vive en `src/services/emergenciaKits.js` (normalizar, cantidades,
+  diferencias, clasificación de errores y la recepción abierta). El multipart lleva
+  `uuid_cliente`, `cantidades[<id del ítem>]` por cada línea (también las `0`), `remito`
+  JPEG y `observacion` si hay; sale con el token de la sesión que abrió la recepción y con
+  el tiempo máximo de la cola de M1 (`timeoutDelEnvio`).
+- **Idempotencia**: el `uuid_cliente` nace al abrir la recepción y se guarda en
+  AsyncStorage por usuario y entrega, con las cantidades y la observación (nunca la foto),
+  así un cierre accidental no lo cambia. Tras un error de red, timeout, 5xx o 429 la
+  recepción queda **fija** (el pedido pudo haber llegado) y «Reintentar» manda lo mismo con
+  el mismo uuid; con `Retry-After` el botón espera. 200/201 la cierran.
+- Errores: 409 con `estado_actual` muestra `detail` y vuelve a las entregas; 409
+  `UUID_EN_USO` solo deja seguir descartando el intento (uuid nuevo, lo cargado se
+  conserva); 404 vuelve a «mis dispositivos»; 403 `SIN_MODULO` vuelve a pedir el perfil y
+  va al inicio; 400 `VALIDACION` marca cada línea o el remito y se corrige con el mismo
+  uuid; 413 pide otra foto del remito.
 
 > **Despliegue:** `expo-image-manipulator` es un módulo nativo. Desde 1.2.13 el
 > Formulario 1 importa `src/utils/jpeg.js`: Android/iOS necesitan **un build nuevo**
