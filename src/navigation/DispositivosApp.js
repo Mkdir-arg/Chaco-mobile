@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, StyleSheet } from 'react-native';
-import NetInfo from '@react-native-community/netinfo';
+import { escucharReconexion } from '../services/conectividad';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
@@ -29,7 +29,6 @@ export default function DispositivosApp({ onCambiarModulo }) {
   const [syncPendingCount, setSyncPendingCount] = useState(0);
   const [syncTick, setSyncTick] = useState(0);
   const enCurso = useRef(false);
-  const conectado = useRef(null);
   const reconexion = useRef(null);
   const montado = useRef(true);
 
@@ -62,14 +61,9 @@ export default function DispositivosApp({ onCambiarModulo }) {
     montado.current = true;
     sincronizarDeFondo();
     const timer = setInterval(sincronizarDeFondo, SYNC_INTERVAL_MS);
-    const desuscribir = NetInfo.addEventListener((state) => {
-      const hayRed = !!state?.isConnected && state?.isInternetReachable !== false;
-      const antes = conectado.current;
-      conectado.current = hayRed;
-      if (!antes && hayRed) {
-        if (reconexion.current) clearTimeout(reconexion.current);
-        reconexion.current = setTimeout(sincronizarDeFondo, RECONNECT_DELAY_MS);
-      }
+    const desuscribir = escucharReconexion(() => {
+      if (reconexion.current) clearTimeout(reconexion.current);
+      reconexion.current = setTimeout(sincronizarDeFondo, RECONNECT_DELAY_MS);
     });
     return () => {
       montado.current = false;

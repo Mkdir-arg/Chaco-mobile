@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
+import { hayRedEn } from './conectividad';
 import * as Crypto from 'expo-crypto';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as SQLite from 'expo-sqlite';
@@ -557,7 +558,7 @@ const getConnectivitySnapshot = async () => {
     const state = await NetInfo.fetch();
     const isConnected = !!state?.isConnected;
     const isInternetReachable = state?.isInternetReachable;
-    const hasInternet = isConnected && isInternetReachable !== false;
+    const hasInternet = hayRedEn(state);
     return {
       hasInternet,
       isConnected,

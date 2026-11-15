@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { View } from 'react-native';
-import NetInfo from '@react-native-community/netinfo';
+import { escucharReconexion } from '../services/conectividad';
 
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -49,7 +49,6 @@ export default function BecasApp({ onCambiarModulo }) {
   const [syncPendingCount, setSyncPendingCount] = useState(0);
   const [newRelevamientosCount, setNewRelevamientosCount] = useState(0);
   const [assignedRelevamientos, setAssignedRelevamientos] = useState([]);
-  const lastConnectivityStateRef = useRef(null);
   const syncInProgressRef = useRef(false);
   const reconnectDebounceRef = useRef(null);
 
@@ -96,19 +95,14 @@ export default function BecasApp({ onCambiarModulo }) {
       await runBackgroundSync();
       await refreshNewRelevamientosCount();
     }, 8000);
-    const unsubscribeNetInfo = NetInfo.addEventListener(async (state) => {
-      const isConnected = !!state?.isConnected && state?.isInternetReachable !== false;
-      const prev = lastConnectivityStateRef.current;
-      lastConnectivityStateRef.current = isConnected;
-      if (!prev && isConnected) {
-        if (reconnectDebounceRef.current) {
-          clearTimeout(reconnectDebounceRef.current);
-        }
-        reconnectDebounceRef.current = setTimeout(async () => {
-          await runBackgroundSync();
-          await refreshNewRelevamientosCount();
-        }, 1800);
+    const unsubscribeNetInfo = escucharReconexion(() => {
+      if (reconnectDebounceRef.current) {
+        clearTimeout(reconnectDebounceRef.current);
       }
+      reconnectDebounceRef.current = setTimeout(async () => {
+        await runBackgroundSync();
+        await refreshNewRelevamientosCount();
+      }, 1800);
     });
 
     return () => {

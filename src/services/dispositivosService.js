@@ -1,4 +1,4 @@
-import NetInfo from '@react-native-community/netinfo';
+import { hayRed } from './conectividad';
 import * as Crypto from 'expo-crypto';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as SQLite from 'expo-sqlite';
@@ -147,14 +147,7 @@ const withDb = async () => {
   return getSqliteDb();
 };
 
-const getConnectivitySnapshot = async () => {
-  try {
-    const state = await NetInfo.fetch();
-    return !!state?.isConnected && state?.isInternetReachable !== false;
-  } catch {
-    return false;
-  }
-};
+const getConnectivitySnapshot = () => hayRed();
 
 // ---- Archivos locales ----
 
