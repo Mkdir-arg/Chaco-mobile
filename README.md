@@ -318,12 +318,14 @@ Reglas (`src/services/emergenciaLlegadas.js`):
 
 - **Con conexión, sin lectura guardada**: sin red (en web `navigator.onLine`, en nativo NetInfo)
   no sale ningún pedido y la pantalla lo avisa. Lecturas cortan a los 20 s y acciones a los 30 s.
-- **Sesión fijada al abrir**: cada pantalla toma usuario y token al montarse y cada pedido sale con
-  ese token (`becasRequest(path, { token })`: nunca con el de otra sesión, y su 401 cierra la sesión
+- **Sesión fijada al abrir**: cada pantalla toma usuario y token al montarse. Si la sesión ya es otra,
+  no sale ningún pedido de la anterior; si no, cada pedido sale con ese token (`becasRequest(path, { token })`: nunca con el de otra sesión, y su 401 cierra la sesión
   solo si sigue vigente). La respuesta que llega con otra sesión se descarta (y la de una búsqueda o
   una lectura que vuelve después de salir de la pantalla, también).
 - «Agregar persona» guarda su `uuid_cliente` en AsyncStorage por usuario y caso hasta saber el
-  resultado: volver, re-entrar o cerrar la app no lo cambian (el reintento no suma otra persona).
+  resultado: volver, re-entrar o cerrar la app no lo cambian (el reintento no suma otra persona). Si
+  ese reenvío devuelve una persona que ya estaba en la lista, se avisa que ya se había sumado; con la
+  familia alojada o el caso cerrado, el pendiente se olvida.
 - **El estado es el del servidor**: ante un 409 se muestra `detail` y se recarga por
   `estado_actual` (el 409 de M2 no trae `code`): `DERIVADO` vuelve a buscar sola por el DNI;
   `INGRESO_EN_CURSO` va a los integrantes, y `ALOJADO`/`CERRADO` a los integrantes en lectura;

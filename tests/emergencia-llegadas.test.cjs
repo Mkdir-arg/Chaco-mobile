@@ -191,13 +191,20 @@ test('red caída, timeout y página HTML del WAF son reintentables', async () =>
 
 // ---- Sesión ----
 
-test('sesión: con otra sesión abierta el pedido sale con el token VIEJO (nunca el nuevo) y la respuesta se descarta', async () => {
+test('sesión: con otra sesión abierta no sale ningún pedido de la anterior (acciones ni lecturas)', async () => {
   const {r, l, sesion} = await preparar();
   r.setFetch(async () => response(200, {token: 'tok-2', user_id: 8, username: 'otra', modulos: ['emergencia']}));
   await r.api.loginBecas({username: 'otra', password: 'x'});
   const calls = router(r, () => response(200, BUSQUEDA));
-  assert.equal((await clasificacion(l.buscar(sesion, 7, '30111222'))).tipo, 'obsoleto');
-  assert.deepEqual(calls.map(c => c.auth), ['Token tok'], 'el pedido de la sesión vieja no sale con el token nuevo');
+  const derivacion = l.normalizarBusqueda(BUSQUEDA).derivacion;
+  for (const accion of [
+    () => l.buscar(sesion, 7, '30111222'), () => l.aceptar(sesion, derivacion), () => l.rechazar(sesion, derivacion, {motivo: 'NO_LLEGO'}),
+    () => l.agregarPersona(sesion, 184), () => l.cargarIntegrantes(sesion, 184),
+  ]) {
+    assert.equal((await clasificacion(accion())).tipo, 'obsoleto');
+  }
+  assert.equal(calls.length, 0, 'ni con su propio token');
+  assert.equal(await r.api.getBecasToken(), 'tok-2');
 
   const otra = await l.abrirSesion();
   router(r, async () => {
@@ -215,11 +222,11 @@ test('sesión: el pedido sale con el token de la sesión aunque otra entre justo
   const l = r.load('./emergenciaLlegadas');
   const sesion = await l.abrirSesion();
   const calls = router(r, () => response(200, BUSQUEDA));
-  // La 1.ª lectura del token es la del chequeo previo; la 2.ª, la de becasRequest: ahí ya hay otra sesión.
+  // La 1.ª lectura del token es la del chequeo previo; desde la 2.ª ya hay otra sesión.
   const leer = r.legacy.get.bind(r.legacy);
   let lecturas = 0;
-  r.legacy.get = (clave) => (clave === 'becas_auth_token' && ++lecturas === 2 ? 'tok-otra' : leer(clave));
-  await l.buscar(sesion, 7, '30111222');
+  r.legacy.get = (clave) => (clave === 'becas_auth_token' && ++lecturas >= 2 ? 'tok-otra' : leer(clave));
+  assert.equal((await clasificacion(l.buscar(sesion, 7, '30111222'))).tipo, 'obsoleto', 'y la respuesta se descarta');
   assert.equal(calls[0].auth, 'Token tok', 'nunca con el token de la otra sesión');
 });
 
@@ -397,20 +404,17 @@ test('429: la búsqueda lo dice con el texto del tope de búsquedas; aceptar, co
 // MINOR 4 de la revisión del PR #28, resuelto con `becasRequest(path, { token })` (PR #29): el 401 del
 // token viejo no cierra la sesión que entró en el medio.
 test('sesión: un 401 del token viejo (otra persona ya entró) no cierra la sesión nueva', async () => {
-  const {r, l, sesion} = await preparar();
+  const {r, l} = await preparar();
   r.setFetch(async () => response(200, {token: 'tok-2', user_id: 8, username: 'otra', modulos: ['emergencia']}));
   await r.api.loginBecas({username: 'otra', password: 'x'});
-  const calls = router(r, () => response(401, {detail: 'Invalid token.'}));
-  assert.equal((await clasificacion(l.aceptar(sesion, l.normalizarBusqueda(BUSQUEDA).derivacion))).tipo, 'obsoleto');
-  assert.deepEqual(calls.map(c => c.auth), ['Token tok']);
-  assert.equal(await r.api.getBecasToken(), 'tok-2', 'la sesión nueva sigue');
-  // En la carrera (la otra entra entre que se arma el pedido y sale), lo mismo.
+  // La otra entra mientras el pedido de la sesión anterior está en vuelo, y el back le contesta 401.
   const nueva = await l.abrirSesion();
-  router(r, async () => {
+  const calls = router(r, async () => {
     r.setFetch(async () => response(200, {token: 'tok-3', user_id: 9, username: 'tercera', modulos: ['emergencia']}));
     await r.api.loginBecas({username: 'tercera', password: 'x'});
     return response(401, {detail: 'Invalid token.'});
   });
-  await l.buscar(nueva, 7, '30111222').catch(() => {});
-  assert.equal(await r.api.getBecasToken(), 'tok-3');
+  assert.equal((await clasificacion(l.buscar(nueva, 7, '30111222'))).tipo, 'obsoleto');
+  assert.deepEqual(calls.map(c => c.auth), ['Token tok-2'], 'salió con su token, no con el de quien entró');
+  assert.equal(await r.api.getBecasToken(), 'tok-3', 'el 401 del token viejo no cierra la sesión nueva');
 });

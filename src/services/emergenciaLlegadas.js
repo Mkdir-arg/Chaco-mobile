@@ -319,6 +319,9 @@ const conSesion = async (sesion, pedido, { timeoutMs, campos = [], exigeRed = tr
   if (exigeRed && !await hayConexion()) {
     throw crearError('SIN_RED', TEXTO_SIN_RED, { clasificacion: { tipo: 'sin_red', mensaje: TEXTO_SIN_RED } });
   }
+  // Si ya entró otra persona, no sale nada: una acción de la sesión anterior no se manda (ni con su
+  // propio token). Después de la respuesta se vuelve a mirar (una sesión que cambió en el medio).
+  if (!await sigueLaSesion(sesion)) throw Object.assign(errorObsoleto(), { clasificacion: { tipo: 'obsoleto', mensaje: 'La sesión cambió.' } });
   let respuesta;
   try {
     respuesta = await pedido({ token: sesion.token, timeoutMs });
@@ -451,6 +454,12 @@ export const agregarPendiente = async (sesion, casoId) => {
   if (!sesion?.owner) return null;
   const todas = await enOrdenAgregar(() => leerAgregar(sesion.owner));
   return typeof todas[String(casoId)] === 'string' ? todas[String(casoId)] : null;
+};
+
+// Se olvida el pendiente de un caso que ya no admite altas (la familia alojada o el caso cerrado).
+export const olvidarAgregarPendiente = async (sesion, casoId) => {
+  if (!sesion?.owner) return;
+  await modificarAgregar(sesion.owner, (todas) => { delete todas[String(casoId)]; });
 };
 
 const RESUELVEN_AGREGAR = ['validacion', 'no_encontrado', 'conflicto', 'uuid_en_uso'];

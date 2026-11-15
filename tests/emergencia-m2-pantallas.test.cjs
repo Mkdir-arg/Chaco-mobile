@@ -715,7 +715,7 @@ test('Integrantes: «Agregar persona» confirma, manda con uuid y recarga; el re
 
 // ---- EmergenciaApp: el recorrido y el router por estado_actual ----
 
-async function montarApp() {
+async function montarApp({integrantes = null} = {}) {
   const pantallas = {};
   const alerts = [];
   const toasts = [];
@@ -736,7 +736,8 @@ async function montarApp() {
     '../screens/EmergenciaRecibirEntregaScreen': {__esModule: true, default: capturar('recibir')},
     '../screens/EmergenciaLlegadaBuscarScreen': {__esModule: true, default: capturar('buscar')},
     '../screens/EmergenciaDerivacionScreen': {__esModule: true, default: capturar('derivacion')},
-    '../screens/EmergenciaIntegrantesScreen': {__esModule: true, default: capturar('integrantes')},
+    '../screens/EmergenciaIntegrantesScreen': {__esModule: true, default: integrantes
+      ? (props) => { pantallas.integrantes = props; return React.createElement(integrantes, props); } : capturar('integrantes')},
     '@react-native-community/netinfo': {__esModule: true, default: {addEventListener: () => () => {}}},
     '../services/emergenciaCola': {syncPendientes: async () => ({}), getPendingCount: async () => 0, getResumenPendientes: async () => ({}),
       reintentar: async () => ({}), getLocalidadesGuardadas: async () => ({localidades: []}), getBorradorEnCurso: async () => null, descartar: async () => true},
@@ -805,19 +806,14 @@ test('EmergenciaApp M2: el router de §13.1 recarga la pantalla de cada estado_a
     assert.equal(ui.vista(), 'integrantes');
     assert.equal(ui.pantallas.integrantes.caso.id, 184);
     assert.deepEqual(ui.alerts.at(-1).slice(0, 2), ['El caso cambió', 'Ya la aceptó Juan.']);
-    // B1: esa pantalla ya es una recarga; otro 409 que la mandaría a sí misma va a buscar (sin bucle).
-    await ui.hacer(() => ui.pantallas.integrantes.onConflicto({tipo: 'conflicto', destino: 'integrantes', estadoActual: 'CERRADO', mensaje: 'El caso está cerrado.'}));
-    assert.equal(ui.vista(), 'buscar');
-    assert.deepEqual([ui.pantallas.buscar.dniInicial, ui.pantallas.buscar.autoBuscar], ['30111222', false]);
-    // Entrando normal (aceptada): ALOJADO vuelve a montar los integrantes (en lectura) una vez; la segunda, a buscar.
-    await alDerivacion();
-    await ui.hacer(() => ui.pantallas.derivacion.onAceptada(CASO));
+    // Un 409 ALOJADO posterior (p. ej. al agregar una persona) sobre esa pantalla recargada abre integrantes
+    // de nuevo, en lectura: el bucle lo corta la pantalla de integrantes, no el router.
     const antes = ui.pantallas.integrantes;
     await ui.hacer(() => ui.pantallas.integrantes.onConflicto({tipo: 'conflicto', destino: 'integrantes', estadoActual: 'ALOJADO', mensaje: 'Ya figura alojada.'}));
     assert.equal(ui.vista(), 'integrantes');
     assert.notEqual(ui.pantallas.integrantes, antes);
     await ui.hacer(() => ui.pantallas.integrantes.onConflicto({tipo: 'conflicto', destino: 'integrantes', estadoActual: 'ALOJADO', mensaje: 'Ya figura alojada.'}));
-    assert.equal(ui.vista(), 'buscar');
+    assert.equal(ui.vista(), 'integrantes');
     // DERIVADO: vuelve a buscar sola con el DNI.
     await alDerivacion();
     await ui.hacer(() => ui.pantallas.derivacion.onAceptada(CASO));
@@ -861,4 +857,63 @@ test('EmergenciaApp M2: mientras se acepta o se agrega una persona no hay flecha
     await ui.hacer(() => ui.pantallas.integrantes.onProximamente('Familia alojada'));
     assert.deepEqual(ui.alerts.at(-1).slice(0, 2), ['Próximamente', '«Familia alojada» va a estar disponible en una próxima versión de la app.']);
   } finally { await ui.close(); }
+});
+
+test('EmergenciaApp M2 (B1): con la pantalla real, un caso CERRADO sin ingreso aceptado termina en buscar con un solo GET', async () => {
+  for (const estado of ['CERRADO', 'ALOJADO']) {
+    const env = await entorno(() => response(409, {detail: `El caso está ${estado}.`, estado_actual: estado}));
+    const Real = loadScreen('src/screens/EmergenciaIntegrantesScreen.js', env.mocks);
+    const ui = await montarApp({integrantes: Real});
+    try {
+      await ui.hacer(() => ui.pantallas.inicio.onAbrir({clave: 'llegadas', titulo: 'Llegada de familias'}));
+      await ui.hacer(() => ui.pantallas.dispositivos.onElegir({id: 7, nombre: 'Club'}, {unico: false}));
+      await ui.hacer(() => ui.pantallas.buscar.onDerivacion({dni: '30111222', derivacion: {id: 55, caso: CASO}}));
+      await ui.hacer(() => ui.pantallas.derivacion.onConflicto({tipo: 'conflicto', destino: 'integrantes', estadoActual: estado, mensaje: `El caso está ${estado}.`}));
+      await renderer.act(async () => { await esperar(60); });
+      assert.equal(ui.vista(), 'buscar', estado);
+      assert.equal(env.calls.filter(c => c.url.endsWith('/integrantes/')).length, 1, `${estado}: sin bucle`);
+    } finally { await ui.close(); }
+  }
+});
+
+test('Integrantes: el reenvío de un alta que ya había llegado no dice «Se sumó»: avisa que esa persona ya estaba', async () => {
+  let posteos = 0;
+  const env = await entorno((call) => {
+    if (call.method === 'POST') { posteos += 1; return posteos === 1 ? fallaDeRed() : response(200, {integrante: FILA(3), total_declarado: 3}); }
+    // El alta incierta llegó: la lista ya trae a la persona 3.
+    return response(200, posteos ? {...INTEGRANTES, integrantes: [CONFIRMADA, FILA(2), FILA(3)], total_declarado: 3} : INTEGRANTES);
+  });
+  const Screen = loadScreen('src/screens/EmergenciaIntegrantesScreen.js', env.mocks);
+  const props = {caso: CASO, onConflicto: () => {}, onNoEncontrado: () => {}, onSinModulo: () => {}, onProximamente: () => {}, onEnviando: () => {}};
+  const primera = await render(Screen, props);
+  await primera.pressButton('Agregar persona');
+  await env.aceptarAlerta('Agregar');
+  await primera.close();
+  const segunda = await render(Screen, props);
+  try {
+    assert.ok(segunda.labels().includes('1 de 3 confirmadas'));
+    await segunda.pressButton('Reintentar agregar persona');
+    assert.deepEqual(plano(env.toasts.at(-1)), {type: 'info',
+      message: 'La persona 3 ya se había sumado (envío anterior). Si llegó otra más, tocá «Agregar persona» de nuevo.'});
+    assert.ok(segunda.button('Agregar persona'));
+  } finally { await segunda.close(); }
+});
+
+test('Integrantes: con el caso alojado o cerrado se olvida el «Agregar persona» pendiente', async () => {
+  let estado = 'INGRESO_EN_CURSO';
+  const env = await entorno((call) => (call.method === 'POST' ? fallaDeRed() : response(200, {...INTEGRANTES, caso: {...CASO, estado}})));
+  const Screen = loadScreen('src/screens/EmergenciaIntegrantesScreen.js', env.mocks);
+  const props = {caso: CASO, onConflicto: () => {}, onNoEncontrado: () => {}, onSinModulo: () => {}, onProximamente: () => {}, onEnviando: () => {}};
+  const primera = await render(Screen, props);
+  await primera.pressButton('Agregar persona');
+  await env.aceptarAlerta('Agregar');
+  await primera.close();
+  const sesion = await env.llegadas.abrirSesion();
+  assert.ok(await env.llegadas.agregarPendiente(sesion, 184));
+  estado = 'ALOJADO';
+  const segunda = await render(Screen, props);
+  try {
+    await renderer.act(async () => { await esperar(20); });
+    assert.equal(await env.llegadas.agregarPendiente(sesion, 184), null);
+  } finally { await segunda.close(); }
 });

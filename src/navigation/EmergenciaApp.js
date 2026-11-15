@@ -270,7 +270,7 @@ export default function EmergenciaApp({ onCambiarModulo }) {
   const elegirDispositivoLlegadas = (dispositivo, { unico = false } = {}) => setPantalla({ vista: 'llegadas_buscar', dispositivo, unico, dni: '', n: 1 });
   const verDerivacion = (busqueda) => setPantalla((actual) => ({ ...actual, vista: 'llegadas_derivacion', busqueda, dni: busqueda.dni || actual.dni }));
   const verIntegrantes = (caso, dni) => setPantalla((actual) => ({
-    ...actual, vista: 'llegadas_integrantes', caso, dni: dni ?? actual.dni, n: (actual.n || 0) + 1, recargada: false,
+    ...actual, vista: 'llegadas_integrantes', caso, dni: dni ?? actual.dni, n: (actual.n || 0) + 1,
   }));
   const llegadaNoEncontrada = () => {
     setEnviando(false);
@@ -287,12 +287,9 @@ export default function EmergenciaApp({ onCambiarModulo }) {
     setPantalla((actual) => {
       const caso = actual.caso || actual.busqueda?.derivacion?.caso || null;
       const base = { dispositivo: actual.dispositivo, unico: actual.unico, dni: actual.dni || '', n: (actual.n || 0) + 1 };
-      // Guarda contra el bucle: si ya se recargó una vez esta misma pantalla de integrantes del mismo caso
-      // por un 409, no se vuelve a montar: se busca de nuevo.
-      const mismaRecargada = actual.vista === 'llegadas_integrantes' && actual.recargada && String(actual.caso?.id) === String(caso?.id);
-      if (clasificacion.destino === 'integrantes' && caso && !mismaRecargada) {
-        return { ...base, vista: 'llegadas_integrantes', caso, recargada: true };
-      }
+      // El bucle con un caso CERRADO/ALOJADO sin ingreso aceptado lo corta la pantalla de integrantes: un
+      // 409 de su propio GET nunca vuelve a mandar acá con destino integrantes.
+      if (clasificacion.destino === 'integrantes' && caso) return { ...base, vista: 'llegadas_integrantes', caso };
       if (clasificacion.destino === 'derivacion' && base.dni) return { ...base, vista: 'llegadas_buscar', autoBuscar: true };
       return { ...base, vista: 'llegadas_buscar', autoBuscar: false };
     });

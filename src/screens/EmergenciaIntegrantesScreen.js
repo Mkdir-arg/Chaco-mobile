@@ -6,7 +6,7 @@ import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
 import {
   TEXTO_SIN_RED, abrirSesion, agregarPersona, cargarIntegrantes, cierreDisponible, clasificarErrorLlegada, escucharRed,
-  agregarPendiente, esSoloLectura, estadoDeIntegrante, hayConexion, textoDeCrecimiento, textoDelContador,
+  agregarPendiente, esSoloLectura, olvidarAgregarPendiente, estadoDeIntegrante, hayConexion, textoDeCrecimiento, textoDelContador,
 } from '../services/emergenciaLlegadas';
 import { statusTones } from '../theme/statusBadges';
 import { fontSizes, radii } from '../theme';
@@ -58,6 +58,11 @@ export default function EmergenciaIntegrantesScreen({
     try {
       const respuesta = await cargarIntegrantes(base, casoId);
       if (!montado.current || numero !== pedido.current) return;
+      // Alojada o cerrada ya no admite altas: un «Agregar persona» pendiente de este caso se olvida.
+      if (esSoloLectura(respuesta.caso)) {
+        olvidarAgregarPendiente(base, casoId).catch(() => {});
+        setReintentoAgregar(false);
+      }
       setDatos(respuesta);
       setError(null);
       setSinRed(false);
@@ -150,7 +155,15 @@ export default function EmergenciaIntegrantesScreen({
       const r = await agregarPersona(sesionRef.current, casoId);
       if (!montado.current) return;
       setReintentoAgregar(false);
-      showToast({ type: 'success', message: `Se sumó la persona ${r.integrante?.n ?? r.total_declarado} a la familia.` });
+      const n = r.integrante?.n ?? r.total_declarado;
+      // El reenvío de un uuid cuya alta ya había llegado devuelve la misma fila: si esa persona ya estaba en
+      // la lista, no se sumó nadie ahora.
+      const yaEstaba = (datosRef.current?.integrantes || []).some((i) => i.n === r.integrante?.n);
+      if (yaEstaba) {
+        showToast({ type: 'info', message: `La persona ${n} ya se había sumado (envío anterior). Si llegó otra más, tocá «Agregar persona» de nuevo.` });
+      } else {
+        showToast({ type: 'success', message: `Se sumó la persona ${n} a la familia.` });
+      }
       await cargar();
     } catch (e) {
       const c = e?.clasificacion || clasificarErrorLlegada(e);
