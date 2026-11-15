@@ -188,16 +188,20 @@ se conecta directamente a esas integraciones externas.
 | `GET /api/emergencia/localidades/` | Localidades del Formulario 1 |
 | `POST /api/emergencia/casos/` | Enviar una familia (multipart, idempotente) |
 | `GET /api/emergencia/casos/mios/` | «Mis envíos» |
-| `GET /api/emergencia/mis-dispositivos/` | Dispositivos de la guardia (`recibe_kits`, `entregas_pendientes`) |
+| `GET /api/emergencia/mis-dispositivos/` | Dispositivos de la guardia (`admite`, `recibe_kits`, pendientes y camas libres) |
 | `GET /api/emergencia/dispositivos/{id}/entregas/?pendientes=1` | Entregas de kits por recibir |
 | `GET /api/emergencia/entregas/{id}/` | Una entrega con sus líneas |
 | `POST /api/emergencia/entregas/{id}/recibir/` | Recibir una entrega (multipart, idempotente, con conexión) |
+| `GET /api/emergencia/dispositivos/{id}/buscar/?dni=` | Buscar a la familia por DNI (M2, con tope y `Retry-After`) |
+| `POST /api/emergencia/derivaciones/{id}/aceptar/` | Aceptar la derivación y reservar camas (JSON, no idempotente) |
+| `POST /api/emergencia/derivaciones/{id}/rechazar/` | Rechazar la derivación con motivo (JSON, no idempotente) |
+| `GET/POST /api/emergencia/casos/{id}/integrantes/` | Integrantes de la familia y «Agregar persona» (idempotente) |
 
 Los adjuntos se envían como multipart; los demás cuerpos normalmente como JSON.
 
 Para Emergencia, `src/services/emergenciaApi.js` arma los pedidos de
 `/api/emergencia/` (localidades, consulta de identidad, envío de familias, mis envíos,
-mis dispositivos y recepción de kits) con los nombres de campos del contrato
+mis dispositivos, recepción de kits y llegada de familias) con los nombres de campos del contrato
 `docs/internal/contrato-app-emergencia.md` de Chaco-Back. Los envíos con fotos van en
 un solo multipart (`uploadMultipart`, varios archivos). Emergencia acepta **solo
 JPEG** de hasta 5 MB: `src/utils/jpeg.js` (`aJpeg`) convierte cualquier foto a JPEG de
@@ -284,6 +288,49 @@ salir) y admite una observación. Con diferencias, «Recibir» pide confirmació
 - Una recepción incierta cuya entrega ya no figura pendiente no se borra en silencio: la
   lista de entregas consulta la entrega y avisa si quedó registrada (con lo recibido), si la
   mesa la canceló o si no se pudo confirmar; sin red se conserva para otra vez.
+
+#### M2 · Llegada de familias, parte 1 (desde 1.2.15)
+
+El acceso «Llegada de familias» (perfil con `llegadas`) abre «mis dispositivos» filtrado a los
+que tienen `admite` (la misma pantalla de M3 con `modo="llegadas"`: cada fila dice las
+derivaciones por aceptar y las camas libres; ese contador es el aviso de derivaciones nuevas, no
+hay notificaciones). Con uno solo entra directo. De ahí:
+
+- **Buscar** (`EmergenciaLlegadaBuscarScreen`, §13.2): DNI de 7 u 8 dígitos (se valida antes de
+  pedir). `DERIVACION` pendiente abre la derivación; aceptada, los integrantes. `SIN_DERIVACION`
+  muestra el `mensaje` del back y las camas libres, con «Ingresar igual» (solo con camas) y
+  «Avisar a la mesa»; `ALOJADA`, el `mensaje` y, si viene, dónde y desde cuándo. El 429 deshabilita
+  «Buscar» con la cuenta regresiva de `Retry-After`.
+- **Derivación** (`EmergenciaDerivacionScreen`, §13.3 y §13.4): caso, prioridad, responsable,
+  camas pedidas, vencimiento (una vencida se puede aceptar igual), la familia y sus necesidades.
+  «Aceptar y reservar camas» sigue a los integrantes (con camas de menos, lo avisa); «Rechazar»
+  pide el motivo (y qué pasó con «Otro») y confirma antes de mandar. Un 400 `plazas` se muestra
+  en la pantalla.
+- **Integrantes** (`EmergenciaIntegrantesScreen`, §13.5): «N de M confirmadas», «llegaron 8 sobre
+  7», una fila por persona (cama, parentesco, «Ficha incompleta») y «Agregar persona» (confirma
+  antes; idempotente: el uuid nace al tocar y el reintento manda el mismo). Con la familia alojada
+  o el caso cerrado, solo lectura.
+- **Próxima versión**: confirmar a una persona, la ficha, el mapa de camas, los cierres («Familia
+  alojada», «Cerrar con diferencia», «Cancelar ingreso», según el contador) y el ingreso sin
+  derivación (§13.6 a §13.10) ya tienen su botón, que hoy avisa «Próximamente».
+
+Reglas (`src/services/emergenciaLlegadas.js`):
+
+- **Con conexión, sin lectura guardada**: sin red (en web `navigator.onLine`, en nativo NetInfo)
+  no sale ningún pedido y la pantalla lo avisa. Lecturas cortan a los 20 s y acciones a los 30 s.
+- **Sesión fijada al abrir**: cada pantalla toma usuario y token al montarse; si la sesión ya es
+  otra no se manda nada, el pedido lleva ese token, y la respuesta que llega con otra sesión se
+  descarta (y la de una búsqueda o una lectura que vuelve después de salir de la pantalla, también).
+- **El estado es el del servidor**: ante un 409 se muestra `detail` y se recarga por
+  `estado_actual` (el 409 de M2 no trae `code`): `DERIVADO` vuelve a buscar sola por el DNI;
+  `INGRESO_EN_CURSO` va a los integrantes, y `ALOJADO`/`CERRADO` a los integrantes en lectura;
+  `EN_GESTION`, `NUEVO` u otro, a buscar de nuevo (el caso volvió a la mesa).
+- **Aceptar y rechazar no son idempotentes**: si un envío queda incierto (red, timeout, 5xx o
+  página del WAF) la pantalla ofrece «Reintentar»; si el reintento recibe 409 con el estado que
+  esa acción produce (`INGRESO_EN_CURSO` al aceptar, el caso en la mesa al rechazar), es «se
+  hizo» y se sigue. Un 400, 404 o 409 destraba el intento incierto; 429, 403 o sin red no.
+- Mientras se acepta, se rechaza o se agrega una persona no se puede volver. 404 vuelve a «mis
+  dispositivos» sin entrar directo; 403 `SIN_MODULO` vuelve a pedir el perfil y va al inicio.
 
 > **Despliegue:** `expo-image-manipulator` es un módulo nativo. Desde 1.2.13 el
 > Formulario 1 importa `src/utils/jpeg.js`: Android/iOS necesitan **un build nuevo**

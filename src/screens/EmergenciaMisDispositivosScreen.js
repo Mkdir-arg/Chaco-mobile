@@ -5,19 +5,48 @@ import { useTheme } from '../context/ThemeContext';
 import CustomButton from '../components/CustomButton';
 import { getMisDispositivos } from '../services/emergenciaApi';
 import { dispositivosConKits } from '../services/emergenciaKits';
+import { dispositivosQueAdmiten } from '../services/emergenciaLlegadas';
 import { esSinModulo } from '../services/sinModulo';
 import { statusTones } from '../theme/statusBadges';
 import { fontSizes, radii } from '../theme';
 
 export const SIN_DISPOSITIVOS = 'No recibís kits en ningún dispositivo. Pedí que te sumen al equipo de un dispositivo con un rol que reciba kits.';
 export const ERROR_SIN_RED = 'Sin conexión: no se pudo traer tus dispositivos. La recepción de kits necesita señal.';
+export const SIN_DISPOSITIVOS_LLEGADAS = 'No admitís familias en ningún dispositivo. Pedí que te sumen al equipo de un dispositivo con un rol que admita familias.';
+export const ERROR_SIN_RED_LLEGADAS = 'Sin conexión: no se pudo traer tus dispositivos. La llegada de familias necesita señal.';
 
-// M3-0 · «Recepción de kits»: los dispositivos donde el usuario recibe kits (§9, `recibe_kits`).
-// Con uno solo se entra directo a sus entregas (`onElegir(dispositivo, { unico: true })`), salvo con
+const plural = (n, uno, varios, ninguno) => (n === 1 ? `1 ${uno}` : `${n || ninguno} ${varios}`);
+
+// Lo que cambia entre M3 (`modo="kits"`, por defecto) y M2 (`modo="llegadas"`): qué filas entran
+// (§9, `recibe_kits` o `admite`), el detalle de cada una y los textos.
+const MODOS = {
+  kits: {
+    filtrar: dispositivosConKits,
+    detalle: (d) => plural(d.entregas_pendientes, 'entrega por recibir', 'entregas por recibir', 'Sin'),
+    destacado: (d) => d.entregas_pendientes > 0,
+    vacio: SIN_DISPOSITIVOS,
+    sinRed: ERROR_SIN_RED,
+    sinModulo: SIN_DISPOSITIVOS,
+  },
+  llegadas: {
+    filtrar: dispositivosQueAdmiten,
+    // El aviso de derivaciones nuevas es este contador (no hay notificaciones).
+    detalle: (d) => `${plural(d.derivaciones_pendientes, 'derivación por aceptar', 'derivaciones por aceptar', 'Sin')} · ${plural(d.plazas_libres, 'cama libre', 'camas libres', 'Sin')}`,
+    destacado: (d) => d.derivaciones_pendientes > 0,
+    vacio: SIN_DISPOSITIVOS_LLEGADAS,
+    sinRed: ERROR_SIN_RED_LLEGADAS,
+    sinModulo: SIN_DISPOSITIVOS_LLEGADAS,
+  },
+};
+
+// M3-0 («Recepción de kits», `modo="kits"`) y M2-0 («Llegada de familias», `modo="llegadas"`): los
+// dispositivos de «mis dispositivos» (§9) donde el usuario recibe kits o admite familias.
+// Con uno solo se entra directo (`onElegir(dispositivo, { unico: true })`), salvo con
 // `entrarDirecto={false}` (se volvió acá por un 404: entrar otra vez sería un bucle).
 // `recarga` cambia cuando se pide volver a consultar (botón de sincronizar del Banner).
 // `onSinModulo(mensaje)`: 403 SIN_MODULO.
-export default function EmergenciaMisDispositivosScreen({ onElegir, onSinModulo, recarga = 0, entrarDirecto = true }) {
+export default function EmergenciaMisDispositivosScreen({ onElegir, onSinModulo, recarga = 0, entrarDirecto = true, modo = 'kits' }) {
+  const config = MODOS[modo] || MODOS.kits;
   const { theme, typography } = useTheme();
   const [dispositivos, setDispositivos] = useState(null);
   const [error, setError] = useState('');
@@ -31,7 +60,7 @@ export default function EmergenciaMisDispositivosScreen({ onElegir, onSinModulo,
   const cargar = useCallback(async ({ silencioso = false } = {}) => {
     if (silencioso) setRefrescando(true);
     try {
-      const lista = dispositivosConKits(await getMisDispositivos());
+      const lista = config.filtrar(await getMisDispositivos());
       if (!montado.current) return;
       setDispositivos(lista);
       setError('');
@@ -42,17 +71,17 @@ export default function EmergenciaMisDispositivosScreen({ onElegir, onSinModulo,
     } catch (e) {
       if (!montado.current) return;
       if (esSinModulo(e)) {
-        onSinModulo?.(e?.payload?.detail || SIN_DISPOSITIVOS);
+        onSinModulo?.(e?.payload?.detail || config.sinModulo);
         return;
       }
-      setError(e?.network ? ERROR_SIN_RED : (e?.message || 'No se pudo traer tus dispositivos.'));
+      setError(e?.network ? config.sinRed : (e?.message || 'No se pudo traer tus dispositivos.'));
     } finally {
       if (montado.current) {
         setCargando(false);
         setRefrescando(false);
       }
     }
-  }, [onElegir, onSinModulo]);
+  }, [onElegir, onSinModulo, config]);
 
   useEffect(() => {
     montado.current = true;
@@ -78,8 +107,8 @@ export default function EmergenciaMisDispositivosScreen({ onElegir, onSinModulo,
         <CustomButton title="Reintentar" variant="secondary" iconLeft="refresh" onPress={() => cargar({ silencioso: true })} />
       ) : null}
       {(dispositivos || []).map((dispositivo) => {
-        const pendientes = dispositivo.entregas_pendientes;
-        const detalle = pendientes === 1 ? '1 entrega por recibir' : `${pendientes || 'Sin'} entregas por recibir`;
+        const detalle = config.detalle(dispositivo);
+        const destacado = config.destacado(dispositivo);
         return (
           <Pressable key={String(dispositivo.id)} accessibilityRole="button" accessibilityLabel={`${dispositivo.nombre}, ${detalle}`}
             onPress={() => onElegir?.(dispositivo, { unico: false })}
@@ -87,7 +116,7 @@ export default function EmergenciaMisDispositivosScreen({ onElegir, onSinModulo,
             <Ionicons name="business-outline" size={24} color={theme.colors.primary} accessible={false} importantForAccessibility="no" />
             <View style={styles.flex}>
               <Text style={[styles.nombre, { color: theme.colors.text, fontFamily: typography.bold }]}>{dispositivo.nombre}</Text>
-              <Text style={[styles.texto, { color: pendientes ? theme.colors.text : theme.colors.textMuted, fontFamily: typography.medium }]}>{detalle}</Text>
+              <Text style={[styles.texto, { color: destacado ? theme.colors.text : theme.colors.textMuted, fontFamily: typography.medium }]}>{detalle}</Text>
             </View>
             <Ionicons name="chevron-forward" size={20} color={theme.colors.textSoft} accessible={false} importantForAccessibility="no" />
           </Pressable>
@@ -96,7 +125,7 @@ export default function EmergenciaMisDispositivosScreen({ onElegir, onSinModulo,
       {dispositivos && !dispositivos.length ? (
         <View style={styles.centro}>
           <Ionicons name="file-tray-outline" size={30} color={theme.colors.textSoft} accessible={false} importantForAccessibility="no" />
-          <Text style={[styles.texto, styles.centrado, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{SIN_DISPOSITIVOS}</Text>
+          <Text style={[styles.texto, styles.centrado, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>{config.vacio}</Text>
         </View>
       ) : null}
     </ScrollView>

@@ -13,6 +13,9 @@ import EmergenciaFormulario1Screen from '../screens/EmergenciaFormulario1Screen'
 import EmergenciaMisDispositivosScreen from '../screens/EmergenciaMisDispositivosScreen';
 import EmergenciaEntregasScreen from '../screens/EmergenciaEntregasScreen';
 import EmergenciaRecibirEntregaScreen from '../screens/EmergenciaRecibirEntregaScreen';
+import EmergenciaLlegadaBuscarScreen from '../screens/EmergenciaLlegadaBuscarScreen';
+import EmergenciaDerivacionScreen from '../screens/EmergenciaDerivacionScreen';
+import EmergenciaIntegrantesScreen from '../screens/EmergenciaIntegrantesScreen';
 import {
   descartar, getBorradorEnCurso, getLocalidadesGuardadas, getPendingCount, getResumenPendientes, reintentar, syncPendientes,
 } from '../services/emergenciaCola';
@@ -27,9 +30,13 @@ const TITULOS = {
   kits_dispositivos: 'Recepción de kits',
   kits_entregas: 'Recepción de kits',
   kits_recibir: 'Recibir entrega',
+  llegadas_dispositivos: 'Llegada de familias',
+  llegadas_buscar: 'Llegada de familias',
+  llegadas_derivacion: 'Derivación',
+  llegadas_integrantes: 'Integrantes',
 };
 // Las vistas que se vuelven a pedir con el botón de sincronizar del Banner.
-const VISTAS_RECARGABLES = ['inicio', 'kits_dispositivos', 'kits_entregas'];
+const VISTAS_RECARGABLES = ['inicio', 'kits_dispositivos', 'kits_entregas', 'llegadas_dispositivos', 'llegadas_integrantes'];
 const VISTAS_M1 = ['envios', 'formulario'];
 const INICIO = { vista: 'inicio', uuid: null };
 
@@ -52,8 +59,9 @@ const escucharReconexion = (alVolver) => {
 };
 
 // Módulo Emergencia: inicio con los accesos del perfil -> M1 («Ingreso de familias»: mis envíos y
-// el Formulario 1) y M3 («Recepción de kits»: mis dispositivos -> entregas por recibir -> recibir,
-// sin cola y con conexión). Como Dispositivos, no importa nada de los otros módulos: comparte sesión, tema
+// el Formulario 1), M2 («Llegada de familias»: mis dispositivos -> buscar por DNI -> derivación ->
+// integrantes, con conexión) y M3 («Recepción de kits»: mis dispositivos -> entregas por recibir ->
+// recibir, sin cola y con conexión). Como Dispositivos, no importa nada de los otros módulos: comparte sesión, tema
 // y componentes. La cola de M1 se sincroniza solo mientras este árbol está montado.
 export default function EmergenciaApp({ onCambiarModulo }) {
   const { theme } = useTheme();
@@ -68,8 +76,9 @@ export default function EmergenciaApp({ onCambiarModulo }) {
   const [pendientes, setPendientes] = useState(0);
   const [syncTick, setSyncTick] = useState(0);
   const [enviadosTick, setEnviadosTick] = useState(0);
-  // Recepción de kits mandándose: no se sale de la pantalla hasta saber el resultado.
-  const [enviandoKits, setEnviandoKits] = useState(false);
+  // Una acción con conexión mandándose (recibir kits, aceptar o rechazar una derivación, agregar una
+  // persona): no se sale de la pantalla hasta saber el resultado.
+  const [enviando, setEnviando] = useState(false);
   // La pasada de fondo en curso (su promesa) y si hay una manual: la manual espera a la de fondo.
   const fondo = useRef(null);
   const manual = useRef(false);
@@ -215,9 +224,15 @@ export default function EmergenciaApp({ onCambiarModulo }) {
       setPantalla({ vista: 'kits_dispositivos' });
       return;
     }
-    showAlert('Próximamente',
-      `«${acceso.titulo}» va a estar disponible en una próxima versión de la app.`, [{ text: 'Entendido' }]);
+    if (acceso.clave === 'llegadas') {
+      setPantalla({ vista: 'llegadas_dispositivos' });
+      return;
+    }
+    proximamente(acceso.titulo);
   };
+
+  const proximamente = (titulo) => showAlert('Próximamente',
+    `«${titulo}» va a estar disponible en una próxima versión de la app.`, [{ text: 'Entendido' }]);
 
   // ---- M3 · Recepción de kits ----
   // Con un solo dispositivo se entra directo a sus entregas, y «volver» desde ahí va al inicio.
@@ -227,7 +242,7 @@ export default function EmergenciaApp({ onCambiarModulo }) {
   const verDispositivos = ({ sinEntrarDirecto = false } = {}) => setPantalla({ vista: 'kits_dispositivos', sinEntrarDirecto });
   // 403 SIN_MODULO: emergenciaApi ya volvió a pedir el perfil; el inicio muestra los accesos nuevos.
   const sinModulo = (mensaje) => {
-    setEnviandoKits(false);
+    setEnviando(false);
     showAlert('Sin permiso', mensaje, [{ text: 'Entendido' }]);
     setPantalla(INICIO);
   };
@@ -238,18 +253,54 @@ export default function EmergenciaApp({ onCambiarModulo }) {
   // 'recibida' y 'conflicto' (409 de estado) vuelven a las entregas, que se recargan al montarse;
   // 'no_encontrada' (404) vuelve a «mis dispositivos».
   const terminarRecepcion = (motivo) => {
-    setEnviandoKits(false);
+    setEnviando(false);
     if (motivo === 'no_encontrada') verDispositivos({ sinEntrarDirecto: true });
     else verEntregas();
   };
 
+  // ---- M2 · Llegada de familias ----
+  // `dispositivo` y `unico` viajan por todo el recorrido; `dni` es el último buscado (la recarga por
+  // estado y «volver» lo conservan). `n` cambia para volver a montar una pantalla (recargarla).
+  const verDispositivosLlegadas = ({ sinEntrarDirecto = false } = {}) => setPantalla({ vista: 'llegadas_dispositivos', sinEntrarDirecto });
+  const verBuscar = ({ dni = '', autoBuscar = false } = {}) => setPantalla((actual) => ({
+    vista: 'llegadas_buscar', dispositivo: actual.dispositivo, unico: actual.unico, dni, autoBuscar, n: (actual.n || 0) + 1,
+  }));
+  const elegirDispositivoLlegadas = (dispositivo, { unico = false } = {}) => setPantalla({ vista: 'llegadas_buscar', dispositivo, unico, dni: '', n: 1 });
+  const verDerivacion = (busqueda) => setPantalla((actual) => ({ ...actual, vista: 'llegadas_derivacion', busqueda, dni: busqueda.dni || actual.dni }));
+  const verIntegrantes = (caso, dni) => setPantalla((actual) => ({
+    ...actual, vista: 'llegadas_integrantes', caso, dni: dni ?? actual.dni, n: (actual.n || 0) + 1,
+  }));
+  const llegadaNoEncontrada = () => {
+    setEnviando(false);
+    showToast({ type: 'warning', message: 'Eso ya no está entre lo tuyo. Se recargó la lista de tus dispositivos.' });
+    verDispositivosLlegadas({ sinEntrarDirecto: true });
+  };
+  // El router de §13.1: ante un 409 se muestra `detail` y se recarga la pantalla de `estado_actual`.
+  // DERIVADO vuelve a buscar sola por el DNI (trae la derivación vigente); INGRESO_EN_CURSO, ALOJADO y
+  // CERRADO, a los integrantes (en lectura si ya está alojada); EN_GESTION, NUEVO y cualquier otro,
+  // a buscar de nuevo: el caso volvió a la mesa.
+  const recargarPorEstado = (clasificacion) => {
+    setEnviando(false);
+    showAlert('El caso cambió', clasificacion.mensaje, [{ text: 'Entendido' }]);
+    setPantalla((actual) => {
+      const caso = actual.caso || actual.busqueda?.derivacion?.caso || null;
+      const base = { dispositivo: actual.dispositivo, unico: actual.unico, dni: actual.dni || '', n: (actual.n || 0) + 1 };
+      if (clasificacion.destino === 'integrantes' && caso) return { ...base, vista: 'llegadas_integrantes', caso };
+      if (clasificacion.destino === 'derivacion' && base.dni) return { ...base, vista: 'llegadas_buscar', autoBuscar: true };
+      return { ...base, vista: 'llegadas_buscar', autoBuscar: false };
+    });
+  };
+
   const { vista, uuid } = pantalla;
-  const titulo = vista === 'inicio' ? `Hola, ${displayName}` : (vista === 'kits_entregas' && pantalla.dispositivo?.nombre) || TITULOS[vista];
+  const titulo = vista === 'inicio' ? `Hola, ${displayName}`
+    : (['kits_entregas', 'llegadas_buscar'].includes(vista) && pantalla.dispositivo?.nombre) || TITULOS[vista];
   const volver = () => {
-    if (enviandoKits) return;
+    if (enviando) return;
     if (vista === 'formulario') setPantalla({ vista: 'envios', uuid: null });
     else if (vista === 'kits_recibir') verEntregas();
     else if (vista === 'kits_entregas' && !pantalla.unico) verDispositivos();
+    else if (vista === 'llegadas_derivacion' || vista === 'llegadas_integrantes') verBuscar({ dni: pantalla.dni || '' });
+    else if (vista === 'llegadas_buscar' && !pantalla.unico) verDispositivosLlegadas();
     else setPantalla(INICIO);
     refrescarEstado();
   };
@@ -260,7 +311,7 @@ export default function EmergenciaApp({ onCambiarModulo }) {
   return (
     <>
       <Banner title={titulo} syncStatus={syncStatus} syncPendingCount={pendientes}
-        onSyncPress={sincronizarAhora} showBackButton={vista !== 'inicio' && !enviandoKits} onBackPress={volver} />
+        onSyncPress={sincronizarAhora} showBackButton={vista !== 'inicio' && !enviando} onBackPress={volver} />
       <View style={{ flex: 1, backgroundColor: theme.colors.background }}>
         {vista === 'inicio' ? (
           <EmergenciaInicioScreen onAbrir={abrir} recarga={recarga} onCargando={setCargandoPerfil} />
@@ -286,7 +337,27 @@ export default function EmergenciaApp({ onCambiarModulo }) {
         {vista === 'kits_recibir' ? (
           <EmergenciaRecibirEntregaScreen key={String(pantalla.entrega?.id)} entrega={pantalla.entrega}
             dispositivoId={pantalla.dispositivo?.id ?? null} onTerminar={terminarRecepcion} onSinModulo={sinModulo}
-            onEnviando={setEnviandoKits} />
+            onEnviando={setEnviando} />
+        ) : null}
+        {vista === 'llegadas_dispositivos' ? (
+          <EmergenciaMisDispositivosScreen key="llegadas" modo="llegadas" recarga={recarga} onElegir={elegirDispositivoLlegadas}
+            onSinModulo={sinModulo} entrarDirecto={!pantalla.sinEntrarDirecto} />
+        ) : null}
+        {vista === 'llegadas_buscar' ? (
+          <EmergenciaLlegadaBuscarScreen key={`buscar-${pantalla.dispositivo?.id}-${pantalla.n}`} dispositivo={pantalla.dispositivo}
+            dniInicial={pantalla.dni} autoBuscar={!!pantalla.autoBuscar} onDerivacion={verDerivacion} onIntegrantes={verIntegrantes}
+            onNoEncontrado={llegadaNoEncontrada} onSinModulo={sinModulo} onProximamente={proximamente} />
+        ) : null}
+        {vista === 'llegadas_derivacion' ? (
+          <EmergenciaDerivacionScreen key={`derivacion-${pantalla.busqueda?.derivacion?.id}`} busqueda={pantalla.busqueda}
+            onAceptada={(caso) => { setEnviando(false); verIntegrantes(caso); }}
+            onRechazada={() => { setEnviando(false); verBuscar(); }}
+            onConflicto={recargarPorEstado} onNoEncontrado={llegadaNoEncontrada} onSinModulo={sinModulo} onEnviando={setEnviando} />
+        ) : null}
+        {vista === 'llegadas_integrantes' ? (
+          <EmergenciaIntegrantesScreen key={`integrantes-${pantalla.caso?.id}-${pantalla.n}`} caso={pantalla.caso} recarga={recarga}
+            onConflicto={recargarPorEstado} onNoEncontrado={llegadaNoEncontrada} onSinModulo={sinModulo}
+            onProximamente={proximamente} onEnviando={setEnviando} />
         ) : null}
       </View>
       {vista === 'inicio' ? (
