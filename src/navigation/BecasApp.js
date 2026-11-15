@@ -12,7 +12,6 @@ import SettingsPanel from '../components/SettingsPanel';
 import AvisosBandeja from '../components/AvisosBandeja';
 import useAvisos from '../hooks/useAvisos';
 import PageTransition from '../components/PageTransition';
-import SkeletonLoader from '../components/SkeletonLoader';
 import RelevamientosScreen from '../screens/RelevamientosScreen';
 import RelevamientoDetailScreen from '../screens/RelevamientoDetailScreen';
 import relevamientoService from '../services/relevamientoService';
@@ -28,7 +27,6 @@ export default function BecasApp({ onCambiarModulo }) {
   const { user, logout } = useAuth();
   const displayName = user?.nombre || user?.username || 'Usuario';
 
-  const [isPageLoading, setIsPageLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('Inicio');
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [selectedRelevamientoId, setSelectedRelevamientoId] = useState(null);
@@ -117,38 +115,10 @@ export default function BecasApp({ onCambiarModulo }) {
 
   const handleTabPress = (tab) => {
     if (tab === activeTab) return;
-    setIsPageLoading(true);
     setActiveTab(tab);
-    // Simulate content loading for smooth feel
-    setTimeout(() => {
-      setIsPageLoading(false);
-    }, 800);
   };
 
   const renderScreen = () => {
-    if (isPageLoading) {
-      return (
-        <View style={{ flex: 1, padding: 20 }}>
-          {/* Header Skeleton */}
-          <SkeletonLoader height={40} width="60%" borderRadius={10} style={{ marginBottom: 30 }} delay={0} />
-
-          {/* Content Block 1 */}
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 }}>
-            <SkeletonLoader height={120} width="48%" borderRadius={20} delay={100} />
-            <SkeletonLoader height={120} width="48%" borderRadius={20} delay={150} />
-          </View>
-
-          {/* Content Block 2 */}
-          <SkeletonLoader height={180} borderRadius={25} style={{ marginBottom: 20 }} delay={200} />
-
-          {/* Content Block 3 (Staggered list) */}
-          <SkeletonLoader height={60} borderRadius={15} style={{ marginBottom: 12 }} delay={250} />
-          <SkeletonLoader height={60} borderRadius={15} style={{ marginBottom: 12 }} delay={300} />
-          <SkeletonLoader height={60} borderRadius={15} delay={350} />
-        </View>
-      );
-    }
-
     switch (activeTab) {
       case 'Relevamientos':
         return (
