@@ -736,3 +736,36 @@ test('MINOR 6: sincronizar en «completar» vuelve a leer a la persona y deja lo
     assert.deepEqual(ui.calls.filter(c => c.method === 'PATCH')[0].body, {ficha: {educacion: {escuela: 'N 12'}}});
   } finally { await ui.close(); }
 });
+
+test('MINOR B (PR #30): salir sin elegir no pierde el conflicto; lo tipeado mientras se relee tampoco', async () => {
+  let ficha = VIEJA;
+  const env = await entorno(rutasDe({persona: () => response(200, CONFIRMADA_CON(ficha))}));
+  const primera = await montarFicha(null, {env});
+  await primera.escribir('Ocupación', 'Pintor');
+  await primera.close();
+  ficha = {...VIEJA, trabajo: {ocupacion: 'Albañil'}};
+  const segunda = await montarFicha(null, {env});
+  assert.ok(segunda.labels().some(t => t.startsWith('Mientras tanto se guardaron cambios en Trabajo.')));
+  await segunda.escribir('Escuela', 'N 12');
+  await renderer.act(async () => { await esperar(600); });
+  await segunda.close();
+  const tercera = await montarFicha(null, {env});
+  try {
+    assert.ok(tercera.labels().some(t => t.startsWith('Mientras tanto se guardaron cambios en Trabajo.')), 'el conflicto sigue');
+    await tercera.pressButton('Recuperar lo mío');
+    assert.equal(tercera.input('Ocupación').props.value, 'Pintor');
+    assert.equal(tercera.input('Escuela').props.value, 'N 12');
+  } finally { await tercera.close(); }
+  // Sincronizar: lo que se tipea mientras el GET está en vuelo no se pierde.
+  let soltar = null;
+  const env2 = await entorno((call) => (call.url.endsWith('/integrantes/2/') && soltar === undefined
+    ? new Promise((resolve) => { soltar = () => resolve(response(200, CONFIRMADA_CON(VIEJA))); }) : rutasDe({persona: CONFIRMADA_CON(VIEJA)})(call)));
+  const ui = await montarFicha(null, {env: env2});
+  try {
+    soltar = undefined;
+    await ui.rerender({recarga: 1});
+    await ui.escribir('Escuela', 'Tipeado en el medio');
+    await renderer.act(async () => { soltar(); await esperar(10); });
+    assert.equal(ui.input('Escuela').props.value, 'Tipeado en el medio');
+  } finally { await ui.close(); }
+});

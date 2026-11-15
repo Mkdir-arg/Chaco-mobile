@@ -80,6 +80,8 @@ export default function EmergenciaFichaScreen({
   const [erroresServidor, setErroresServidor] = useState({});
   const [recuperado, setRecuperado] = useState(false);
   const [conflictos, setConflictos] = useState({});
+  const conflictosRef = useRef({});
+  conflictosRef.current = conflictos;
   const montado = useRef(true);
   const planoRef = useRef(null);
   planoRef.current = plano;
@@ -154,7 +156,8 @@ export default function EmergenciaFichaScreen({
   };
 
   // `enMemoria`: al releer (sincronizar del Banner en modo completar) lo tocado en pantalla se trata como
-  // un borrador: se pone sobre la ficha nueva del servidor, con los mismos conflictos.
+  // un borrador: se pone sobre la ficha nueva del servidor, con los mismos conflictos. Es una función
+  // que se evalúa cuando llega la respuesta: lo tipeado mientras se esperaba el GET también cuenta.
   const cargar = async ({ enMemoria = null } = {}) => {
     const base = sesionRef.current;
     if (!base) return;
@@ -172,7 +175,7 @@ export default function EmergenciaFichaScreen({
       } else {
         setIncierto(!!await confirmarPendiente(base, casoId, n).catch(() => null));
       }
-      if (enMemoria) borrador = enMemoria;
+      if (enMemoria) borrador = enMemoria();
       else if (!(caso?.estado === 'CERRADO' || (modoLeido === 'confirmar' && esSoloLectura(caso)))) {
         borrador = await leerBorradorFicha(base, casoId, n, modoLeido).catch(() => null);
       }
@@ -238,10 +241,7 @@ export default function EmergenciaFichaScreen({
     if (modo === 'confirmar' && !lectura) pedirMapa(plazaId);
     else if (modo === 'completar') {
       // Lo tocado y los conflictos sin resolver viajan como un borrador sobre la ficha nueva.
-      const tocadas = borradorDeCompletar(planoRef.current, personaRef.current?.ficha);
-      cargar({ enMemoria: { secciones: { ...tocadas.secciones, ...conflictos },
-        // Un conflicto sin resolver sigue siendo conflicto: su base no coincide con nada.
-        base: { ...tocadas.base, ...Object.fromEntries(Object.keys(conflictos).map((k) => [k, { conflicto_sin_resolver: true }])) } } });
+      cargar({ enMemoria: () => borradorDeCompletar(planoRef.current, personaRef.current?.ficha, conflictosRef.current) });
     }
   }, [recarga]);
 
@@ -250,11 +250,12 @@ export default function EmergenciaFichaScreen({
     if (!plano || !modo || !tocado.current || terminado.current || lectura || !sesionRef.current) return undefined;
     // En «completar» solo lo tocado respecto de la ficha del servidor, con su base (MAJOR 1 de la
     // revisión): lo no tocado nunca se manda desde un borrador.
-    const datos = modo === 'completar' ? { modo, ...borradorDeCompletar(plano, persona?.ficha) } : { modo, plano, plazaId };
+    // Los conflictos sin resolver también se guardan (siguen siendo conflicto al volver).
+    const datos = modo === 'completar' ? { modo, ...borradorDeCompletar(plano, persona?.ficha, conflictos) } : { modo, plano, plazaId };
     ultimo.current = { sesion: sesionRef.current, datos };
     const timer = setTimeout(() => guardarBorradorFicha(sesionRef.current, casoId, n, datos).catch(() => {}), AUTOGUARDADO_MS);
     return () => clearTimeout(timer);
-  }, [plano, plazaId]);
+  }, [plano, plazaId, conflictos]);
   useEffect(() => () => {
     const pendiente = ultimo.current;
     if (!terminado.current && pendiente) guardarBorradorFicha(pendiente.sesion, casoId, n, pendiente.datos).catch(() => {});

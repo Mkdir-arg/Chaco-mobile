@@ -10,7 +10,17 @@ import {
 } from '../services/becasApi';
 import { subscribeSinModulo } from '../services/sinModulo';
 import { olvidarPerfilGuardado } from '../services/emergenciaPerfil';
-import { limpiarDatosLocalesEmergencia } from '../services/emergenciaLimpieza';
+import { depurarBorradoresFicha, limpiarDatosLocalesEmergencia } from '../services/emergenciaLimpieza';
+
+// Los borradores de la ficha de Emergencia tienen datos personales y de salud: no sobreviven a la
+// sesión (logout, sesión vencida o sin el módulo). Si falla, el resto sigue igual.
+const limpiarEmergencia = async () => {
+  try {
+    await limpiarDatosLocalesEmergencia();
+  } catch {
+    // Al abrir el módulo o al entrar se vuelven a depurar.
+  }
+};
 import { moduloInicial } from '../services/modulos';
 
 const AuthContext = createContext({});
@@ -27,6 +37,7 @@ export const AuthProvider = ({ children }) => {
     let sessionExpired = false;
     const unsubscribe = subscribeBecasSessionExpired(() => {
       sessionExpired = true;
+      limpiarEmergencia();
       if (mounted) {
         setUser(null);
         setModuloActivoState(null);
@@ -36,6 +47,7 @@ export const AuthProvider = ({ children }) => {
     const unsubscribeSinModulo = subscribeSinModulo(async (modulo, tokenDelPedido, detalle) => {
       try {
         const next = await quitarModuloLocal(modulo, tokenDelPedido);
+        if (next && (modulo === 'emergencia' || !next.modulos.length)) await limpiarEmergencia();
         if (!mounted || !next) return;
         // Sin módulos, quitarModuloLocal ya borró la sesión guardada.
         if (!next.modulos.length) {
@@ -75,6 +87,8 @@ export const AuthProvider = ({ children }) => {
   const login = async (username, password) => {
     try {
       const nextUser = await loginBecas({ username, password });
+      // Los borradores de otro usuario (o vencidos) que hayan quedado no esperan a abrir Emergencia.
+      depurarBorradoresFicha(nextUser?.id).catch(() => {});
       setAvisoSesion(null);
       setUser(nextUser);
       setModuloActivoState(moduloInicial(nextUser.modulos, null));
@@ -92,12 +106,7 @@ export const AuthProvider = ({ children }) => {
     const ownerId = user?.id;
     await clearBecasSession();
     await olvidarPerfilGuardado(ownerId);
-    // Los borradores de la ficha de Emergencia tienen datos personales y de salud: no sobreviven a la sesión.
-    try {
-      await limpiarDatosLocalesEmergencia();
-    } catch {
-      // Si falla, el logout sigue; al abrir el módulo con otro usuario se vuelven a depurar.
-    }
+    await limpiarEmergencia();
     setAvisoSesion(null);
     setUser(null);
     setModuloActivoState(null);

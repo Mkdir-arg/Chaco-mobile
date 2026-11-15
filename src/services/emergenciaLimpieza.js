@@ -8,18 +8,28 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 export const PREFIJO_BORRADOR_FICHA = 'emergencia_llegadas_ficha:';
 export const VIDA_BORRADOR_MS = 48 * 60 * 60 * 1000;
 
+// La cola de escrituras de lo que Emergencia guarda por usuario en AsyncStorage (los borradores y los
+// uuid pendientes de `emergenciaLlegadas`, y la depuración de acá): de a una, en orden, así una
+// lectura-modificación-escritura no pisa a otra.
+let cola = Promise.resolve();
+export const enOrdenGuardado = (tarea) => {
+  const resultado = cola.then(tarea, tarea);
+  cola = resultado.catch(() => {});
+  return resultado;
+};
+
 const claves = async () => {
   const todas = typeof AsyncStorage.getAllKeys === 'function' ? await AsyncStorage.getAllKeys() : [];
   return (todas || []).filter((clave) => typeof clave === 'string' && clave.startsWith(PREFIJO_BORRADOR_FICHA));
 };
 
 // Logout: se borran los borradores de ficha de todos los usuarios del teléfono.
-export const limpiarDatosLocalesEmergencia = async () => {
+export const limpiarDatosLocalesEmergencia = () => enOrdenGuardado(async () => {
   for (const clave of await claves()) await AsyncStorage.removeItem(clave);
-};
+});
 
 // Al abrir el módulo: los de otro usuario se borran enteros, y de los del actual, los vencidos.
-export const depurarBorradoresFicha = async (ownerActual, ahora = Date.now()) => {
+export const depurarBorradoresFicha = (ownerActual, ahora = Date.now()) => enOrdenGuardado(async () => {
   const owner = ownerActual == null ? null : String(ownerActual);
   for (const clave of await claves()) {
     if (clave !== `${PREFIJO_BORRADOR_FICHA}${owner}`) {
@@ -37,4 +47,4 @@ export const depurarBorradoresFicha = async (ownerActual, ahora = Date.now()) =>
     if (Object.keys(vigentes).length) await AsyncStorage.setItem(clave, JSON.stringify(vigentes));
     else await AsyncStorage.removeItem(clave);
   }
-};
+});

@@ -10,7 +10,7 @@ import { erroresDelServidor } from '../utils/emergencia';
 import { cleanDigits, isValidDni } from '../utils/dni';
 import { CAMPOS_FICHA, SECCIONES_OPCIONALES, fichaDesdePlano } from '../utils/fichaEmergencia';
 import { hayConexion } from './emergenciaKits';
-import { PREFIJO_BORRADOR_FICHA, VIDA_BORRADOR_MS } from './emergenciaLimpieza';
+import { PREFIJO_BORRADOR_FICHA, VIDA_BORRADOR_MS, enOrdenGuardado } from './emergenciaLimpieza';
 
 // La red, como M3: en web `navigator.onLine`, en nativo NetInfo.
 export { escucharRed, hayConexion } from './emergenciaKits';
@@ -589,12 +589,6 @@ const CAMPOS_PERSONA = [...CAMPOS_FICHA, 'plaza', ...SECCIONES_OPCIONALES.map((s
 const CLAVE_CONFIRMAR = 'emergencia_llegadas_confirmar';
 const claveConfirmar = (owner) => `${CLAVE_CONFIRMAR}:${owner}`;
 const idPersona = (casoId, n) => `${casoId}:${n}`;
-let colaGuardado = Promise.resolve();
-const enOrdenGuardado = (tarea) => {
-  const resultado = colaGuardado.then(tarea, tarea);
-  colaGuardado = resultado.catch(() => {});
-  return resultado;
-};
 const leerMapa = async (clave) => {
   try {
     const crudo = await AsyncStorage.getItem(clave);

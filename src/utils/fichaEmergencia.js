@@ -270,12 +270,16 @@ export const seccionesCambiadas = (plano, guardada) => {
 // empezó (`base`), no el plano entero: al recuperarlo se ponen esas secciones sobre la ficha que el
 // servidor tiene AHORA, así una sección que otra guardia guardó en el medio y acá no se tocó no
 // «cambia» ni se manda (el back reemplaza la sección entera).
-export const borradorDeCompletar = (plano, fichaBase) => {
+// `conflictos` ({seccion: lo de la guardia}) son los que se recuperaron y todavía no se eligió qué
+// hacer: viajan en el borrador con una base que nunca coincide, así siguen siendo conflicto al volver.
+export const BASE_EN_CONFLICTO = { conflicto_sin_resolver: true };
+export const borradorDeCompletar = (plano, fichaBase, conflictos = {}) => {
   const base = fichaAPlano(fichaBase);
-  const tocadas = seccionesCambiadas(plano, fichaBase);
+  const tocadas = seccionesCambiadas(plano, fichaBase).filter((s) => !(s in (conflictos || {})));
+  const pendientes = Object.keys(conflictos || {}).filter((s) => SECCIONES_OPCIONALES.includes(s));
   return {
-    secciones: Object.fromEntries(tocadas.map((s) => [s, seccionDesdePlano(plano, s)])),
-    base: Object.fromEntries(tocadas.map((s) => [s, seccionDesdePlano(base, s)])),
+    secciones: Object.fromEntries([...tocadas.map((s) => [s, seccionDesdePlano(plano, s)]), ...pendientes.map((s) => [s, conflictos[s]])]),
+    base: Object.fromEntries([...tocadas.map((s) => [s, seccionDesdePlano(base, s)]), ...pendientes.map((s) => [s, BASE_EN_CONFLICTO])]),
   };
 };
 

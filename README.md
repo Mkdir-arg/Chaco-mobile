@@ -391,8 +391,10 @@ Reglas (`src/services/emergenciaLlegadas.js`, `src/utils/fichaEmergencia.js`):
   al recuperarlo se ponen sobre la ficha de ahora, y si otra guardia guardó una de esas secciones en
   el medio no se pone sola: se avisa y se elige («Recuperar lo mío» o «Quedarme con lo guardado»).
   «Descartar lo recuperado» vuelve a lo del servidor. Se borra al confirmar o guardar, ante un 404,
-  409 o 403, cuando la persona ya figura confirmada, en el **logout** (`emergenciaLimpieza`, desde
-  `AuthContext`) y al abrir el módulo los de otro usuario y los vencidos (48 h).
+  409 o 403, cuando la persona ya figura confirmada, en el **logout**, cuando la sesión vence (401) y
+  cuando el usuario pierde Emergencia (`emergenciaLimpieza`, desde `AuthContext`), y al entrar y al
+  abrir el módulo, los de otro usuario y los vencidos (48 h). Un conflicto sin resolver también se
+  guarda: al volver sigue siendo conflicto.
 - Un campo que depende de otra respuesta (cuál parentesco, la medicación crítica, el detalle de las
   alergias) no se manda si esa respuesta no lo abre, y se limpia al cambiarla.
 

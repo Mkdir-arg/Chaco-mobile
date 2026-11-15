@@ -358,3 +358,18 @@ test('MAJOR 2: el logout borra los borradores de ficha de todos (no los uuid pen
   igual([...r.legacy.keys()].filter(k => k.startsWith('emergencia_llegadas_ficha:')), []);
   assert.ok(r.legacy.has('emergencia_llegadas_confirmar:7'), 'el uuid pendiente no tiene datos de nadie y evita duplicar');
 });
+
+test('MINOR B (PR #30): el autoguardado con conflictos sin resolver los conserva; al volver siguen siendo conflicto', async () => {
+  const {f} = await preparar();
+  // repro2: la guardia tocó `trabajo` y `educacion`; en el medio otra guardó `trabajo`.
+  const base = {version: 1};
+  const mio = f.borradorDeCompletar({...f.fichaAPlano(base), ocupacion: 'Pintor', escuela: 'N 12'}, base);
+  const servidor = {version: 1, trabajo: {ocupacion: 'Albañil'}};
+  const rec = f.recuperarSobre(servidor, mio);
+  igual(rec.conflictos, {trabajo: {ocupacion: 'Pintor'}});
+  const guardado = f.borradorDeCompletar(rec.plano, servidor, rec.conflictos);
+  igual(guardado.secciones, {educacion: {escuela: 'N 12'}, trabajo: {ocupacion: 'Pintor'}}, 'el conflicto no se pierde');
+  const otra = f.recuperarSobre(servidor, guardado);
+  igual(otra.conflictos, {trabajo: {ocupacion: 'Pintor'}}, 'y vuelve como conflicto, aunque el servidor no haya cambiado de nuevo');
+  igual(otra.plano.escuela, 'N 12');
+});
