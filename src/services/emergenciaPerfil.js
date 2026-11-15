@@ -94,24 +94,9 @@ export const olvidarPerfilGuardado = async (owner) => {
   }
 };
 
-const errorPorTiempo = () => Object.assign(
-  new Error('El servidor tardó demasiado en responder.'), { network: true, timeout: true });
-
-// Corta el pedido a los LIMITES.perfilMs. Además de abortar el fetch, la carrera libera al que
-// espera aunque el fetch no respete la señal.
-const pedirConLimite = (path) => {
-  const controller = typeof AbortController === 'function' ? new AbortController() : null;
-  let timer;
-  const limite = new Promise((_, reject) => {
-    timer = setTimeout(() => {
-      controller?.abort();
-      reject(errorPorTiempo());
-    }, LIMITES.perfilMs);
-  });
-  const pedido = becasRequest(path, controller ? { signal: controller.signal } : {})
-    .catch((error) => { throw controller?.signal.aborted ? errorPorTiempo() : error; });
-  return Promise.race([pedido, limite]).finally(() => clearTimeout(timer));
-};
+// Corta el pedido a los LIMITES.perfilMs: becasRequest aborta el fetch y sale con un error
+// `network` + `timeout`, aunque el fetch no respete la señal.
+const pedirConLimite = (path) => becasRequest(path, { timeoutMs: LIMITES.perfilMs });
 
 // La respuesta de un pedido hecho con otra sesión no es de quien está ahora: no se guarda, no se
 // avisa y no se usa lo guardado.

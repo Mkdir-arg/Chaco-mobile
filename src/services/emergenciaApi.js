@@ -183,35 +183,21 @@ export const recibirEntrega = async (entregaId, { uuid_cliente, cantidades = {},
 };
 
 // ---- M2 · Llegada de familias (§13.1 a §13.10) ----
-// Todo M2 es JSON y con conexión. becasRequest relee el token en cada pedido y no corta por tiempo,
-// así que acá:
+// Todo M2 es JSON y con conexión. Acá:
 // - `token` es el de la sesión con la que se abrió la pantalla: becasRequest lo usa tal cual (no relee
 //   la sesión), así un pedido de la persona anterior nunca sale con el token de la siguiente, y su 401
 //   invalida solo si ese token sigue vigente. La respuesta que llega con otra sesión ya abierta la
 //   descarta emergenciaLlegadas (`obsoleto`).
-// - `timeoutMs` aborta el fetch y sale con un error `network` + `timeout`, como uploadMultipart.
+// - `timeoutMs` aborta el fetch y sale con un error `network` + `timeout` (lo hace becasRequest);
+//   sin él rige el límite por defecto de becasRequest.
 export const errorObsoleto = () => Object.assign(new Error('La sesión cambió: este pedido era de otra sesión.'), { obsoleto: true });
-const errorPorTiempo = () => Object.assign(new Error('El servidor tardó demasiado en responder.'), { network: true, timeout: true });
 
-const pedirJson = async (path, { method = 'GET', body, token = null, timeoutMs = null } = {}) => {
-  const controller = Number(timeoutMs) > 0 && typeof AbortController === 'function' ? new AbortController() : null;
-  const pedido = becasRequest(path, {
-    method,
-    ...(body !== undefined ? { body } : {}),
-    ...(token ? { token } : {}),
-    ...(controller ? { signal: controller.signal } : {}),
-  });
-  if (!(Number(timeoutMs) > 0)) return pedido;
-  let timer;
-  const limite = new Promise((_, reject) => {
-    timer = setTimeout(() => {
-      controller?.abort();
-      reject(errorPorTiempo());
-    }, Number(timeoutMs));
-  });
-  const conCorte = pedido.catch((error) => { throw controller?.signal.aborted ? errorPorTiempo() : error; });
-  return Promise.race([conCorte, limite]).finally(() => clearTimeout(timer));
-};
+const pedirJson = async (path, { method = 'GET', body, token = null, timeoutMs = null } = {}) => becasRequest(path, {
+  method,
+  ...(body !== undefined ? { body } : {}),
+  ...(token ? { token } : {}),
+  ...(Number(timeoutMs) > 0 ? { timeoutMs: Number(timeoutMs) } : {}),
+});
 
 // §13.2. `dni`: solo dígitos (el back normaliza igual). 429 trae `retryAfter`.
 export const buscarFamilia = (dispositivoId, dni, opciones = {}) => conVerificacion(
