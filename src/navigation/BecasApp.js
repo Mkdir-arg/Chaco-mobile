@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { View } from 'react-native';
 import { escucharReconexion } from '../services/conectividad';
+import { repetirMientrasActiva } from '../services/sincronizacionPeriodica';
 
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -91,10 +92,10 @@ export default function BecasApp({ onCambiarModulo }) {
   useEffect(() => {
     runBackgroundSync();
     refreshNewRelevamientosCount();
-    const timer = setInterval(async () => {
+    const dejarDeRepetir = repetirMientrasActiva(async () => {
       await runBackgroundSync();
       await refreshNewRelevamientosCount();
-    }, 8000);
+    });
     const unsubscribeNetInfo = escucharReconexion(() => {
       if (reconnectDebounceRef.current) {
         clearTimeout(reconnectDebounceRef.current);
@@ -106,7 +107,7 @@ export default function BecasApp({ onCambiarModulo }) {
     });
 
     return () => {
-      clearInterval(timer);
+      dejarDeRepetir();
       unsubscribeNetInfo?.();
       if (reconnectDebounceRef.current) {
         clearTimeout(reconnectDebounceRef.current);
