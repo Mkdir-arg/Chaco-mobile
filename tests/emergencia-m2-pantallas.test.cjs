@@ -190,7 +190,7 @@ async function montarBuscar(rutas, {online = true, props = {}, antes} = {}) {
   const ui = await render(Screen, {dispositivo: {id: 7, nombre: 'Club Sarmiento'},
     onDerivacion: b => eventos.push(['derivacion', plano(b)]), onIntegrantes: (c, dni) => eventos.push(['integrantes', plano(c), dni]),
     onNoEncontrado: () => eventos.push(['no_encontrado']), onSinModulo: m => eventos.push(['sin_modulo', m]),
-    onProximamente: t => eventos.push(['proximamente', t]), ...props});
+    onSinDerivacion: (a, b) => eventos.push(['sin_derivacion', a, b.plazas_libres]), ...props});
   return {...env, ...ui, eventos};
 }
 
@@ -211,7 +211,7 @@ test('Buscar: DERIVACION PENDIENTE abre la derivación; ACEPTADA va a los integr
   } finally { await ui.close(); }
 });
 
-test('Buscar: SIN_DERIVACION muestra el mensaje y ofrece «Ingresar igual» solo con camas; «Avisar a la mesa» siempre (próximamente)', async () => {
+test('Buscar: SIN_DERIVACION muestra el mensaje y ofrece «Ingresar igual» solo con camas; «Avisar a la mesa» siempre', async () => {
   let resultado = SIN_DERIVACION;
   const ui = await montarBuscar(() => response(200, resultado));
   try {
@@ -221,7 +221,7 @@ test('Buscar: SIN_DERIVACION muestra el mensaje y ofrece «Ingresar igual» solo
     assert.ok(ui.labels().includes('3 camas libres en este dispositivo'));
     await ui.pressButton('Ingresar igual');
     await ui.pressButton('Avisar a la mesa');
-    assert.deepEqual(ui.eventos, [['proximamente', 'Ingresar igual'], ['proximamente', 'Avisar a la mesa']]);
+    assert.deepEqual(ui.eventos, [['sin_derivacion', 'ingresar', 3], ['sin_derivacion', 'avisar', 3]]);
     resultado = {...SIN_DERIVACION, plazas_libres: 0, mensaje: 'No hay una derivación para este DNI en tu dispositivo.'};
     await ui.pressButton('Buscar');
     assert.ok(!ui.button('Ingresar igual'), 'sin camas no se ofrece ingresar');
@@ -572,7 +572,7 @@ async function montarIntegrantes(rutas, {online = true, caso = CASO} = {}) {
   const Screen = loadScreen('src/screens/EmergenciaIntegrantesScreen.js', env.mocks);
   const ui = await render(Screen, {caso, onConflicto: c => eventos.push(['conflicto', plano(c)]),
     onNoEncontrado: () => eventos.push(['no_encontrado']), onSinModulo: m => eventos.push(['sin_modulo', m]),
-    onProximamente: t => eventos.push(['proximamente', t]), onEnviando: v => enviando.push(v),
+    onCerrar: (t, d) => eventos.push(['cerrar', t, d.confirmadas]), onEnviando: v => enviando.push(v),
     onAbrirPersona: (i, c) => eventos.push(['persona', i.n, c?.estado])});
   return {...env, ...ui, eventos, enviando};
 }
@@ -592,7 +592,7 @@ test('Integrantes: contador, filas (confirmada con cama y ficha incompleta, sin 
     await ui.press('2. Persona 2. Sin confirmar');
     await ui.press('1. Benítez, Rosa. Confirmada. DNI 30111222 · Cama B-12 (Pabellón B) · Jefe/a de hogar. Ficha incompleta');
     await ui.pressButton('Cerrar con diferencia');
-    assert.deepEqual(ui.eventos, [['persona', 2, 'INGRESO_EN_CURSO'], ['persona', 1, 'INGRESO_EN_CURSO'], ['proximamente', 'Cerrar con diferencia']]);
+    assert.deepEqual(ui.eventos, [['persona', 2, 'INGRESO_EN_CURSO'], ['persona', 1, 'INGRESO_EN_CURSO'], ['cerrar', 'diferencia', 1]]);
   } finally { await ui.close(); }
 });
 
@@ -650,7 +650,7 @@ test('Integrantes: «Agregar persona» sin resultado sobrevive a salir y re-entr
     return response(200, INTEGRANTES);
   });
   const Screen = loadScreen('src/screens/EmergenciaIntegrantesScreen.js', env.mocks);
-  const props = {caso: CASO, onConflicto: () => {}, onNoEncontrado: () => {}, onSinModulo: () => {}, onProximamente: () => {}, onEnviando: () => {}};
+  const props = {caso: CASO, onConflicto: () => {}, onNoEncontrado: () => {}, onSinModulo: () => {}, onCerrar: () => {}, onEnviando: () => {}};
   const primera = await render(Screen, props);
   await primera.pressButton('Agregar persona');
   await env.aceptarAlerta('Agregar');
@@ -744,6 +744,8 @@ async function montarApp({integrantes = null, ficha = null} = {}) {
       ? (props) => { pantallas.integrantes = props; return React.createElement(integrantes, props); } : capturar('integrantes')},
     '../screens/EmergenciaFichaScreen': {__esModule: true, default: ficha
       ? (props) => { pantallas.ficha = props; return React.createElement(ficha, props); } : capturar('ficha')},
+    '../screens/EmergenciaCierreScreen': {__esModule: true, default: capturar('cierre')},
+    '../screens/EmergenciaPuertaScreen': {__esModule: true, default: capturar('puerta')},
     '@react-native-community/netinfo': {__esModule: true, default: {addEventListener: () => () => {}}},
     '../services/emergenciaLimpieza': {depurarBorradoresFicha: async () => {}},
     '../services/emergenciaCola': {syncPendientes: async () => ({}), getPendingCount: async () => 0, getResumenPendientes: async () => ({}),
@@ -756,7 +758,7 @@ async function montarApp({integrantes = null, ficha = null} = {}) {
   const banner = () => tree.root.findByType('Banner');
   const hacer = async (fn) => renderer.act(async () => { fn(); await esperar(2); });
   return {pantallas, alerts, toasts, banner, hacer, titulo: () => banner().props.title, atras: () => hacer(() => banner().props.onBackPress()),
-    vista: () => ['dispositivos', 'buscar', 'derivacion', 'integrantes', 'ficha'].find(n => tree.root.findAll(x => x.type === mocks[`../screens/${{dispositivos: 'EmergenciaMisDispositivosScreen', buscar: 'EmergenciaLlegadaBuscarScreen', derivacion: 'EmergenciaDerivacionScreen', integrantes: 'EmergenciaIntegrantesScreen', ficha: 'EmergenciaFichaScreen'}[n]}`].default).length),
+    vista: () => ['dispositivos', 'buscar', 'derivacion', 'integrantes', 'ficha', 'cierre', 'puerta'].find(n => tree.root.findAll(x => x.type === mocks[`../screens/${{dispositivos: 'EmergenciaMisDispositivosScreen', buscar: 'EmergenciaLlegadaBuscarScreen', derivacion: 'EmergenciaDerivacionScreen', integrantes: 'EmergenciaIntegrantesScreen', ficha: 'EmergenciaFichaScreen', cierre: 'EmergenciaCierreScreen', puerta: 'EmergenciaPuertaScreen'}[n]}`].default).length),
     close: () => renderer.act(async () => tree.unmount())};
 }
 
@@ -846,7 +848,7 @@ test('EmergenciaApp M2: el router de §13.1 recarga la pantalla de cada estado_a
   } finally { await ui.close(); }
 });
 
-test('EmergenciaApp M2: mientras se acepta o se agrega una persona no hay flecha de volver; próximamente avisa', async () => {
+test('EmergenciaApp M2: mientras se acepta o se agrega una persona no hay flecha de volver', async () => {
   const ui = await montarApp();
   try {
     await ui.hacer(() => ui.pantallas.inicio.onAbrir({clave: 'llegadas', titulo: 'Llegada de familias'}));
@@ -861,8 +863,7 @@ test('EmergenciaApp M2: mientras se acepta o se agrega una persona no hay flecha
     await ui.hacer(() => ui.pantallas.integrantes.onEnviando(true));
     assert.equal(ui.banner().props.showBackButton, false);
     await ui.hacer(() => ui.pantallas.integrantes.onEnviando(false));
-    await ui.hacer(() => ui.pantallas.integrantes.onProximamente('Familia alojada'));
-    assert.deepEqual(ui.alerts.at(-1).slice(0, 2), ['Próximamente', '«Familia alojada» va a estar disponible en una próxima versión de la app.']);
+    assert.equal(ui.banner().props.showBackButton, true);
   } finally { await ui.close(); }
 });
 
@@ -891,7 +892,7 @@ test('Integrantes: el reenvío de un alta que ya había llegado no dice «Se sum
     return response(200, posteos ? {...INTEGRANTES, integrantes: [CONFIRMADA, FILA(2), FILA(3)], total_declarado: 3} : INTEGRANTES);
   });
   const Screen = loadScreen('src/screens/EmergenciaIntegrantesScreen.js', env.mocks);
-  const props = {caso: CASO, onConflicto: () => {}, onNoEncontrado: () => {}, onSinModulo: () => {}, onProximamente: () => {}, onEnviando: () => {}};
+  const props = {caso: CASO, onConflicto: () => {}, onNoEncontrado: () => {}, onSinModulo: () => {}, onCerrar: () => {}, onEnviando: () => {}};
   const primera = await render(Screen, props);
   await primera.pressButton('Agregar persona');
   await env.aceptarAlerta('Agregar');
@@ -910,7 +911,7 @@ test('Integrantes: con el caso alojado o cerrado se olvida el «Agregar persona�
   let estado = 'INGRESO_EN_CURSO';
   const env = await entorno((call) => (call.method === 'POST' ? fallaDeRed() : response(200, {...INTEGRANTES, caso: {...CASO, estado}})));
   const Screen = loadScreen('src/screens/EmergenciaIntegrantesScreen.js', env.mocks);
-  const props = {caso: CASO, onConflicto: () => {}, onNoEncontrado: () => {}, onSinModulo: () => {}, onProximamente: () => {}, onEnviando: () => {}};
+  const props = {caso: CASO, onConflicto: () => {}, onNoEncontrado: () => {}, onSinModulo: () => {}, onCerrar: () => {}, onEnviando: () => {}};
   const primera = await render(Screen, props);
   await primera.pressButton('Agregar persona');
   await env.aceptarAlerta('Agregar');

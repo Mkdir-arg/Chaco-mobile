@@ -31,6 +31,11 @@ export const RUTAS = {
   integrante: (id, n) => `${BASE}casos/${encodeURIComponent(id)}/integrantes/${encodeURIComponent(n)}/`,
   confirmarIntegrante: (id, n) => `${BASE}casos/${encodeURIComponent(id)}/integrantes/${encodeURIComponent(n)}/confirmar/`,
   plazas: (id, caso) => `${BASE}dispositivos/${encodeURIComponent(id)}/plazas/?caso=${encodeURIComponent(caso)}`,
+  alojar: (id) => `${BASE}casos/${encodeURIComponent(id)}/alojar/`,
+  cerrarDiferencia: (id) => `${BASE}casos/${encodeURIComponent(id)}/cerrar-diferencia/`,
+  cancelarIngreso: (id) => `${BASE}casos/${encodeURIComponent(id)}/cancelar-ingreso/`,
+  ingresoDirecto: (id) => `${BASE}dispositivos/${encodeURIComponent(id)}/ingreso-directo/`,
+  avisarMesa: (id) => `${BASE}dispositivos/${encodeURIComponent(id)}/avisar-mesa/`,
 };
 
 // §4: Emergencia no tiene padrones; consulta solo Base de Personas.
@@ -177,7 +182,7 @@ export const recibirEntrega = async (entregaId, { uuid_cliente, cantidades = {},
   return conVerificacion(() => uploadMultipart(RUTAS.recibirEntrega(entregaId), { fields, files, timeoutMs, token }));
 };
 
-// ---- M2 · Llegada de familias (§13.1 a §13.8) ----
+// ---- M2 · Llegada de familias (§13.1 a §13.10) ----
 // Todo M2 es JSON y con conexión. becasRequest relee el token en cada pedido y no corta por tiempo,
 // así que acá:
 // - `token` es el de la sesión con la que se abrió la pantalla: becasRequest lo usa tal cual (no relee
@@ -251,6 +256,59 @@ export const confirmarIntegrante = (casoId, n, { uuid_cliente, ficha, plaza_id }
   exigirUuid(uuid_cliente);
   return conVerificacion(() => pedirJson(RUTAS.confirmarIntegrante(casoId, n),
     { ...opciones, method: 'POST', body: { uuid_cliente, plaza_id, ficha: ficha || {} } }));
+};
+
+// ---- M2 parte 3: cerrar el ingreso (§13.9) y sin derivación (§13.10) ----
+
+// §13.9 «Familia alojada» (N de N). Los cinco campos son opcionales; `tarjeta_numero` va con la tarjeta
+// entregada. NO es idempotente: el reintento de un envío que llegó da 409 ALOJADO (o CERRADO).
+export const alojarFamilia = (casoId, { sector = null, aula = '', tarjeta_entregada = false, tarjeta_numero = '', encargado = '' } = {}, opciones = {}) => {
+  const body = { tarjeta_entregada: tarjeta_entregada === true };
+  if (presente(sector)) body.sector = Number(sector);
+  if (presente(aula)) body.aula = String(aula).trim();
+  if (body.tarjeta_entregada && presente(tarjeta_numero)) body.tarjeta_numero = String(tarjeta_numero).trim();
+  if (presente(encargado)) body.encargado = String(encargado).trim();
+  return conVerificacion(() => pedirJson(RUTAS.alojar(casoId), { ...opciones, method: 'POST', body }));
+};
+
+// §13.9 «Cerrar con diferencia» (RN-3.9): `motivo` del catálogo; `observacion` obligatoria con OTRO.
+// NO es idempotente.
+export const cerrarConDiferencia = (casoId, { motivo, observacion } = {}, opciones = {}) => {
+  const body = { motivo };
+  if (presente(observacion)) body.observacion = String(observacion).trim();
+  return conVerificacion(() => pedirJson(RUTAS.cerrarDiferencia(casoId), { ...opciones, method: 'POST', body }));
+};
+
+// §13.9 «Cancelar el ingreso»: `motivo` texto obligatorio. NO es idempotente: el reintento de uno que
+// llegó da 409 con el caso de vuelta en la mesa (EN_GESTION o NUEVO).
+export const cancelarIngreso = (casoId, { motivo } = {}, opciones = {}) => conVerificacion(
+  () => pedirJson(RUTAS.cancelarIngreso(casoId), { ...opciones, method: 'POST', body: { motivo: String(motivo ?? '').trim() } }));
+
+// §13.10: el Formulario 1 de §6 en la puerta, sin `relevado_en` (vale la hora del servidor) y sin fotos ni
+// GPS. Va como JSON (la vista acepta JSON además de multipart: sin archivos no hace falta). Lo vacío no
+// se manda; `fecha_nacimiento` se normaliza a AAAA-MM-DD (FECHA_INVALIDA antes de mandar).
+export const CAMPOS_PUERTA = CAMPOS_CASO.filter((campo) => !['relevado_en', 'latitud', 'longitud', 'precision_m'].includes(campo));
+export const cuerpoDeLaPuerta = (datos = {}) => {
+  exigirUuid(datos.uuid_cliente);
+  const body = {};
+  CAMPOS_PUERTA.forEach((campo) => {
+    if (presente(datos[campo])) body[campo] = datos[campo];
+  });
+  if (presente(body.fecha_nacimiento)) body.fecha_nacimiento = fechaNacimientoIso(body.fecha_nacimiento);
+  return body;
+};
+
+// §13.10 «Ingresar igual»: idempotente por `uuid_cliente` (201 el caso nuevo con el ingreso en curso, 200
+// el reenvío con el mismo caso y lo que reservó la primera vez). 400 `plazas`: no hay camas libres.
+export const ingresoDirecto = (dispositivoId, datos = {}, opciones = {}) => {
+  const body = cuerpoDeLaPuerta(datos);
+  return conVerificacion(() => pedirJson(RUTAS.ingresoDirecto(dispositivoId), { ...opciones, method: 'POST', body }));
+};
+
+// §13.10 «Avisar a la mesa»: el mismo cuerpo; crea el caso NUEVO «En la puerta de …». Idempotente igual.
+export const avisarALaMesa = (dispositivoId, datos = {}, opciones = {}) => {
+  const body = cuerpoDeLaPuerta(datos);
+  return conVerificacion(() => pedirJson(RUTAS.avisarMesa(dispositivoId), { ...opciones, method: 'POST', body }));
 };
 
 const es409 = (error) => Number(error?.status) === 409 && !error?.unexpectedHtml;

@@ -538,7 +538,7 @@ async function montarApp() {
     '../components/CustomButton': {__esModule: true, default: 'CustomButton'},
     '../components/SettingsPanel': {__esModule: true, default: 'SettingsPanel'},
     ...Object.fromEntries(['Inicio', 'MisEnvios', 'Formulario1', 'MisDispositivos', 'Entregas', 'RecibirEntrega', 'LlegadaBuscar', 'Derivacion',
-      'Integrantes', 'Ficha'].map(n => [`../screens/Emergencia${n}Screen`, {__esModule: true, default: capturar(n)}])),
+      'Integrantes', 'Ficha', 'Cierre', 'Puerta'].map(n => [`../screens/Emergencia${n}Screen`, {__esModule: true, default: capturar(n)}])),
     '@react-native-community/netinfo': {__esModule: true, default: {addEventListener: () => () => {}}},
     '../services/emergenciaCola': {syncPendientes: async () => ({}), getPendingCount: async () => 0, getResumenPendientes: async () => ({}),
       reintentar: async () => ({}), getLocalidadesGuardadas: async () => ({localidades: []}), getBorradorEnCurso: async () => null, descartar: async () => true},

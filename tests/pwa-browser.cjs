@@ -14,7 +14,7 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
 (async () => {
   const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
   try {
-    fs.writeFileSync(entry, original + `\nimport service from './src/services/relevamientoService';\nimport * as api from './src/services/becasApi';\nimport * as emergencia from './src/services/emergenciaCola';\nimport * as kits from './src/services/emergenciaKits';\nimport * as emergenciaApi from './src/services/emergenciaApi';\nimport * as llegadas from './src/services/emergenciaLlegadas';\nimport { API_CONFIG } from './src/config/apiConfig';\nimport NetInfo from '@react-native-community/netinfo';\nwindow.__pwaTest = {service, api, emergencia, kits, emergenciaApi, llegadas, netinfo: NetInfo, config: API_CONFIG};\n`);
+    fs.writeFileSync(entry, original + `\nimport service from './src/services/relevamientoService';\nimport * as api from './src/services/becasApi';\nimport * as emergencia from './src/services/emergenciaCola';\nimport * as kits from './src/services/emergenciaKits';\nimport * as emergenciaApi from './src/services/emergenciaApi';\nimport * as llegadas from './src/services/emergenciaLlegadas';\nimport * as limpieza from './src/services/emergenciaLimpieza';\nimport { API_CONFIG } from './src/config/apiConfig';\nimport NetInfo from '@react-native-community/netinfo';\nwindow.__pwaTest = {service, api, emergencia, kits, emergenciaApi, llegadas, limpieza, netinfo: NetInfo, config: API_CONFIG};\n`);
     try {
       run(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['expo','export','--clear','--platform','web','--output-dir','dist-browser']);
       // Runtime setting intentionally differs from the Expo build-time URL.
@@ -31,7 +31,7 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
       fecha_hasta:'2099-12-31T23:59:59-03:00',definicion_formulario:{version:3,globales:[],requisitos:[]}};
     let posts=0, uploads=0, rejectUpload=true, casos=0, localidades=0;
     const recepciones=[];
-    const m2={buscar:0,aceptar:[],integrantes:0,persona:0,plazas:0,confirmar:[],patch:[]};
+    const m2={buscar:0,aceptar:[],integrantes:0,persona:0,plazas:0,confirmar:[],patch:[],alojar:[],cancelar:[],ingreso:[],aviso:[]};
     const launch = async () => {
       const ctx = await chromium.launchPersistentContext(profile, {headless:true,
         ...(process.env.CHROME_PATH ? {executablePath:process.env.CHROME_PATH} : {})});
@@ -114,6 +114,32 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
           assert.match(req.headers()['content-type'],/application\/json/);
           m2.patch.push(JSON.parse(req.postData()||'{}'));
           body={ficha_completa:false,secciones_incompletas:['Vacunación','Salud y medicación','Trabajo','Observaciones, mascotas y adulto responsable']};
+        }
+        else if(req.method()==='POST' && url.endsWith('/api/emergencia/casos/184/alojar/')) {
+          assert.match(req.headers()['content-type'],/application\/json/);
+          assert.equal(req.headers()['authorization'],'Token test-token');
+          m2.alojar.push(JSON.parse(req.postData()||'{}'));
+          // Alojar NO es idempotente: el primero se corta (el servidor alojó) y el reintento ve el caso ya alojado.
+          if(m2.alojar.length===1) {await route.abort('connectionreset');return;}
+          status=409;body={detail:'La familia del caso 2026-000184 ya figura alojada. Recargá la pantalla.',estado_actual:'ALOJADO'};
+        }
+        else if(req.method()==='POST' && url.endsWith('/api/emergencia/casos/185/cancelar-ingreso/')) {
+          m2.cancelar.push(JSON.parse(req.postData()||'{}'));
+          body={estado:'EN_GESTION',total_alojado:null,liberadas:3};
+        }
+        else if(req.method()==='POST' && url.endsWith('/api/emergencia/dispositivos/9/ingreso-directo/')) {
+          assert.match(req.headers()['content-type'],/application\/json/);
+          m2.ingreso.push(JSON.parse(req.postData()||'{}'));
+          // Idempotente: el primero se corta (pero creó el caso); el reenvío con el MISMO uuid es 200 con el mismo caso.
+          if(m2.ingreso.length===1) {await route.abort('connectionreset');return;}
+          body={caso:{id:190,numero:'2026-000190',estado:'INGRESO_EN_CURSO',prioridad:'MEDIA',total_declarado:1},reservadas:1,faltantes:0,
+            integrantes:[{n:1,estado:'SIN_CONFIRMAR',ficha_completa:false,persona:null,plaza:null,parentesco:'',confirmada_en:null,egresado_en:null}]};
+        }
+        else if(req.method()==='POST' && url.endsWith('/api/emergencia/dispositivos/9/avisar-mesa/')) {
+          m2.aviso.push(JSON.parse(req.postData()||'{}'));
+          // El aviso del DNI 30777888 se corta la primera vez (el servidor lo creó igual).
+          if(m2.aviso.at(-1).dni==='30777888' && m2.aviso.filter(a=>a.dni==='30777888').length===1) {await route.abort('connectionreset');return;}
+          status=201;body={caso:{id:191,numero:'2026-000191',estado:'NUEVO',prioridad:'MEDIA',total_declarado:2}};
         }
         else if(url.endsWith('/relevamientos/')) body=[campaign];
         else if(url.endsWith('/relevamientos/1/')) body=campaign;
@@ -405,6 +431,80 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
     assert.equal(m2.plazas,1);
     assert.deepEqual(errors,[]);
     console.log('PASS: Emergencia M2 parte 2: persona, default family bed, lost confirm response retried with same uuid after reload, PATCH only changed section, draft.');
+    // Emergencia M2 (parte 3): «Familia alojada» con la respuesta perdida (no idempotente: el 409 ALOJADO
+    // del reintento es «se hizo»); cancelar un ingreso; «Ingresar igual» con la respuesta perdida: el envío
+    // queda guardado por dispositivo y DNI, sobrevive a recargar la PWA y el reenvío lleva el MISMO uuid;
+    // «Avisar a la mesa». Sin red ninguno sale.
+    await context.setOffline(true);
+    await page.waitForFunction(()=>navigator.onLine===false);
+    const sinRedM2c=await page.evaluate(async()=>{
+      const l=window.__pwaTest.llegadas;
+      const sesion=await l.abrirSesion();
+      const tipo=async(p)=>{ try { await p; return 'salió'; } catch(e){ return e.clasificacion&&e.clasificacion.tipo; } };
+      return [await tipo(l.alojar(sesion,184,{})),await tipo(l.enviarPuerta(sesion,9,'ingresar',{traslado:'POLICIA',dni:'30222333',adultos_f:1})),
+        await l.puertaPendiente(sesion,9,'30222333')];
+    });
+    assert.deepEqual(sinRedM2c,['sin_red','sin_red',null]);
+    assert.equal(m2.alojar.length+m2.ingreso.length,0,'sin red no sale nada');
+    await context.setOffline(false);
+    await page.waitForFunction(()=>navigator.onLine===true);
+    const cierres=await page.evaluate(async()=>{
+      const l=window.__pwaTest.llegadas;
+      const sesion=await l.abrirSesion();
+      let primero=null;
+      try { await l.alojar(sesion,184,{sector:3,aula:'Aula 3'}); } catch(e){ primero={tipo:e.clasificacion.tipo,incierto:e.incierto}; }
+      const segundo=await l.alojar(sesion,184,{sector:3,aula:'Aula 3'},{incierto:primero.incierto});
+      const cancelado=await l.cancelar(sesion,185,{motivo:' La familia se fue '});
+      let ingreso=null;
+      try { await l.enviarPuerta(sesion,9,'ingresar',{traslado:'POLICIA',dni:'30222333',nombre:'Ana',adultos_f:1}); } catch(e){ ingreso={tipo:e.clasificacion.tipo,incierto:e.incierto}; }
+      return {primero,segundo:{resultado:segundo.resultado,estado:segundo.estado,destino:segundo.destino},cancelado,ingreso,
+        pendiente:await l.puertaPendiente(sesion,9,'30222333')};
+    });
+    assert.deepEqual({...cierres,pendiente:cierres.pendiente&&cierres.pendiente.accion},{primero:{tipo:'reintentable',incierto:true},
+      segundo:{resultado:'ya_hecho',estado:'ALOJADO',destino:'integrantes'},cancelado:{resultado:'hecho',estado:'EN_GESTION',total_alojado:null,liberadas:3},
+      ingreso:{tipo:'reintentable',incierto:true},pendiente:'ingresar'});
+    await page.reload(); await page.waitForFunction(()=>window.__pwaTest);
+    const puerta=await page.evaluate(async()=>{
+      const l=window.__pwaTest.llegadas;
+      const sesion=await l.abrirSesion();
+      const pendiente=await l.puertaPendiente(sesion,9,'30222333');
+      let otra=null;
+      try { await l.enviarPuerta(sesion,9,'avisar',pendiente.datos); } catch(e){ otra=e.clasificacion.tipo; }
+      const ok=await l.enviarPuerta(sesion,9,'ingresar',pendiente.datos);
+      const aviso=await l.enviarPuerta(sesion,9,'avisar',{traslado:'AUTOEVACUADO',dni:'30444555',adultos_m:2});
+      return {datos:pendiente.datos.nombre,otra,ok:{caso:ok.caso.id,reservadas:ok.reservadas,integrantes:ok.integrantes.integrantes.length},
+        aviso:aviso.caso.numero,despues:await l.puertaPendiente(sesion,9,'30222333')};
+    });
+    assert.deepEqual(puerta,{datos:'Ana',otra:'rechazo',ok:{caso:190,reservadas:1,integrantes:1},aviso:'2026-000191',despues:null});
+    assert.equal(m2.alojar.length,2);
+    assert.deepEqual(m2.alojar[0],{tarjeta_entregada:false,sector:3,aula:'Aula 3'});
+    assert.deepEqual(m2.cancelar,[{motivo:'La familia se fue'}]);
+    assert.equal(m2.ingreso.length,2);
+    assert.match(m2.ingreso[0].uuid_cliente,/^[0-9a-f-]{36}$/);
+    assert.equal(m2.ingreso[1].uuid_cliente,m2.ingreso[0].uuid_cliente,'el reenvío lleva el MISMO uuid, también después de recargar');
+    assert.ok(!('relevado_en' in m2.ingreso[0]),'la puerta no manda la hora del teléfono');
+    assert.equal(m2.aviso.length,1);
+    assert.notEqual(m2.aviso[0].uuid_cliente,m2.ingreso[0].uuid_cliente);
+    // Un aviso incierto y después el logout: lo tipeado se borra y queda el uuid sin el DNI en claro
+    // (SHA-256 con crypto.subtle del navegador); el reintento manda solo uuid y DNI y no crea otro caso.
+    const sinDatos=await page.evaluate(async()=>{
+      const {llegadas:l,limpieza}=window.__pwaTest;
+      const sesion=await l.abrirSesion();
+      let primero=null;
+      try { await l.enviarPuerta(sesion,9,'avisar',{traslado:'POLICIA',adultos_m:1,nombre:'Lucas'},{dni:'30777888'}); } catch(e){ primero=e.clasificacion.tipo; }
+      await limpieza.limpiarDatosLocalesEmergencia();
+      const pendiente=await l.puertaPendiente(sesion,9,'30777888');
+      const guardado=Object.keys(localStorage).filter(k=>k.startsWith('emergencia_llegadas_puerta')).map(k=>localStorage.getItem(k)).join('');
+      const ok=await l.reintentarPuertaSinDatos(sesion,9,'30777888');
+      return {primero,datos:pendiente.datos,accion:pendiente.accion,enClaro:guardado.includes('30777888')||guardado.includes('Lucas'),caso:ok.caso.numero,
+        despues:await l.puertaPendiente(sesion,9,'30777888')};
+    });
+    assert.deepEqual(sinDatos,{primero:'reintentable',datos:null,accion:'avisar',enClaro:false,caso:'2026-000191',despues:null});
+    const avisos=m2.aviso.filter(a=>a.dni==='30777888');
+    assert.equal(avisos.length,2);
+    assert.deepEqual(avisos[1],{uuid_cliente:avisos[0].uuid_cliente,dni:'30777888'});
+    assert.deepEqual(errors,[]);
+    console.log('PASS: Emergencia M2 parte 3: offline blocked, lost alojar response + 409 ALOJADO treated as done, cancel, lost ingreso directo retried with same uuid after reload, other action blocked while pending, avisar a la mesa, uuid without personal data survives logout.');
   } finally {
     fs.writeFileSync(entry,original);
     await context?.close(); server?.kill(); fs.rmSync(profile,{recursive:true,force:true});

@@ -20,15 +20,16 @@ export const AYUDA_DNI = 'El DNI del responsable o de cualquier persona ya confi
 // aviso. El token y el usuario se fijan al abrir la pantalla (abrirSesion); una respuesta que llega
 // con otra sesión, o después de salir, se descarta.
 // - DERIVACION PENDIENTE → `onDerivacion(busqueda)` (M2-2); ACEPTADA → `onIntegrantes(caso, dni)`.
-// - SIN_DERIVACION y ALOJADA se muestran acá. «Ingresar igual» y «Avisar a la mesa» (§13.10) son de
-//   la próxima versión: `onProximamente(titulo)`.
+// - SIN_DERIVACION y ALOJADA se muestran acá. Sin derivación, «Ingresar igual» (solo con camas libres) y
+//   «Avisar a la mesa» (§13.10) abren el Formulario 1 de la puerta: `onSinDerivacion(accion, busqueda)`,
+//   con `accion` 'ingresar' o 'avisar'.
 // - 429: cuenta regresiva con Retry-After; 404 → `onNoEncontrado`; 403 SIN_MODULO → `onSinModulo(mensaje)`.
 // `dniInicial` y `autoBuscar`: la recarga por `estado_actual` (§13.1) vuelve acá con el DNI, y con
 // DERIVADO busca sola. `esperaHasta` (ms) y `onEspera(hasta)`: la cuenta del 429 vive en el padre y
 // sobrevive a volver y re-entrar (el tope es del usuario, no de la pantalla).
 export default function EmergenciaLlegadaBuscarScreen({
   dispositivo, dniInicial = '', autoBuscar = false, esperaHasta: esperaInicial = 0, onEspera,
-  onDerivacion, onIntegrantes, onNoEncontrado, onSinModulo, onProximamente,
+  onDerivacion, onIntegrantes, onNoEncontrado, onSinModulo, onSinDerivacion,
 }) {
   const { theme, typography } = useTheme();
   const [sesion, setSesion] = useState(null);
@@ -198,9 +199,11 @@ export default function EmergenciaLlegadaBuscarScreen({
           {avisoDe('info', resultado.mensaje || 'No hay una derivación para este DNI en tu dispositivo.')}
           <Text style={ayuda}>{camas === 1 ? '1 cama libre en este dispositivo' : `${camas || 'Sin'} camas libres en este dispositivo`}</Text>
           {camas >= 1 ? (
-            <CustomButton title="Ingresar igual" variant="secondary" iconLeft="enter-outline" onPress={() => onProximamente?.('Ingresar igual')} />
+            <CustomButton title="Ingresar igual" variant="secondary" iconLeft="enter-outline" disabled={sinRed}
+              onPress={() => onSinDerivacion?.('ingresar', resultado)} />
           ) : null}
-          <CustomButton title="Avisar a la mesa" variant="secondary" iconLeft="megaphone-outline" onPress={() => onProximamente?.('Avisar a la mesa')} />
+          <CustomButton title="Avisar a la mesa" variant="secondary" iconLeft="megaphone-outline" disabled={sinRed}
+            onPress={() => onSinDerivacion?.('avisar', resultado)} />
         </View>
       ) : null}
 
