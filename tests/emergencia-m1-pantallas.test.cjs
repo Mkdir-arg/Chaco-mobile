@@ -428,6 +428,9 @@ async function montarApp({pendientes = 0, resumen = null, enCurso = null, sync =
     '../screens/EmergenciaInicioScreen': {__esModule: true, default: capturar('inicio')},
     '../screens/EmergenciaMisEnviosScreen': {__esModule: true, default: capturar('envios')},
     '../screens/EmergenciaFormulario1Screen': {__esModule: true, default: capturar('formulario')},
+    '../screens/EmergenciaMisDispositivosScreen': {__esModule: true, default: capturar('kitsDispositivos')},
+    '../screens/EmergenciaEntregasScreen': {__esModule: true, default: capturar('kitsEntregas')},
+    '../screens/EmergenciaRecibirEntregaScreen': {__esModule: true, default: capturar('kitsRecibir')},
     '../services/emergenciaCola': {
       syncPendientes: async () => { llamadas.sync += 1; llamadas.orden.push('sync'); return sync ? sync() : {synced: 0}; },
       getPendingCount: async () => pendientes,
@@ -473,9 +476,87 @@ test('EmergenciaApp: «Ingreso de familias» abre Mis envíos, de ahí el formul
     assert.equal(ui.tree.root.findByType('Banner').props.title, 'Ingreso de familias');
     await renderer.act(async () => { ui.tree.root.findByType('Banner').props.onBackPress(); });
     assert.equal(ui.tree.root.findByType('Banner').props.title, 'Hola, Ana');
-    // Los otros accesos siguen en «Próximamente».
-    await renderer.act(async () => { ui.pantallas.inicio.onAbrir({clave: 'kits', titulo: 'Recepción de kits'}); });
+    // «Llegada de familias» (M2) sigue en «Próximamente».
+    await renderer.act(async () => { ui.pantallas.inicio.onAbrir({clave: 'llegadas', titulo: 'Llegada de familias'}); });
     assert.equal(ui.alerts.at(-1)[0], 'Próximamente');
+  } finally { await ui.close(); }
+});
+
+test('EmergenciaApp M3: «Recepción de kits» -> dispositivos -> entregas -> recibir, y volver por cada paso', async () => {
+  const ui = await montarApp();
+  const titulo = () => ui.tree.root.findByType('Banner').props.title;
+  const atras = async () => renderer.act(async () => { ui.tree.root.findByType('Banner').props.onBackPress(); });
+  try {
+    await renderer.act(async () => { ui.pantallas.inicio.onAbrir({clave: 'kits', titulo: 'Recepción de kits'}); });
+    assert.equal(titulo(), 'Recepción de kits');
+    assert.ok(ui.pantallas.kitsDispositivos);
+    assert.equal(ui.tree.root.findByType('Banner').props.showBackButton, true);
+    // Con varios dispositivos: elegir uno, abrir una entrega y volver.
+    await renderer.act(async () => { ui.pantallas.kitsDispositivos.onElegir({id: 7, nombre: 'Club Sarmiento'}, {unico: false}); });
+    assert.equal(titulo(), 'Club Sarmiento');
+    assert.equal(ui.pantallas.kitsEntregas.dispositivo.id, 7);
+    await renderer.act(async () => { ui.pantallas.kitsEntregas.onAbrir({id: 31, numero: '2026-K-000031', lineas: []}); });
+    assert.equal(titulo(), 'Recibir entrega');
+    assert.equal(ui.pantallas.kitsRecibir.entrega.id, 31);
+    assert.equal(ui.pantallas.kitsRecibir.dispositivoId, 7);
+    await atras();
+    assert.equal(titulo(), 'Club Sarmiento');
+    await atras();
+    assert.equal(titulo(), 'Recepción de kits');
+    await atras();
+    assert.equal(titulo(), 'Hola, Ana');
+    // Con uno solo: entra directo, y volver desde las entregas va al inicio.
+    await renderer.act(async () => { ui.pantallas.inicio.onAbrir({clave: 'kits', titulo: 'Recepción de kits'}); });
+    await renderer.act(async () => { ui.pantallas.kitsDispositivos.onElegir({id: 9, nombre: 'Escuela 12'}, {unico: true}); });
+    await renderer.act(async () => { ui.pantallas.kitsEntregas.onAbrir({id: 40, numero: 'K-40', lineas: []}); });
+    await atras();
+    assert.equal(titulo(), 'Escuela 12');
+    await atras();
+    assert.equal(titulo(), 'Hola, Ana');
+  } finally { await ui.close(); }
+});
+
+test('EmergenciaApp M3: recibida y 409 vuelven a las entregas; 404 a los dispositivos; SIN_MODULO al inicio', async () => {
+  const ui = await montarApp();
+  const titulo = () => ui.tree.root.findByType('Banner').props.title;
+  const abrirRecepcion = async () => {
+    await renderer.act(async () => { ui.pantallas.inicio.onAbrir({clave: 'kits', titulo: 'Recepción de kits'}); });
+    await renderer.act(async () => { ui.pantallas.kitsDispositivos.onElegir({id: 7, nombre: 'Club Sarmiento'}, {unico: false}); });
+    await renderer.act(async () => { ui.pantallas.kitsEntregas.onAbrir({id: 31, numero: 'K-31', lineas: []}); });
+    assert.equal(titulo(), 'Recibir entrega');
+  };
+  try {
+    await abrirRecepcion();
+    await renderer.act(async () => { ui.pantallas.kitsRecibir.onTerminar('recibida', {estado: 'RECIBIDA', diferencias: []}); });
+    assert.equal(titulo(), 'Club Sarmiento');
+    await renderer.act(async () => { ui.pantallas.kitsEntregas.onAbrir({id: 31, numero: 'K-31', lineas: []}); });
+    await renderer.act(async () => { ui.pantallas.kitsRecibir.onTerminar('conflicto', {estadoActual: 'CANCELADA'}); });
+    assert.equal(titulo(), 'Club Sarmiento');
+    await renderer.act(async () => { ui.pantallas.kitsEntregas.onAbrir({id: 31, numero: 'K-31', lineas: []}); });
+    await renderer.act(async () => { ui.pantallas.kitsRecibir.onTerminar('no_encontrada'); });
+    assert.equal(titulo(), 'Recepción de kits');
+    await renderer.act(async () => { ui.pantallas.kitsDispositivos.onElegir({id: 7, nombre: 'Club Sarmiento'}, {unico: false}); });
+    await renderer.act(async () => { ui.pantallas.kitsEntregas.onNoEncontrado(); });
+    assert.equal(titulo(), 'Recepción de kits');
+    assert.equal(ui.toasts.at(-1).type, 'warning');
+    await renderer.act(async () => { ui.pantallas.kitsDispositivos.onSinModulo('El usuario no recibe kits.'); });
+    assert.equal(titulo(), 'Hola, Ana');
+    assert.deepEqual(ui.alerts.at(-1).slice(0, 2), ['Sin permiso', 'El usuario no recibe kits.']);
+  } finally { await ui.close(); }
+});
+
+test('EmergenciaApp M3: el botón de sincronizar recarga las listas de kits, sin el aviso de M1', async () => {
+  const ui = await montarApp();
+  try {
+    await renderer.act(async () => { ui.pantallas.inicio.onAbrir({clave: 'kits', titulo: 'Recepción de kits'}); });
+    const antes = ui.pantallas.kitsDispositivos.recarga;
+    await renderer.act(async () => { await ui.tree.root.findByType('Banner').props.onSyncPress(); });
+    assert.equal(ui.pantallas.kitsDispositivos.recarga, antes + 1);
+    assert.ok(!ui.toasts.some(t => t.message === 'No había nada para enviar.'));
+    await renderer.act(async () => { ui.pantallas.kitsDispositivos.onElegir({id: 7, nombre: 'Club'}, {unico: false}); });
+    const enEntregas = ui.pantallas.kitsEntregas.recarga;
+    await renderer.act(async () => { await ui.tree.root.findByType('Banner').props.onSyncPress(); });
+    assert.equal(ui.pantallas.kitsEntregas.recarga, enEntregas + 1);
   } finally { await ui.close(); }
 });
 

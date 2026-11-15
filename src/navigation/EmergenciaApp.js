@@ -10,6 +10,9 @@ import SettingsPanel from '../components/SettingsPanel';
 import EmergenciaInicioScreen from '../screens/EmergenciaInicioScreen';
 import EmergenciaMisEnviosScreen from '../screens/EmergenciaMisEnviosScreen';
 import EmergenciaFormulario1Screen from '../screens/EmergenciaFormulario1Screen';
+import EmergenciaMisDispositivosScreen from '../screens/EmergenciaMisDispositivosScreen';
+import EmergenciaEntregasScreen from '../screens/EmergenciaEntregasScreen';
+import EmergenciaRecibirEntregaScreen from '../screens/EmergenciaRecibirEntregaScreen';
 import {
   descartar, getBorradorEnCurso, getLocalidadesGuardadas, getPendingCount, getResumenPendientes, reintentar, syncPendientes,
 } from '../services/emergenciaCola';
@@ -18,7 +21,17 @@ import { avisoDeSalida } from '../utils/emergencia';
 const SYNC_INTERVAL_MS = 8000;
 const RECONNECT_DELAY_MS = 1800;
 
-const TITULOS = { envios: 'Ingreso de familias', formulario: 'Relevar una familia' };
+const TITULOS = {
+  envios: 'Ingreso de familias',
+  formulario: 'Relevar una familia',
+  kits_dispositivos: 'Recepción de kits',
+  kits_entregas: 'Recepción de kits',
+  kits_recibir: 'Recibir entrega',
+};
+// Las vistas que se vuelven a pedir con el botón de sincronizar del Banner.
+const VISTAS_RECARGABLES = ['inicio', 'kits_dispositivos', 'kits_entregas'];
+const VISTAS_M1 = ['envios', 'formulario'];
+const INICIO = { vista: 'inicio', uuid: null };
 
 // Al volver la red, `alVolver`. En web, el evento `online` del navegador (la cola mira
 // `navigator.onLine`: el estado guardado de NetInfo web puede seguir diciendo «sin internet»); en
@@ -39,7 +52,8 @@ const escucharReconexion = (alVolver) => {
 };
 
 // Módulo Emergencia: inicio con los accesos del perfil -> M1 («Ingreso de familias»: mis envíos y
-// el Formulario 1). Como Dispositivos, no importa nada de los otros módulos: comparte sesión, tema
+// el Formulario 1) y M3 («Recepción de kits»: mis dispositivos -> entregas por recibir -> recibir,
+// sin cola y con conexión). Como Dispositivos, no importa nada de los otros módulos: comparte sesión, tema
 // y componentes. La cola de M1 se sincroniza solo mientras este árbol está montado.
 export default function EmergenciaApp({ onCambiarModulo }) {
   const { theme } = useTheme();
@@ -108,7 +122,7 @@ export default function EmergenciaApp({ onCambiarModulo }) {
   }, []);
 
   const sincronizarAhora = async () => {
-    if (pantalla.vista === 'inicio') setRecarga((valor) => valor + 1);
+    if (VISTAS_RECARGABLES.includes(pantalla.vista)) setRecarga((valor) => valor + 1);
     if (manual.current) return;
     manual.current = true;
     setSincronizando(true);
@@ -122,7 +136,7 @@ export default function EmergenciaApp({ onCambiarModulo }) {
         if (result?.offline) showToast({ type: 'warning', message: 'Sin conexión. Se envía solo cuando vuelva.' });
         else if (result?.failed > 0) showToast({ type: 'warning', message: `No se pudo enviar ${result.failed}. Mirá «Mis envíos».` });
         else if (result?.synced > 0) showToast({ type: 'success', message: `Se enviaron ${result.synced}.` });
-      } else if (pantalla.vista !== 'inicio') {
+      } else if (VISTAS_M1.includes(pantalla.vista)) {
         showToast({ type: 'info', message: 'No había nada para enviar.' });
       }
     } catch (error) {
@@ -195,14 +209,42 @@ export default function EmergenciaApp({ onCambiarModulo }) {
       setPantalla({ vista: 'envios', uuid: null });
       return;
     }
+    if (acceso.clave === 'kits') {
+      setPantalla({ vista: 'kits_dispositivos' });
+      return;
+    }
     showAlert('Próximamente',
       `«${acceso.titulo}» va a estar disponible en una próxima versión de la app.`, [{ text: 'Entendido' }]);
   };
 
+  // ---- M3 · Recepción de kits ----
+  // Con un solo dispositivo se entra directo a sus entregas, y «volver» desde ahí va al inicio.
+  const elegirDispositivo = (dispositivo, { unico = false } = {}) => setPantalla({ vista: 'kits_entregas', dispositivo, unico });
+  const verEntregas = () => setPantalla((actual) => ({ vista: 'kits_entregas', dispositivo: actual.dispositivo, unico: actual.unico }));
+  const verDispositivos = () => setPantalla({ vista: 'kits_dispositivos' });
+  // 403 SIN_MODULO: emergenciaApi ya volvió a pedir el perfil; el inicio muestra los accesos nuevos.
+  const sinModulo = (mensaje) => {
+    showAlert('Sin permiso', mensaje, [{ text: 'Entendido' }]);
+    setPantalla(INICIO);
+  };
+  const dispositivoNoEncontrado = () => {
+    showToast({ type: 'warning', message: 'Ese dispositivo ya no está entre los tuyos. Se recargó la lista.' });
+    verDispositivos();
+  };
+  // 'recibida' y 'conflicto' (409 de estado) vuelven a las entregas, que se recargan al montarse;
+  // 'no_encontrada' (404) vuelve a «mis dispositivos».
+  const terminarRecepcion = (motivo) => {
+    if (motivo === 'no_encontrada') verDispositivos();
+    else verEntregas();
+  };
+
   const { vista, uuid } = pantalla;
-  const titulo = vista === 'inicio' ? `Hola, ${displayName}` : TITULOS[vista];
+  const titulo = vista === 'inicio' ? `Hola, ${displayName}` : (vista === 'kits_entregas' && pantalla.dispositivo?.nombre) || TITULOS[vista];
   const volver = () => {
-    setPantalla(vista === 'formulario' ? { vista: 'envios', uuid: null } : { vista: 'inicio', uuid: null });
+    if (vista === 'formulario') setPantalla({ vista: 'envios', uuid: null });
+    else if (vista === 'kits_recibir') verEntregas();
+    else if (vista === 'kits_entregas' && !pantalla.unico) verDispositivos();
+    else setPantalla(INICIO);
     refrescarEstado();
   };
   let syncStatus = 'synced';
@@ -225,6 +267,18 @@ export default function EmergenciaApp({ onCambiarModulo }) {
         {vista === 'formulario' ? (
           <EmergenciaFormulario1Screen key={uuid || 'nuevo'} uuid={uuid}
             onTerminar={() => { setPantalla({ vista: 'envios', uuid: null }); refrescarEstado(); }} />
+        ) : null}
+        {vista === 'kits_dispositivos' ? (
+          <EmergenciaMisDispositivosScreen recarga={recarga} onElegir={elegirDispositivo} onSinModulo={sinModulo} />
+        ) : null}
+        {vista === 'kits_entregas' ? (
+          <EmergenciaEntregasScreen key={String(pantalla.dispositivo?.id)} dispositivo={pantalla.dispositivo} recarga={recarga}
+            onAbrir={(entrega) => setPantalla((actual) => ({ ...actual, vista: 'kits_recibir', entrega }))}
+            onNoEncontrado={dispositivoNoEncontrado} onSinModulo={sinModulo} />
+        ) : null}
+        {vista === 'kits_recibir' ? (
+          <EmergenciaRecibirEntregaScreen key={String(pantalla.entrega?.id)} entrega={pantalla.entrega}
+            dispositivoId={pantalla.dispositivo?.id ?? null} onTerminar={terminarRecepcion} onSinModulo={sinModulo} />
         ) : null}
       </View>
       {vista === 'inicio' ? (

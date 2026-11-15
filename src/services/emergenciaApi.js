@@ -157,7 +157,8 @@ export const getEntrega = (entregaId) => conVerificacion(() => becasRequest(RUTA
 
 // §12. `cantidades` es { <id del ítem>: cantidad }, una por línea aunque sea 0; va como
 // `cantidades[<id>]`. `remito` es el asset de aJpeg. Requiere conexión: no se encola.
-export const recibirEntrega = async (entregaId, { uuid_cliente, cantidades = {}, remito, observacion } = {}, { timeoutMs } = {}) => {
+// `token`: el de la sesión con la que se abrió la recepción (no se relee).
+export const recibirEntrega = async (entregaId, { uuid_cliente, cantidades = {}, remito, observacion } = {}, { timeoutMs, token } = {}) => {
   exigirUuid(uuid_cliente);
   const fields = { uuid_cliente };
   Object.entries(cantidades || {}).forEach(([item, cantidad]) => {
@@ -165,7 +166,7 @@ export const recibirEntrega = async (entregaId, { uuid_cliente, cantidades = {},
   });
   if (presente(observacion)) fields.observacion = observacion;
   const files = [archivoJpeg('remito', remito)].filter(Boolean);
-  return conVerificacion(() => uploadMultipart(RUTAS.recibirEntrega(entregaId), { fields, files, timeoutMs }));
+  return conVerificacion(() => uploadMultipart(RUTAS.recibirEntrega(entregaId), { fields, files, timeoutMs, token }));
 };
 
 const es409 = (error) => Number(error?.status) === 409 && !error?.unexpectedHtml;

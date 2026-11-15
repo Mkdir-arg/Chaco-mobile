@@ -14,7 +14,7 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
 (async () => {
   const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
   try {
-    fs.writeFileSync(entry, original + `\nimport service from './src/services/relevamientoService';\nimport * as api from './src/services/becasApi';\nimport * as emergencia from './src/services/emergenciaCola';\nimport { API_CONFIG } from './src/config/apiConfig';\nimport NetInfo from '@react-native-community/netinfo';\nwindow.__pwaTest = {service, api, emergencia, netinfo: NetInfo, config: API_CONFIG};\n`);
+    fs.writeFileSync(entry, original + `\nimport service from './src/services/relevamientoService';\nimport * as api from './src/services/becasApi';\nimport * as emergencia from './src/services/emergenciaCola';\nimport * as kits from './src/services/emergenciaKits';\nimport * as emergenciaApi from './src/services/emergenciaApi';\nimport { API_CONFIG } from './src/config/apiConfig';\nimport NetInfo from '@react-native-community/netinfo';\nwindow.__pwaTest = {service, api, emergencia, kits, emergenciaApi, netinfo: NetInfo, config: API_CONFIG};\n`);
     try {
       run(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['expo','export','--clear','--platform','web','--output-dir','dist-browser']);
       // Runtime setting intentionally differs from the Expo build-time URL.
@@ -30,6 +30,7 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
     const campaign = {id:1,nombre:'Prueba PWA',estado:'EN_CURSO',fecha_asignada:'2020-01-01T00:00:00-03:00',
       fecha_hasta:'2099-12-31T23:59:59-03:00',definicion_formulario:{version:3,globales:[],requisitos:[]}};
     let posts=0, uploads=0, rejectUpload=true, casos=0, localidades=0;
+    const recepciones=[];
     const launch = async () => {
       const ctx = await chromium.launchPersistentContext(profile, {headless:true,
         ...(process.env.CHROME_PATH ? {executablePath:process.env.CHROME_PATH} : {})});
@@ -52,6 +53,17 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
           status=casos===1?201:200; body={id:184,numero:'2026-000184',prioridad:'MEDIA',total_declarado:1};
         }
         else if(url.endsWith('/api/emergencia/localidades/')) {localidades++;body=[{id:12,nombre:'Barranqueras'}];}
+        else if(url.endsWith('/api/emergencia/mis-dispositivos/')) body=[{id:7,nombre:'Club Sarmiento',admite:false,recibe_kits:true,entregas_pendientes:1},{id:9,nombre:'Escuela 12',admite:true,recibe_kits:false,entregas_pendientes:0}];
+        else if(url.endsWith('/api/emergencia/dispositivos/7/entregas/?pendientes=1')) body=[{id:31,numero:'2026-K-000031',estado:'EN_CAMINO',despachada_en:'2026-11-12T10:00:00-03:00',recibida_en:null,observacion_mesa:'',observacion_dispositivo:'',lineas:[{item:12,nombre:'Colchón',unidad:'unidad',enviada:10,recibida:null},{item:14,nombre:'Kit alimentario',unidad:'kit',enviada:3,recibida:null}]}];
+        else if(req.method()==='POST' && url.endsWith('/api/emergencia/entregas/31/recibir/')) {
+          assert.match(req.headers()['content-type'], /multipart\/form-data; boundary=/);
+          const datos=req.postDataBuffer().toString('latin1');
+          const campo=nombre=>(datos.match(new RegExp('name="'+nombre.replace(/[[\]]/g,'\\$&')+'"\\r\\n\\r\\n([^\\r]*)'))||[])[1];
+          recepciones.push({uuid:campo('uuid_cliente'),c12:campo('cantidades[12]'),c14:campo('cantidades[14]'),obs:campo('observacion'),
+            remito:datos.includes('name="remito"; filename="remito.jpg"') && datos.includes('remito-bytes')});
+          if(recepciones.length===1) status=503;
+          body=recepciones.length===1?{detail:'Servicio no disponible'}:{estado:'RECIBIDA_CON_DIFERENCIAS',diferencias:[{item:12,enviada:10,recibida:8},{item:14,enviada:3,recibida:0}]};
+        }
         else if(url.endsWith('/relevamientos/')) body=[campaign];
         else if(url.endsWith('/relevamientos/1/')) body=campaign;
         await route.fulfill({status,contentType:'application/json',headers:{'Access-Control-Allow-Origin':'http://localhost:4174','Access-Control-Allow-Credentials':'true','Access-Control-Allow-Headers':'authorization,content-type','Access-Control-Allow-Methods':'GET,POST,OPTIONS'},body:JSON.stringify(body)});
@@ -208,6 +220,61 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
     await context.unroute('http://localhost:4174/',sondeoNetInfo);
     assert.deepEqual(errors,[]);
     console.log('PASS: Emergencia M1 offline -> reload -> online, multipart with photo, single send, cached localidades.');
+    // Emergencia M3: la recepción de kits no se encola. Sin red no sale; el uuid sobrevive a recargar;
+    // tras un 503 el reintento sale con el MISMO uuid y cantidades[<id>] por línea, 0 incluido.
+    const listasM3=await page.evaluate(async()=>{
+      const {kits:k,emergenciaApi:e}=window.__pwaTest;
+      const dispositivos=k.dispositivosConKits(await e.getMisDispositivos());
+      const entregas=k.normalizarEntregas(await e.getEntregasDispositivo(dispositivos[0].id,{pendientes:true}));
+      return {dispositivos,entregas:entregas.map(x=>({id:x.id,resumen:k.resumenDeItems(x)}))};
+    });
+    assert.deepEqual(listasM3,{dispositivos:[{id:7,nombre:'Club Sarmiento',entregas_pendientes:1}],
+      entregas:[{id:31,resumen:'10 × Colchón · 3 × Kit alimentario'}]});
+    const abiertaM3=await page.evaluate(async()=>{
+      const k=window.__pwaTest.kits;
+      const entrega=k.normalizarEntrega({id:31,numero:'2026-K-000031',estado:'EN_CAMINO',lineas:[{item:12,nombre:'Colchón',unidad:'unidad',enviada:10},{item:14,nombre:'Kit alimentario',unidad:'kit',enviada:3}]});
+      const r=await k.abrirRecepcion(entrega,7);
+      await k.guardarRecepcion(r.owner,31,{cantidades:{12:'8',14:'0'},observacion:'Faltan'});
+      return r.uuid_cliente;
+    });
+    await context.setOffline(true);
+    await page.waitForFunction(()=>navigator.onLine===false);
+    const sinRedM3=await page.evaluate(async()=>{
+      const k=window.__pwaTest.kits;
+      const entrega=k.normalizarEntrega({id:31,numero:'2026-K-000031',estado:'EN_CAMINO',lineas:[{item:12,nombre:'Colchón',enviada:10},{item:14,nombre:'Kit alimentario',enviada:3}]});
+      const r=await k.abrirRecepcion(entrega,7);
+      const remito={uri:'blob:remito',fileName:'remito.jpg',file:new Blob(['remito-bytes'],{type:'image/jpeg'}),size:12};
+      try { await k.enviarRecepcion({entrega,recepcion:r,cantidades:r.cantidades,remito,observacion:r.observacion}); return 'salió'; }
+      catch(e){ return e.code; }
+    });
+    assert.equal(sinRedM3,'SIN_RED');
+    assert.equal(recepciones.length,0,'sin red la recepción no sale');
+    await page.reload(); await page.waitForFunction(()=>window.__pwaTest);
+    await context.setOffline(false);
+    await page.waitForFunction(()=>navigator.onLine===true);
+    const m3=await page.evaluate(async()=>{
+      const k=window.__pwaTest.kits;
+      const entrega=k.normalizarEntrega({id:31,numero:'2026-K-000031',estado:'EN_CAMINO',lineas:[{item:12,nombre:'Colchón',enviada:10},{item:14,nombre:'Kit alimentario',enviada:3}]});
+      const r=await k.abrirRecepcion(entrega,7);
+      const remito={uri:'blob:remito',fileName:'remito.jpg',file:new Blob(['remito-bytes'],{type:'image/jpeg'}),size:12};
+      const args={entrega,recepcion:r,cantidades:r.cantidades,remito,observacion:r.observacion};
+      let primero=null;
+      try { await k.enviarRecepcion(args); } catch(e){ primero=e.clasificacion&&e.clasificacion.tipo; }
+      const bloqueada=(await k.abrirRecepcion(entrega,7)).bloqueada;
+      const ok=await k.enviarRecepcion(args);
+      return {uuid:r.uuid_cliente,recuperada:r.recuperada,primero,bloqueada,ok,despues:(await k.abrirRecepcion(entrega,7)).uuid_cliente};
+    });
+    assert.equal(m3.uuid,abiertaM3,'el uuid sobrevive a recargar');
+    assert.equal(m3.recuperada,true);
+    assert.equal(m3.primero,'reintentable');
+    assert.equal(m3.bloqueada,true);
+    assert.equal(m3.ok.estado,'RECIBIDA_CON_DIFERENCIAS');
+    assert.deepEqual(m3.ok.diferencias.map(d=>d.nombre),['Colchón','Kit alimentario']);
+    assert.notEqual(m3.despues,abiertaM3,'cerrada: la próxima es otra recepción');
+    assert.equal(recepciones.length,2);
+    for (const r of recepciones) assert.deepEqual(r,{uuid:abiertaM3,c12:'8',c14:'0',obs:'Faltan',remito:true});
+    assert.deepEqual(errors,[]);
+    console.log('PASS: Emergencia M3 without network blocked, uuid survives reload, 503 retry with same uuid, cantidades[id] with 0, JPEG remito.');
   } finally {
     fs.writeFileSync(entry,original);
     await context?.close(); server?.kill(); fs.rmSync(profile,{recursive:true,force:true});
