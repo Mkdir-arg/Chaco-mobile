@@ -779,6 +779,7 @@ export const TEXTO_DIFERENCIA_INCIERTA = 'No se pudo saber si el ingreso se cerr
 export const TEXTO_CANCELAR_INCIERTO = 'No se pudo saber si el ingreso se canceló. «Reintentar» lo vuelve a mandar: si ya había llegado, el caso figura de vuelta en la mesa.';
 export const TEXTO_YA_ALOJADA = 'La familia ya figura alojada: se muestra en lectura.';
 export const NOTA_REVISAR_ALOJAMIENTO = 'Revisá los datos de alojamiento en la ficha: si lo cerró otra guardia, lo que cargaste acá no se guardó.';
+export const TEXTO_CONFIRMAR_REENVIO_CANCELAR = 'No sabemos si la cancelación llegó. El ingreso figura en curso, sin nadie confirmado. ¿Cancelarlo?';
 export const TEXTO_INGRESO_CAMBIO = 'El ingreso cambió mientras tanto (el caso volvió a entrar o ya hay personas confirmadas): no se vuelve a cancelar. Revisá los integrantes.';
 export const TEXTO_YA_CANCELADO = 'El ingreso ya figura cancelado: el caso está de vuelta en la mesa.';
 
@@ -897,13 +898,14 @@ export const cerrarDiferencia = async (sesion, casoId, { motivo, observacion } =
 // «Cancelar el ingreso»: sin nadie confirmado; libera todas las camas y el caso vuelve a la mesa.
 // El reintento de un cancelar incierto podría cancelar OTRO ingreso del mismo caso (el primero llegó, la
 // mesa volvió a derivar acá y otra guardia aceptó). El GET de integrantes no expone la derivación, así
-// que antes de reenviar se relee: con el caso ya en la mesa es «se hizo» sin reenviar; si el ingreso
-// sigue en curso sin nadie confirmado se reenvía (no se puede distinguir un ingreso nuevo sin confirmados:
-// queda documentado en el README); si cambió (otro estado o personas confirmadas), no se reenvía.
-export const cancelar = async (sesion, casoId, { motivo } = {}, { incierto = false } = {}) => {
+// que antes de reenviar se relee: con el caso ya en la mesa es «se hizo» sin reenviar; si cambió (otro
+// estado o personas confirmadas), no se reenvía. Si sigue en curso sin nadie confirmado no se puede
+// distinguir de un ingreso nuevo: NO se reenvía solo; sale un error `confirmar_reenvio` para que la
+// guardia vuelva a confirmar con el estado real, y recién con `reconfirmado: true` se manda.
+export const cancelar = async (sesion, casoId, { motivo } = {}, { incierto = false, reconfirmado = false } = {}) => {
   const errores = validarCancelar({ motivo });
   if (Object.keys(errores).length) throw crearErrorLocal(errores);
-  if (incierto) {
+  if (incierto && !reconfirmado) {
     let actual;
     try {
       actual = await cargarIntegrantes(sesion, casoId);
@@ -922,6 +924,10 @@ export const cancelar = async (sesion, casoId, { motivo } = {}, { incierto = fal
         clasificacion: { tipo: 'conflicto', mensaje: TEXTO_INGRESO_CAMBIO, estadoActual: actual.caso?.estado || '', destino: 'integrantes' },
       });
     }
+    throw crearError('CONFIRMAR_REENVIO', TEXTO_CONFIRMAR_REENVIO_CANCELAR, {
+      incierto: true,
+      clasificacion: { tipo: 'confirmar_reenvio', mensaje: TEXTO_CONFIRMAR_REENVIO_CANCELAR },
+    });
   }
   return cerrarIngreso(sesion, (op) => cancelarIngreso(casoId, { motivo }, op), {
     incierto, campos: ['motivo'], produce: ESTADOS_EN_LA_MESA,

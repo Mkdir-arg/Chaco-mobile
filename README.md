@@ -436,12 +436,15 @@ Reglas (`src/services/emergenciaLlegadas.js`):
   hecho otra guardia; al alojar, además pide revisar los datos de alojamiento en la ficha, porque lo
   cargado puede no haberse guardado). Otro estado, o un 409 sin intento incierto, va al router de §13.1.
   Un 400 `non_field_errors` (la acción ya no corresponde al contador) se muestra en la pantalla.
-- **Reintento de un cancelar incierto**: antes de reenviar se releen los integrantes. Con el caso ya en
-  la mesa es «se hizo» sin reenviar; con el ingreso en otro estado o con personas confirmadas, no se
-  reenvía y se vuelve a los integrantes. **Límite conocido**: el GET de integrantes (§13.5) no expone la
-  derivación, así que si el primer cancelar llegó, la mesa volvió a derivar al mismo dispositivo y otra
-  guardia aceptó **sin confirmar a nadie** en ese lapso, el reintento cancelaría ese ingreso nuevo. Para
-  cerrarlo haría falta que el back exponga el id de la derivación (o un uuid en cancelar).
+- **Reintento de un cancelar incierto**: nunca se reenvía sin preguntar. Antes se releen los
+  integrantes: con el caso ya en la mesa es «se hizo» sin reenviar; con el ingreso en otro estado o con
+  personas confirmadas, no se reenvía y se vuelve a los integrantes. Si sigue en curso sin nadie
+  confirmado no se puede saber si es el mismo ingreso o uno nuevo (el primer cancelar llegó, la mesa
+  volvió a derivar acá y otra guardia aceptó): se vuelve a confirmar con el estado real («No sabemos si
+  la cancelación llegó. El ingreso figura en curso, sin nadie confirmado. ¿Cancelarlo?», «Cancelar el
+  ingreso» / «No») y solo con el «sí» se manda. **Arreglo de fondo pendiente en el back**: exponer el id
+  de la derivación vigente en `GET …/integrantes/` y aceptar `derivacion` opcional en
+  `POST …/cancelar-ingreso/`, con 409 si no es la última; así la app compara y no hace falta preguntar.
 - **Ingresar igual y avisar a la mesa son idempotentes**: el `uuid_cliente` nace al mandar y se
   guarda con lo cargado en AsyncStorage por usuario, dispositivo y DNI hasta saber el resultado:
   volver, re-entrar o cerrar la app no lo cambian, y al volver a esa familia **solo** se ofrece
@@ -454,7 +457,13 @@ Reglas (`src/services/emergenciaLlegadas.js`):
 - **Datos personales de la puerta**: lo tipeado (y el DNI) se borra en el logout, con la sesión
   vencida o sin el módulo, al abrir el módulo con otro usuario y a las 48 h (`emergenciaLimpieza`).
   El uuid **no** se pierde: queda `{ uuid, accion, dispositivo, creado_en }` por usuario, bajo el
-  SHA-256 de dispositivo y DNI (seudonimización: un DNI se puede recuperar por fuerza bruta), 7 días.
+  SHA-256 de dispositivo y DNI, 7 días.
+- **Excepción a la limpieza de datos personales**: esa huella SHA-256 de dispositivo+DNI **es un dato
+  personal revertible** (con 10^8 DNI posibles se recupera por fuerza bruta) y se conserva a propósito
+  hasta 7 días después del logout o del vencimiento **del mismo usuario**, para que su reintento no
+  cree un caso duplicado. Cuando entra otro usuario (al iniciar sesión o al abrir el módulo) se borra
+  junto con todo lo demás de los otros dueños: el uuid solo le sirve a quien lo creó (con otro usuario
+  el back contesta `UUID_EN_USO`).
   Al volver a esa familia se ofrece solo «Reintentar», que manda el uuid y el DNI: el back busca el
   uuid antes de validar el Formulario 1, así que si el primero llegó devuelve el caso; si no, contesta
   400 (no se creó nada) y se vuelve a cargar el formulario.

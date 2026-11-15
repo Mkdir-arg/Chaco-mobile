@@ -349,9 +349,10 @@ test('limpieza (m6): logout, otro usuario y 48 h borran lo tipeado pero dejan el
   const {uuid} = await l.puertaPendiente(sesion, 9, '30111222');
   const limpieza = r.load('./emergenciaLimpieza');
   r.legacy.set('emergencia_llegadas_puerta:8', JSON.stringify({'9:1234567': {accion: 'avisar', uuid: 'u-8', datos: {nombre: 'X'}, guardado_en: Date.now(), creado_en: Date.now()}}));
+  r.legacy.set('emergencia_llegadas_puerta_uuid:8', JSON.stringify({[sha('9:7654321')]: {uuid: 'u-8b', accion: 'ingresar', dispositivo: '9', creado_en: Date.now()}}));
   await limpieza.depurarBorradoresFicha('7');
   assert.ok(!r.legacy.has('emergencia_llegadas_puerta:8'), 'lo tipeado de otro usuario se borra');
-  igual(JSON.parse(r.legacy.get('emergencia_llegadas_puerta_uuid:8')), {[sha('9:1234567')]: {uuid: 'u-8', accion: 'avisar', dispositivo: '9', creado_en: JSON.parse(r.legacy.get('emergencia_llegadas_puerta_uuid:8'))[sha('9:1234567')].creado_en}});
+  assert.ok(!r.legacy.has('emergencia_llegadas_puerta_uuid:8'), 'y sus uuid sin datos: solo le sirven a su dueño');
   assert.ok((await l.puertaPendiente(sesion, 9, '30111222')).datos, 'el propio vigente queda con lo tipeado');
   // 48 h después de tipearlo: queda el uuid sin datos.
   const viejo = JSON.parse(r.legacy.get('emergencia_llegadas_puerta:7'));
@@ -378,6 +379,17 @@ test('limpieza (m6): logout, otro usuario y 48 h borran lo tipeado pero dejan el
   assert.equal(await l.puertaPendiente(sesion, 9, '30111222'), null);
   await limpieza.depurarBorradoresFicha('7');
   assert.ok(!r.legacy.has('emergencia_llegadas_puerta_uuid:7'));
+  // El logout sí deja el uuid sin datos (es del mismo usuario que vuelve a entrar).
+  r.legacy.set('emergencia_llegadas_puerta:8', JSON.stringify({'9:1234567': {accion: 'avisar', uuid: 'u-8', datos: {nombre: 'X'}, guardado_en: Date.now(), creado_en: Date.now()}}));
+  await limpieza.limpiarDatosLocalesEmergencia();
+  assert.equal(JSON.parse(r.legacy.get('emergencia_llegadas_puerta_uuid:8'))[sha('9:1234567')].uuid, 'u-8');
+  await limpieza.depurarBorradoresFicha('8');
+  assert.equal(JSON.parse(r.legacy.get('emergencia_llegadas_puerta_uuid:8'))[sha('9:1234567')].uuid, 'u-8', 'su dueño lo conserva');
+  assert.ok(!r.legacy.has('emergencia_llegadas_puerta_uuid:7'), 'el de 7 se va cuando entra 8');
+  router(r, fallaDeRed);
+  await clasificacion(l.enviarPuerta(sesion, 9, 'ingresar', DATOS));
+  await limpieza.depurarBorradoresFicha('7');
+  assert.ok(!r.legacy.has('emergencia_llegadas_puerta_uuid:8'), 'y el de 8 cuando vuelve a entrar 7');
 });
 
 test('m6: tras el logout, el reintento con el uuid solo manda uuid y DNI; si había llegado devuelve el caso (no crea otro)', async () => {
@@ -471,15 +483,22 @@ test('m2: un 404 con un uuid de antes lo conserva (el back mira el alcance antes
   igual([c.tipo, c.incierto, (await l.puertaPendiente(sesion, 9, '30111222')).uuid], ['no_encontrado', true, primero.uuid]);
 });
 
-test('m3: el reintento de un cancelar incierto relee los integrantes: en la mesa es «se hizo» sin reenviar; en curso sin confirmadas reenvía; si cambió, no', async () => {
+test('m3: el reintento de un cancelar incierto relee los integrantes: en la mesa es «se hizo» sin reenviar; en curso sin confirmadas pide reconfirmar; si cambió, no', async () => {
   const {r, l, sesion} = await preparar();
   const integrantes = (extra = {}) => response(200, {caso: CASO, integrantes: [FILA(1)], confirmadas: 0, total_declarado: 1, declaradas_al_relevar: 1, ...extra});
   let calls = router(r, (call) => (call.method === 'GET' ? response(409, {detail: 'Se canceló.', estado_actual: 'EN_GESTION'}) : response(200, {})));
   const hecho = await l.cancelar(sesion, 184, {motivo: 'x'}, {incierto: true});
   igual([hecho.resultado, hecho.estado, hecho.detalle, calls.map(c => c.method)], ['ya_hecho', 'EN_GESTION', 'Se canceló.', ['GET']]);
   calls = router(r, (call) => (call.method === 'GET' ? integrantes() : response(200, {estado: 'EN_GESTION', total_alojado: null, liberadas: 1})));
-  assert.equal((await l.cancelar(sesion, 184, {motivo: 'x'}, {incierto: true})).resultado, 'hecho');
-  igual(calls.map(c => c.method), ['GET', 'POST']);
+  const pregunta = await clasificacion(l.cancelar(sesion, 184, {motivo: 'x'}, {incierto: true}));
+  igual([pregunta.tipo, pregunta.mensaje, pregunta.incierto, calls.map(c => c.method)],
+    ['confirmar_reenvio', 'No sabemos si la cancelación llegó. El ingreso figura en curso, sin nadie confirmado. ¿Cancelarlo?', true, ['GET']],
+    'indistinguible de un ingreso nuevo: nunca se reenvía sin preguntar');
+  assert.equal((await l.cancelar(sesion, 184, {motivo: 'x'}, {incierto: true, reconfirmado: true})).resultado, 'hecho');
+  igual(calls.map(c => c.method), ['GET', 'POST'], 'reconfirmado manda sin volver a leer');
+  router(r, () => response(409, {detail: 'Se canceló.', estado_actual: 'EN_GESTION'}));
+  assert.equal((await l.cancelar(sesion, 184, {motivo: 'x'}, {incierto: true, reconfirmado: true})).resultado, 'ya_hecho',
+    'reconfirmado sigue siendo incierto: el 409 en la mesa es «se hizo»');
   for (const cambio of [{confirmadas: 1}, {caso: {...CASO, estado: 'ALOJADO'}}]) {
     calls = router(r, (call) => (call.method === 'GET' ? integrantes(cambio) : response(200, {})));
     const c = await clasificacion(l.cancelar(sesion, 184, {motivo: 'x'}, {incierto: true}));

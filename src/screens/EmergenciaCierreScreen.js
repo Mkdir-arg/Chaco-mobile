@@ -179,7 +179,8 @@ export default function EmergenciaCierreScreen({
     return validarCancelar(datosDelCierre());
   };
 
-  const mandar = async () => {
+  // `reconfirmado`: la guardia ya volvió a confirmar un cancelar incierto con el estado releído.
+  const mandar = async ({ reconfirmado = false } = {}) => {
     if (enviandoRef.current || !sesion) return;
     // Se toma antes de mirar la red (en nativo NetInfo tarda): dos toques seguidos no pasan los dos.
     enviandoRef.current = true;
@@ -197,7 +198,7 @@ export default function EmergenciaCierreScreen({
     }
     avisarEnviando(true);
     try {
-      const opciones = { incierto };
+      const opciones = { incierto, reconfirmado };
       let r;
       if (cierre === 'alojar') r = await alojar(sesion, caso.id, datosDelCierre(), opciones);
       else if (cierre === 'diferencia') r = await cerrarDiferencia(sesion, caso.id, datosDelCierre(), opciones);
@@ -222,6 +223,15 @@ export default function EmergenciaCierreScreen({
         return;
       }
       setIncierto(!!e?.incierto);
+      if (c.tipo === 'confirmar_reenvio') {
+        // Cancelar incierto y el ingreso sigue en curso sin confirmados: no se sabe si es el mismo. Se
+        // vuelve a preguntar con el estado real; sin el «sí» no sale nada.
+        showAlert(config.titulo, c.mensaje, [
+          { text: 'No', style: 'cancel' },
+          { text: config.confirmar, style: 'destructive', onPress: () => mandar({ reconfirmado: true }) },
+        ]);
+        return;
+      }
       if (c.tipo === 'sin_red') {
         setSinRed(true);
         showAlert('Sin conexión', TEXTO_SIN_RED, [{ text: 'Entendido' }]);
@@ -257,7 +267,7 @@ export default function EmergenciaCierreScreen({
     }
     showAlert(config.titulo, config.pregunta({ confirmadas, total }), [
       { text: 'Volver', style: 'cancel' },
-      { text: config.confirmar, ...(config.destructiva ? { style: 'destructive' } : {}), onPress: mandar },
+      { text: config.confirmar, ...(config.destructiva ? { style: 'destructive' } : {}), onPress: () => mandar() },
     ]);
   };
 

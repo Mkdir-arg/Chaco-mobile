@@ -529,6 +529,30 @@ test('Cancelar (m3): tras un corte, si el ingreso cambió (alguien confirmado) n
   } finally { await ui.close(); }
 });
 
+test('Cancelar (m3): tras un corte, si el ingreso sigue en curso sin confirmados vuelve a preguntar con el estado real; «No» no manda nada', async () => {
+  let posteos = 0;
+  const ui = await montarCierre((call) => {
+    if (call.method === 'GET') return response(200, {caso: CASO, integrantes: [FILA(1)], confirmadas: 0, total_declarado: 3, declaradas_al_relevar: 3, con_ficha_incompleta: 0});
+    posteos += 1;
+    return posteos === 1 ? fallaDeRed() : response(200, {estado: 'EN_GESTION', total_alojado: null, liberadas: 3});
+  }, {cierre: 'cancelar', confirmadas: 0});
+  try {
+    await ui.escribir('Motivo de la cancelación', 'Se fueron');
+    await ui.pressButton('Cancelar el ingreso');
+    await ui.aceptarAlerta('Cancelar el ingreso');
+    await ui.pressButton('Reintentar: cancelar el ingreso');
+    assert.equal(posteos, 1, 'no se reenvía sin preguntar');
+    const [titulo, cuerpo, opciones] = ui.alerts.at(-1);
+    assert.deepEqual([titulo, cuerpo], ['Cancelar ingreso', 'No sabemos si la cancelación llegó. El ingreso figura en curso, sin nadie confirmado. ¿Cancelarlo?']);
+    assert.deepEqual(plano(opciones.map(o => [o.text, o.style])), [['No', 'cancel'], ['Cancelar el ingreso', 'destructive']]);
+    assert.equal(opciones[0].onPress, undefined, '«No» no hace nada');
+    assert.equal(posteos, 1);
+    await ui.aceptarAlerta('Cancelar el ingreso');
+    assert.equal(posteos, 2);
+    assert.deepEqual(ui.eventos.map(e => [e[0], e[1].cierre, e[1].resultado]), [['cerrado', 'cancelar', 'hecho']]);
+  } finally { await ui.close(); }
+});
+
 test('Puerta (M1, m5): el DNI es el buscado y no se edita; con un envío pendiente la fecha queda fija también', async () => {
   const env = await entorno(fallaDeRed);
   const ui = await montarPuerta(null, {env});

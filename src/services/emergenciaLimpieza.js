@@ -100,21 +100,23 @@ export const limpiarDatosLocalesEmergencia = (ahora = Date.now()) => enOrdenGuar
   }
 });
 
-// Al abrir el módulo: los borradores de otro usuario se borran enteros (de la puerta queda el uuid sin
-// datos), y de los del actual, los vencidos (48 h). Los uuid sin datos vencen a los 7 días.
+// Al abrir el módulo o al entrar: lo de otro usuario se borra entero, también sus uuid sin datos (el uuid
+// solo le sirve a su dueño: con otro usuario el back contesta UUID_EN_USO). Del usuario actual, lo
+// tipeado vencido (48 h) pasa a uuid sin datos, y sus uuid sin datos vencen a los 7 días.
 export const depurarBorradoresFicha = (ownerActual, ahora = Date.now()) => enOrdenGuardado(async () => {
   const owner = ownerActual == null ? null : String(ownerActual);
   for (const clave of await todasLasClaves()) {
     if (clave.startsWith(PREFIJO_PUERTA_UUID)) {
-      await depurarSinDatos(clave, ahora);
+      if (clave === `${PREFIJO_PUERTA_UUID}${owner}`) await depurarSinDatos(clave, ahora);
+      else await AsyncStorage.removeItem(clave);
       continue;
     }
     const prefijo = prefijoDe(clave);
     if (!prefijo) continue;
     const propia = clave === `${prefijo}${owner}`;
     const vencido = (b) => !(b && typeof b === 'object' && ahora - Number(b.guardado_en || 0) < VIDA_BORRADOR_MS);
-    if (prefijo === PREFIJO_PUERTA) {
-      await pasarASinDatos(clave, propia ? vencido : () => true, ahora);
+    if (prefijo === PREFIJO_PUERTA && propia) {
+      await pasarASinDatos(clave, vencido, ahora);
       continue;
     }
     if (!propia) {
