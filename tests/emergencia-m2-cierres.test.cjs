@@ -339,24 +339,163 @@ test('puerta sin red: no sale nada y un uuid recién nacido no queda; uno de ant
   assert.equal(api(calls).length, 1);
 });
 
-test('limpieza: el logout borra los envíos de la puerta (tienen DNI y lo tipeado); al abrir el módulo, los de otro usuario y los vencidos', async () => {
+const sha = (texto) => require('node:crypto').createHash('sha256').update(texto).digest('hex');
+const HUELLA = sha('9:30111222');
+
+test('limpieza (m6): logout, otro usuario y 48 h borran lo tipeado pero dejan el uuid sin datos ni DNI en claro, 7 días', async () => {
   const {r, l, sesion} = await preparar();
   router(r, fallaDeRed);
   await clasificacion(l.enviarPuerta(sesion, 9, 'ingresar', DATOS));
+  const {uuid} = await l.puertaPendiente(sesion, 9, '30111222');
   const limpieza = r.load('./emergenciaLimpieza');
-  r.legacy.set('emergencia_llegadas_puerta:8', JSON.stringify({'9:1': {accion: 'avisar', uuid: 'u', datos: {}, guardado_en: Date.now()}}));
+  r.legacy.set('emergencia_llegadas_puerta:8', JSON.stringify({'9:1234567': {accion: 'avisar', uuid: 'u-8', datos: {nombre: 'X'}, guardado_en: Date.now(), creado_en: Date.now()}}));
   await limpieza.depurarBorradoresFicha('7');
-  assert.ok(!r.legacy.has('emergencia_llegadas_puerta:8'), 'el de otro usuario se borra');
-  assert.ok(await l.puertaPendiente(sesion, 9, '30111222'), 'el propio vigente queda');
+  assert.ok(!r.legacy.has('emergencia_llegadas_puerta:8'), 'lo tipeado de otro usuario se borra');
+  igual(JSON.parse(r.legacy.get('emergencia_llegadas_puerta_uuid:8')), {[sha('9:1234567')]: {uuid: 'u-8', accion: 'avisar', dispositivo: '9', creado_en: JSON.parse(r.legacy.get('emergencia_llegadas_puerta_uuid:8'))[sha('9:1234567')].creado_en}});
+  assert.ok((await l.puertaPendiente(sesion, 9, '30111222')).datos, 'el propio vigente queda con lo tipeado');
+  // 48 h después de tipearlo: queda el uuid sin datos.
   const viejo = JSON.parse(r.legacy.get('emergencia_llegadas_puerta:7'));
   Object.values(viejo).forEach(p => { p.guardado_en = Date.now() - 49 * 60 * 60 * 1000; });
   r.legacy.set('emergencia_llegadas_puerta:7', JSON.stringify(viejo));
-  assert.equal(await l.puertaPendiente(sesion, 9, '30111222'), null, 'vencido no se ofrece');
+  igual(await l.puertaPendiente(sesion, 9, '30111222'), {accion: 'ingresar', uuid, datos: null}, 'sin lo tipeado, el uuid sigue');
   await limpieza.depurarBorradoresFicha('7');
-  assert.ok(!r.legacy.has('emergencia_llegadas_puerta:7'), 'vencido se borra');
-  await clasificacion(l.enviarPuerta(sesion, 9, 'ingresar', DATOS));
+  assert.ok(!r.legacy.has('emergencia_llegadas_puerta:7'), 'lo tipeado vencido se borra');
+  const guardado = r.legacy.get('emergencia_llegadas_puerta_uuid:7');
+  assert.ok(!guardado.includes('30111222') && !guardado.includes('Rosa'), 'ni el DNI en claro ni lo tipeado');
+  igual(Object.keys(JSON.parse(guardado)), [HUELLA]);
+  igual(await l.puertaPendiente(sesion, 9, '30111222'), {accion: 'ingresar', uuid, datos: null});
+  // Logout: lo mismo para lo vigente; los uuid sin datos de nadie («agregar») quedan.
+  await clasificacion(l.enviarPuerta(sesion, 9, 'avisar', DATOS, {dni: '30999888'}));
   r.legacy.set('emergencia_llegadas_agregar:7', JSON.stringify({184: 'uuid'}));
   await limpieza.limpiarDatosLocalesEmergencia();
-  assert.ok(!r.legacy.has('emergencia_llegadas_puerta:7'), 'el logout lo borra');
-  assert.ok(r.legacy.has('emergencia_llegadas_agregar:7'), 'los uuid sin datos de nadie quedan');
+  assert.ok(!r.legacy.has('emergencia_llegadas_puerta:7'), 'el logout borra lo tipeado');
+  assert.equal((await l.puertaPendiente(sesion, 9, '30999888')).accion, 'avisar', 'y deja el uuid del aviso incierto');
+  assert.ok(r.legacy.has('emergencia_llegadas_agregar:7'));
+  // A los 7 días el uuid sin datos se va.
+  const sinDatos = JSON.parse(r.legacy.get('emergencia_llegadas_puerta_uuid:7'));
+  Object.values(sinDatos).forEach(p => { p.creado_en = Date.now() - 8 * 24 * 60 * 60 * 1000; });
+  r.legacy.set('emergencia_llegadas_puerta_uuid:7', JSON.stringify(sinDatos));
+  assert.equal(await l.puertaPendiente(sesion, 9, '30111222'), null);
+  await limpieza.depurarBorradoresFicha('7');
+  assert.ok(!r.legacy.has('emergencia_llegadas_puerta_uuid:7'));
+});
+
+test('m6: tras el logout, el reintento con el uuid solo manda uuid y DNI; si había llegado devuelve el caso (no crea otro)', async () => {
+  const {r, l, sesion} = await preparar();
+  router(r, fallaDeRed);
+  const primero = await clasificacion(l.enviarPuerta(sesion, 9, 'avisar', DATOS));
+  await r.load('./emergenciaLimpieza').limpiarDatosLocalesEmergencia();
+  const calls = router(r, () => response(200, AVISO));
+  const ok = await l.reintentarPuertaSinDatos(sesion, 9, '30111222');
+  igual(calls.map(c => [c.url, c.body]), [['/api/emergencia/dispositivos/9/avisar-mesa/', {uuid_cliente: primero.uuid, dni: '30111222'}]]);
+  igual([ok.accion, ok.caso.numero], ['avisar', '2026-000191']);
+  assert.equal(await l.puertaPendiente(sesion, 9, '30111222'), null, 'resuelto, se olvida');
+});
+
+test('m6: con el uuid solo, un 400 (el primero no había llegado) lo olvida y pide cargar de nuevo; un corte lo conserva; enviar con datos lo reusa', async () => {
+  const {r, l, sesion} = await preparar();
+  router(r, fallaDeRed);
+  const primero = await clasificacion(l.enviarPuerta(sesion, 9, 'ingresar', DATOS));
+  await r.load('./emergenciaLimpieza').limpiarDatosLocalesEmergencia();
+  router(r, fallaDeRed);
+  const corte = await clasificacion(l.reintentarPuertaSinDatos(sesion, 9, '30111222'));
+  igual([corte.tipo, corte.incierto, corte.mensaje], ['reintentable', true, l.TEXTO_INGRESAR_INCIERTO]);
+  // Cargar los datos de nuevo con el uuid sin datos pendiente: el MISMO uuid (y la otra acción no sale).
+  const otra = router(r, () => response(201, AVISO));
+  assert.equal((await clasificacion(l.enviarPuerta(sesion, 9, 'avisar', DATOS))).tipo, 'rechazo');
+  assert.equal(otra.length, 0);
+  router(r, () => response(400, {code: 'VALIDACION', detail: 'Elegí el traslado.', traslado: ['Elegí el traslado.']}));
+  await r.load('./emergenciaLimpieza').limpiarDatosLocalesEmergencia();
+  const c = await clasificacion(l.reintentarPuertaSinDatos(sesion, 9, '30111222'));
+  igual([c.tipo, c.mensaje, c.errores, c.incierto], ['validacion', l.TEXTO_REINGRESAR, {generales: [l.TEXTO_REINGRESAR]}, false]);
+  assert.equal(await l.puertaPendiente(sesion, 9, '30111222'), null);
+  router(r, fallaDeRed);
+  await clasificacion(l.enviarPuerta(sesion, 9, 'ingresar', DATOS));
+  await r.load('./emergenciaLimpieza').limpiarDatosLocalesEmergencia();
+  const calls = router(r, () => response(200, INGRESO));
+  await l.enviarPuerta(sesion, 9, 'ingresar', DATOS);
+  assert.notEqual(calls[0].body.uuid_cliente, primero.uuid, 'el del 400 ya se había olvidado');
+  assert.equal(await l.puertaPendiente(sesion, 9, '30111222'), null);
+});
+
+test('m6: cargar los datos de nuevo sobre un uuid sin datos manda el MISMO uuid', async () => {
+  const {r, l, sesion} = await preparar();
+  router(r, fallaDeRed);
+  const primero = await clasificacion(l.enviarPuerta(sesion, 9, 'ingresar', DATOS));
+  await r.load('./emergenciaLimpieza').limpiarDatosLocalesEmergencia();
+  const calls = router(r, () => response(200, INGRESO));
+  await l.enviarPuerta(sesion, 9, 'ingresar', DATOS);
+  assert.equal(calls[0].body.uuid_cliente, primero.uuid);
+  assert.ok(!r.legacy.has('emergencia_llegadas_puerta_uuid:7'), 'una sola copia, y resuelta se olvida');
+});
+
+test('M1: la clave del pendiente y el DNI que viaja son los de la búsqueda, aunque `datos.dni` diga otro', async () => {
+  const {r, l, sesion} = await preparar();
+  const calls = router(r, fallaDeRed);
+  await clasificacion(l.enviarPuerta(sesion, 9, 'ingresar', {...DATOS, dni: '27000111'}, {dni: '30111222'}));
+  assert.equal(calls[0].body.dni, '30111222');
+  assert.ok(await l.puertaPendiente(sesion, 9, '30111222'));
+  assert.equal(await l.puertaPendiente(sesion, 9, '27000111'), null);
+});
+
+test('m1: la búsqueda que ya trae derivación o la familia alojada olvida el envío de la puerta; sin derivación lo deja', async () => {
+  const {r, l, sesion} = await preparar();
+  for (const [resultado, queda] of [['SIN_DERIVACION', true], ['DERIVACION', false], ['ALOJADA', false]]) {
+    // Un aviso incierto, con lo tipeado y además el uuid sin datos de un logout anterior.
+    router(r, fallaDeRed);
+    await clasificacion(l.enviarPuerta(sesion, 9, 'avisar', DATOS));
+    router(r, () => response(200, {resultado, dni: '30111222', plazas_libres: 1, mensaje: '', alojada_aca: null, alojada_en: '', alojada_desde: null,
+      derivacion: resultado === 'DERIVACION' ? {id: 55, estado: 'PENDIENTE', caso: CASO} : null}));
+    await l.buscar(sesion, 9, '30111222');
+    assert.equal(!!await l.puertaPendiente(sesion, 9, '30111222'), queda, resultado);
+  }
+  // También el uuid sin datos que dejó un logout.
+  router(r, fallaDeRed);
+  await clasificacion(l.enviarPuerta(sesion, 9, 'avisar', DATOS));
+  await r.load('./emergenciaLimpieza').limpiarDatosLocalesEmergencia();
+  router(r, () => response(200, {resultado: 'ALOJADA', dni: '30111222', plazas_libres: 0, mensaje: 'Alojada.', derivacion: null, alojada_aca: true, alojada_en: '', alojada_desde: null}));
+  await l.buscar(sesion, 9, '30111222');
+  assert.equal(await l.puertaPendiente(sesion, 9, '30111222'), null);
+  assert.ok(!r.legacy.has('emergencia_llegadas_puerta_uuid:7'));
+});
+
+test('m2: un 404 con un uuid de antes lo conserva (el back mira el alcance antes que el uuid); con uno nuevo lo olvida', async () => {
+  const {r, l, sesion} = await preparar();
+  router(r, () => response(404, {detail: 'No encontrado.'}));
+  assert.equal((await clasificacion(l.enviarPuerta(sesion, 9, 'ingresar', DATOS))).incierto, false);
+  assert.equal(await l.puertaPendiente(sesion, 9, '30111222'), null);
+  router(r, fallaDeRed);
+  const primero = await clasificacion(l.enviarPuerta(sesion, 9, 'ingresar', DATOS));
+  router(r, () => response(404, {detail: 'No encontrado.'}));
+  const c = await clasificacion(l.enviarPuerta(sesion, 9, 'ingresar', DATOS));
+  igual([c.tipo, c.incierto, (await l.puertaPendiente(sesion, 9, '30111222')).uuid], ['no_encontrado', true, primero.uuid]);
+});
+
+test('m3: el reintento de un cancelar incierto relee los integrantes: en la mesa es «se hizo» sin reenviar; en curso sin confirmadas reenvía; si cambió, no', async () => {
+  const {r, l, sesion} = await preparar();
+  const integrantes = (extra = {}) => response(200, {caso: CASO, integrantes: [FILA(1)], confirmadas: 0, total_declarado: 1, declaradas_al_relevar: 1, ...extra});
+  let calls = router(r, (call) => (call.method === 'GET' ? response(409, {detail: 'Se canceló.', estado_actual: 'EN_GESTION'}) : response(200, {})));
+  const hecho = await l.cancelar(sesion, 184, {motivo: 'x'}, {incierto: true});
+  igual([hecho.resultado, hecho.estado, hecho.detalle, calls.map(c => c.method)], ['ya_hecho', 'EN_GESTION', 'Se canceló.', ['GET']]);
+  calls = router(r, (call) => (call.method === 'GET' ? integrantes() : response(200, {estado: 'EN_GESTION', total_alojado: null, liberadas: 1})));
+  assert.equal((await l.cancelar(sesion, 184, {motivo: 'x'}, {incierto: true})).resultado, 'hecho');
+  igual(calls.map(c => c.method), ['GET', 'POST']);
+  for (const cambio of [{confirmadas: 1}, {caso: {...CASO, estado: 'ALOJADO'}}]) {
+    calls = router(r, (call) => (call.method === 'GET' ? integrantes(cambio) : response(200, {})));
+    const c = await clasificacion(l.cancelar(sesion, 184, {motivo: 'x'}, {incierto: true}));
+    igual([c.tipo, c.destino, c.mensaje, c.incierto, calls.map(x => x.method)], ['conflicto', 'integrantes', l.TEXTO_INGRESO_CAMBIO, false, ['GET']]);
+  }
+  calls = router(r, fallaDeRed);
+  const corte = await clasificacion(l.cancelar(sesion, 184, {motivo: 'x'}, {incierto: true}));
+  igual([corte.tipo, corte.incierto, calls.map(x => x.method)], ['reintentable', true, ['GET']]);
+  calls = router(r, () => response(200, {estado: 'EN_GESTION', total_alojado: null, liberadas: 1}));
+  await l.cancelar(sesion, 184, {motivo: 'x'});
+  igual(calls.map(x => x.method), ['POST'], 'sin incierto no relee');
+});
+
+test('m4: el «se hizo» de alojar trae la nota de revisar el alojamiento; los otros no', async () => {
+  const {r, l, sesion} = await preparar();
+  router(r, () => response(409, ALOJADA_409));
+  assert.equal((await l.alojar(sesion, 184, {}, {incierto: true})).nota, l.NOTA_REVISAR_ALOJAMIENTO);
+  assert.equal((await l.cerrarDiferencia(sesion, 184, {motivo: 'NO_LLEGO'}, {incierto: true})).nota, null);
 });

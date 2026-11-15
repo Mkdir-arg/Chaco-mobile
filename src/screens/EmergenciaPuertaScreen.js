@@ -8,7 +8,7 @@ import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
 import {
   TEXTO_SIN_RED, abrirSesion, clasificarErrorLlegada, datosDeLaPuerta, enviarPuerta, escucharRed, hayConexion,
-  puertaPendiente, validarPuerta,
+  puertaPendiente, reintentarPuertaSinDatos, validarPuerta,
 } from '../services/emergenciaLlegadas';
 import { cleanDigits } from '../utils/dni';
 import {
@@ -19,6 +19,14 @@ import { keyboardDismissModeFor } from '../utils/teclado';
 import { fontSizes, radii } from '../theme';
 
 export const TEXTO_UUID_EN_USO_PUERTA = 'Este envío no se pudo mandar: su identificador ya se usó en otro caso. Volvé a tocar el botón: sale con uno nuevo.';
+export const TEXTO_SIN_DATOS = 'Hay un envío de esta familia sin resultado, pero lo cargado ya se borró del teléfono (se cerró la sesión o pasaron 48 h). «Reintentar» manda solo su identificador: si había llegado, se recupera el caso; si no, vas a tener que cargar los datos de nuevo.';
+export const TEXTO_DNI_FIJO = 'Es el DNI que buscaste. Para otra persona, volvé y buscá de nuevo.';
+const ESTADOS_TRAS_INGRESO = {
+  ALOJADO: 'la familia ya figura alojada',
+  CERRADO: 'el caso ya está cerrado',
+  EN_GESTION: 'el caso volvió a la mesa',
+  NUEVO: 'el caso volvió a la mesa',
+};
 export const TEXTO_SIN_CAMAS = 'No hay camas libres para ingresar a la familia: avisale a la mesa para que la derive a otro lado.';
 
 const ACCIONES = {
@@ -44,6 +52,9 @@ const ACCIONES = {
 // uuid (el formulario queda fijo: si ya había llegado, el servidor devuelve el mismo caso).
 // - `onIngresado(caso, resultado)`: 201/200 de «Ingresar igual» → integrantes.
 // - `onAvisado(resultado)`: 201/200 de «Avisar a la mesa» → volver a buscar.
+// El DNI es el buscado y no se edita: es la clave del envío pendiente (cambiarlo dejaría el pendiente
+// del DNI anterior sin reintentar). Si lo cargado ya se borró del teléfono (logout, 48 h) y queda solo el
+// uuid, se ofrece «Reintentar» con el uuid solo; si el servidor dice que no había llegado, se carga de nuevo.
 // - `onNoEncontrado()`: 404. `onSinModulo(mensaje)`: 403. `onEnviando(bool)`: hay un envío en curso.
 export default function EmergenciaPuertaScreen({
   dispositivo, dni = '', plazasLibres = 0, accion: accionInicial = 'ingresar', mensaje = '',
@@ -57,6 +68,7 @@ export default function EmergenciaPuertaScreen({
   const [datos, setDatos] = useState(() => datosDeLaPuerta(dni));
   const [accion, setAccion] = useState(accionInicial === 'avisar' || plazasLibres < 1 ? 'avisar' : 'ingresar');
   const [pendiente, setPendiente] = useState(null);
+  const [sinDatos, setSinDatos] = useState(false);
   const [sinCamas, setSinCamas] = useState(plazasLibres < 1);
   const [enviando, setEnviando] = useState(false);
   const [falla, setFalla] = useState(null);
@@ -82,7 +94,8 @@ export default function EmergenciaPuertaScreen({
         if (!montado.current || !previo) return;
         setPendiente(previo.accion);
         setAccion(previo.accion);
-        if (previo.datos) setDatos({ ...datosDeLaPuerta(dni), ...previo.datos });
+        if (previo.datos) setDatos({ ...datosDeLaPuerta(dni), ...previo.datos, dni: cleanDigits(dni) });
+        else setSinDatos(true);
       } catch (e) {
         if (montado.current) setErrorSesion(e?.message || 'No hay sesión iniciada.');
       } finally {
@@ -146,10 +159,15 @@ export default function EmergenciaPuertaScreen({
     }
     avisarEnviando(true);
     try {
-      const r = await enviarPuerta(base, dispositivo.id, cual, datos);
+      const r = sinDatos ? await reintentarPuertaSinDatos(base, dispositivo.id, dni)
+        : await enviarPuerta(base, dispositivo.id, cual, datos, { dni });
       if (cual === 'ingresar') {
         const numero = r.caso?.numero ? `Caso ${r.caso.numero}` : 'Caso creado';
-        if (r.faltantes > 0) {
+        const despues = r.caso && r.caso.estado !== 'INGRESO_EN_CURSO' ? ESTADOS_TRAS_INGRESO[r.caso.estado] || `el caso está en ${String(r.caso.estado || 'otro estado').toLowerCase().replaceAll('_', ' ')}` : null;
+        if (despues) {
+          // El reenvío devuelve el caso como está hoy: puede que ya no siga en curso.
+          showToast({ type: 'info', message: `${numero}: el ingreso ya se había hecho y ${despues}.` });
+        } else if (r.faltantes > 0) {
           showAlert('Ingreso con camas de menos', `${numero}: se reservaron ${r.reservadas} y faltan ${r.faltantes}. Se puede seguir.`, [{ text: 'Entendido' }]);
         } else {
           showToast({ type: 'success', message: `${numero} · ingreso en curso · ${r.reservadas === 1 ? '1 cama reservada' : `${r.reservadas} camas reservadas`}.` });
@@ -175,6 +193,15 @@ export default function EmergenciaPuertaScreen({
         return;
       }
       setPendiente(e?.incierto ? cual : null);
+      if (e?.reingresar) {
+        // Con el uuid solo: el primero no había llegado. Se vuelve al formulario vacío.
+        setSinDatos(false);
+        setDatos(datosDeLaPuerta(dni));
+        setIntentado(false);
+        setFalla({ tipo: 'rechazo', mensaje: c.mensaje });
+        return;
+      }
+      if (!e?.incierto) setSinDatos(false);
       if (c.tipo === 'sin_red') {
         setSinRed(true);
         showAlert('Sin conexión', TEXTO_SIN_RED, [{ text: 'Entendido' }]);
@@ -212,6 +239,10 @@ export default function EmergenciaPuertaScreen({
 
   const tocar = (cual) => {
     if (enviandoRef.current || esperando) return;
+    if (sinDatos && pendiente === cual) {
+      mandar(cual);
+      return;
+    }
     setIntentado(true);
     const locales = validarPuerta(datos);
     if (Object.keys(locales).length) {
@@ -309,9 +340,12 @@ export default function EmergenciaPuertaScreen({
         {mensaje ? avisoDe('info', mensaje) : null}
         <Text style={ayuda}>{ACCIONES[accion].ayuda(plazasLibres)}</Text>
         {sinCamas && pendiente !== 'ingresar' ? avisoDe('warning', TEXTO_SIN_CAMAS, 'bed-outline') : null}
-        {pendiente ? avisoDe('warning', `Hay un envío de esta familia sin resultado: «Reintentar» manda el mismo pedido y no crea otro caso. Lo cargado queda fijo hasta saber el resultado.`, 'time-outline') : null}
+        {pendiente && sinDatos ? avisoDe('warning', TEXTO_SIN_DATOS, 'time-outline') : null}
+        {pendiente && !sinDatos ? avisoDe('warning', `Hay un envío de esta familia sin resultado: «Reintentar» manda el mismo pedido y no crea otro caso. Lo cargado queda fijo hasta saber el resultado.`, 'time-outline') : null}
       </View>
 
+      {sinDatos ? null : (
+        <>
       <View style={tarjeta}>
         <Text accessibilityRole="header" style={tituloSeccion}>1. Traslado y responsable</Text>
         <Text style={etiqueta}>¿Cómo llegó la familia? *</Text>
@@ -338,8 +372,9 @@ export default function EmergenciaPuertaScreen({
         ) : null}
 
         <Text style={[etiqueta, styles.separado]}>DNI del responsable *</Text>
-        <TextInput value={datos.dni} editable={!fijo} onChangeText={(t) => cambiar({ dni: cleanDigits(t).slice(0, 8) })} keyboardType="number-pad"
-          maxLength={8} accessibilityLabel="DNI del responsable" placeholder="Solo números" placeholderTextColor={theme.colors.textSoft} style={caja(['dni'])} />
+        <TextInput value={cleanDigits(dni)} editable={false} accessibilityLabel="DNI del responsable" accessibilityHint={TEXTO_DNI_FIJO}
+          style={caja(['dni'])} />
+        <Text style={ayuda}>{TEXTO_DNI_FIJO}</Text>
         {errorCampo(['dni'])}
         <Text style={etiqueta}>Nombre</Text>
         <TextInput value={datos.nombre} editable={!fijo} onChangeText={(t) => cambiar({ nombre: t })} autoCapitalize="words"
@@ -350,7 +385,7 @@ export default function EmergenciaPuertaScreen({
           accessibilityLabel="Apellido" placeholderTextColor={theme.colors.textSoft} style={caja(['apellido'])} />
         {errorCampo(['apellido'])}
         <Text style={ayuda}>Si la persona ya está en el legajo alcanza con el DNI; si no, el servidor pide nombre y apellido para darla de alta.</Text>
-        <FechaInput label="Fecha de nacimiento" value={datos.fecha_nacimiento} onSelect={(t) => cambiar({ fecha_nacimiento: t })} />
+        <FechaInput label="Fecha de nacimiento" value={datos.fecha_nacimiento} disabled={fijo} onSelect={(t) => cambiar({ fecha_nacimiento: t })} />
         {errorCampo(['fecha_nacimiento'])}
         <Text style={etiqueta}>Teléfono de contacto</Text>
         <TextInput value={datos.telefono} editable={!fijo} onChangeText={(t) => cambiar({ telefono: t })} keyboardType="phone-pad"
@@ -388,6 +423,9 @@ export default function EmergenciaPuertaScreen({
           accessibilityLabel="Observaciones" placeholder="Algo más que la mesa tenga que saber" placeholderTextColor={theme.colors.textSoft}
           style={caja(['observaciones'], [styles.areaTexto])} />
       </View>
+
+        </>
+      )}
 
       {listado.length ? (
         <View accessibilityRole="alert" style={[styles.card, { backgroundColor: statusTones.danger.bg, borderColor: statusTones.danger.bd }]}>

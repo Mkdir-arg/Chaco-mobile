@@ -14,7 +14,7 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
 (async () => {
   const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
   try {
-    fs.writeFileSync(entry, original + `\nimport service from './src/services/relevamientoService';\nimport * as api from './src/services/becasApi';\nimport * as emergencia from './src/services/emergenciaCola';\nimport * as kits from './src/services/emergenciaKits';\nimport * as emergenciaApi from './src/services/emergenciaApi';\nimport * as llegadas from './src/services/emergenciaLlegadas';\nimport { API_CONFIG } from './src/config/apiConfig';\nimport NetInfo from '@react-native-community/netinfo';\nwindow.__pwaTest = {service, api, emergencia, kits, emergenciaApi, llegadas, netinfo: NetInfo, config: API_CONFIG};\n`);
+    fs.writeFileSync(entry, original + `\nimport service from './src/services/relevamientoService';\nimport * as api from './src/services/becasApi';\nimport * as emergencia from './src/services/emergenciaCola';\nimport * as kits from './src/services/emergenciaKits';\nimport * as emergenciaApi from './src/services/emergenciaApi';\nimport * as llegadas from './src/services/emergenciaLlegadas';\nimport * as limpieza from './src/services/emergenciaLimpieza';\nimport { API_CONFIG } from './src/config/apiConfig';\nimport NetInfo from '@react-native-community/netinfo';\nwindow.__pwaTest = {service, api, emergencia, kits, emergenciaApi, llegadas, limpieza, netinfo: NetInfo, config: API_CONFIG};\n`);
     try {
       run(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['expo','export','--clear','--platform','web','--output-dir','dist-browser']);
       // Runtime setting intentionally differs from the Expo build-time URL.
@@ -137,6 +137,8 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
         }
         else if(req.method()==='POST' && url.endsWith('/api/emergencia/dispositivos/9/avisar-mesa/')) {
           m2.aviso.push(JSON.parse(req.postData()||'{}'));
+          // El aviso del DNI 30777888 se corta la primera vez (el servidor lo creó igual).
+          if(m2.aviso.at(-1).dni==='30777888' && m2.aviso.filter(a=>a.dni==='30777888').length===1) {await route.abort('connectionreset');return;}
           status=201;body={caso:{id:191,numero:'2026-000191',estado:'NUEVO',prioridad:'MEDIA',total_declarado:2}};
         }
         else if(url.endsWith('/relevamientos/')) body=[campaign];
@@ -483,8 +485,26 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
     assert.ok(!('relevado_en' in m2.ingreso[0]),'la puerta no manda la hora del teléfono');
     assert.equal(m2.aviso.length,1);
     assert.notEqual(m2.aviso[0].uuid_cliente,m2.ingreso[0].uuid_cliente);
+    // Un aviso incierto y después el logout: lo tipeado se borra y queda el uuid sin el DNI en claro
+    // (SHA-256 con crypto.subtle del navegador); el reintento manda solo uuid y DNI y no crea otro caso.
+    const sinDatos=await page.evaluate(async()=>{
+      const {llegadas:l,limpieza}=window.__pwaTest;
+      const sesion=await l.abrirSesion();
+      let primero=null;
+      try { await l.enviarPuerta(sesion,9,'avisar',{traslado:'POLICIA',adultos_m:1,nombre:'Lucas'},{dni:'30777888'}); } catch(e){ primero=e.clasificacion.tipo; }
+      await limpieza.limpiarDatosLocalesEmergencia();
+      const pendiente=await l.puertaPendiente(sesion,9,'30777888');
+      const guardado=Object.keys(localStorage).filter(k=>k.startsWith('emergencia_llegadas_puerta')).map(k=>localStorage.getItem(k)).join('');
+      const ok=await l.reintentarPuertaSinDatos(sesion,9,'30777888');
+      return {primero,datos:pendiente.datos,accion:pendiente.accion,enClaro:guardado.includes('30777888')||guardado.includes('Lucas'),caso:ok.caso.numero,
+        despues:await l.puertaPendiente(sesion,9,'30777888')};
+    });
+    assert.deepEqual(sinDatos,{primero:'reintentable',datos:null,accion:'avisar',enClaro:false,caso:'2026-000191',despues:null});
+    const avisos=m2.aviso.filter(a=>a.dni==='30777888');
+    assert.equal(avisos.length,2);
+    assert.deepEqual(avisos[1],{uuid_cliente:avisos[0].uuid_cliente,dni:'30777888'});
     assert.deepEqual(errors,[]);
-    console.log('PASS: Emergencia M2 parte 3: offline blocked, lost alojar response + 409 ALOJADO treated as done, cancel, lost ingreso directo retried with same uuid after reload, other action blocked while pending, avisar a la mesa.');
+    console.log('PASS: Emergencia M2 parte 3: offline blocked, lost alojar response + 409 ALOJADO treated as done, cancel, lost ingreso directo retried with same uuid after reload, other action blocked while pending, avisar a la mesa, uuid without personal data survives logout.');
   } finally {
     fs.writeFileSync(entry,original);
     await context?.close(); server?.kill(); fs.rmSync(profile,{recursive:true,force:true});

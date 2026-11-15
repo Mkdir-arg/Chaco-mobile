@@ -11,7 +11,10 @@ import { CANTIDADES, datosDelCaso, datosIniciales, erroresDelServidor, validarCa
 import { cleanDigits, isValidDni } from '../utils/dni';
 import { CAMPOS_FICHA, SECCIONES_OPCIONALES, fichaDesdePlano } from '../utils/fichaEmergencia';
 import { hayConexion } from './emergenciaKits';
-import { PREFIJO_BORRADOR_FICHA, PREFIJO_PUERTA, VIDA_BORRADOR_MS, enOrdenGuardado } from './emergenciaLimpieza';
+import {
+  PREFIJO_BORRADOR_FICHA, PREFIJO_PUERTA, PREFIJO_PUERTA_UUID, VIDA_BORRADOR_MS, enOrdenGuardado, escribirJson, huellaPuerta, leerJson,
+  uuidVigente,
+} from './emergenciaLimpieza';
 
 // La red, como M3: en web `navigator.onLine`, en nativo NetInfo.
 export { escucharRed, hayConexion } from './emergenciaKits';
@@ -349,7 +352,13 @@ export const buscar = async (sesion, dispositivoId, dni) => {
   }
   try {
     const payload = await conSesion(sesion, (op) => buscarFamilia(dispositivoId, limpio, op), { timeoutMs: LIMITES.lecturaMs, campos: ['dni'] });
-    return normalizarBusqueda(payload);
+    const busqueda = normalizarBusqueda(payload);
+    // La familia ya tiene derivación (la del ingreso directo, o la mesa derivó el aviso) o está alojada:
+    // un envío de la puerta de ese DNI que había quedado sin resultado ya no tiene a qué volver.
+    if (['DERIVACION', 'ALOJADA'].includes(busqueda.resultado)) {
+      await olvidarPuerta(sesion, dispositivoId, limpio).catch(() => {});
+    }
+    return busqueda;
   } catch (error) {
     // El 429 de acá es el tope de búsquedas por DNI (§13.2): se dice con ese texto.
     if (error.clasificacion?.tipo === 'espera') error.clasificacion.mensaje = TEXTO_ESPERAR;
@@ -769,6 +778,8 @@ export const TEXTO_ALOJAR_INCIERTO = 'No se pudo saber si la familia quedó aloj
 export const TEXTO_DIFERENCIA_INCIERTA = 'No se pudo saber si el ingreso se cerró. «Reintentar» lo vuelve a mandar: si ya había llegado, el caso figura alojado y se muestra en lectura.';
 export const TEXTO_CANCELAR_INCIERTO = 'No se pudo saber si el ingreso se canceló. «Reintentar» lo vuelve a mandar: si ya había llegado, el caso figura de vuelta en la mesa.';
 export const TEXTO_YA_ALOJADA = 'La familia ya figura alojada: se muestra en lectura.';
+export const NOTA_REVISAR_ALOJAMIENTO = 'Revisá los datos de alojamiento en la ficha: si lo cerró otra guardia, lo que cargaste acá no se guardó.';
+export const TEXTO_INGRESO_CAMBIO = 'El ingreso cambió mientras tanto (el caso volvió a entrar o ya hay personas confirmadas): no se vuelve a cancelar. Revisá los integrantes.';
 export const TEXTO_YA_CANCELADO = 'El ingreso ya figura cancelado: el caso está de vuelta en la mesa.';
 
 const texto = (valor) => String(valor ?? '').trim();
@@ -848,14 +859,14 @@ const crearErrorLocal = (errores) => crearError('VALIDACION_LOCAL', 'Hay datos p
 // Lo común a los tres cierres. `produce`: los `estado_actual` que deja esa acción (su 409 tras un intento
 // incierto es «se hizo»). Devuelve { resultado: 'hecho' | 'ya_hecho', estado, total_alojado, liberadas,
 // detalle? }; los errores salen con `clasificacion` y `incierto`.
-const cerrarIngreso = async (sesion, pedido, { incierto, campos, produce, textoIncierto, textoYaHecho }) => {
+const cerrarIngreso = async (sesion, pedido, { incierto, campos, produce, textoIncierto, textoYaHecho, nota = null }) => {
   try {
     const payload = await conSesion(sesion, pedido, { timeoutMs: LIMITES.accionMs, campos });
     return { resultado: 'hecho', ...normalizarCierre(payload) };
   } catch (error) {
     const c = error.clasificacion;
     if (incierto && c?.tipo === 'conflicto' && produce.includes(c.estadoActual)) {
-      return { resultado: 'ya_hecho', estado: c.estadoActual, total_alojado: null, liberadas: 0, mensaje: textoYaHecho, detalle: c.mensaje, destino: c.destino };
+      return { resultado: 'ya_hecho', estado: c.estadoActual, total_alojado: null, liberadas: 0, mensaje: textoYaHecho, detalle: c.mensaje, destino: c.destino, nota };
     }
     if (c?.tipo === 'reintentable') c.mensaje = textoIncierto;
     error.incierto = sigueIncierto(c?.tipo, incierto);
@@ -869,7 +880,7 @@ export const alojar = async (sesion, casoId, datos = {}, { incierto = false } = 
   if (Object.keys(errores).length) throw crearErrorLocal(errores);
   return cerrarIngreso(sesion, (op) => alojarFamilia(casoId, datos, op), {
     incierto, campos: ['sector', 'aula', 'tarjeta_numero', 'encargado'], produce: ESTADOS_ALOJADA,
-    textoIncierto: TEXTO_ALOJAR_INCIERTO, textoYaHecho: TEXTO_YA_ALOJADA,
+    textoIncierto: TEXTO_ALOJAR_INCIERTO, textoYaHecho: TEXTO_YA_ALOJADA, nota: NOTA_REVISAR_ALOJAMIENTO,
   });
 };
 
@@ -884,9 +895,34 @@ export const cerrarDiferencia = async (sesion, casoId, { motivo, observacion } =
 };
 
 // «Cancelar el ingreso»: sin nadie confirmado; libera todas las camas y el caso vuelve a la mesa.
+// El reintento de un cancelar incierto podría cancelar OTRO ingreso del mismo caso (el primero llegó, la
+// mesa volvió a derivar acá y otra guardia aceptó). El GET de integrantes no expone la derivación, así
+// que antes de reenviar se relee: con el caso ya en la mesa es «se hizo» sin reenviar; si el ingreso
+// sigue en curso sin nadie confirmado se reenvía (no se puede distinguir un ingreso nuevo sin confirmados:
+// queda documentado en el README); si cambió (otro estado o personas confirmadas), no se reenvía.
 export const cancelar = async (sesion, casoId, { motivo } = {}, { incierto = false } = {}) => {
   const errores = validarCancelar({ motivo });
   if (Object.keys(errores).length) throw crearErrorLocal(errores);
+  if (incierto) {
+    let actual;
+    try {
+      actual = await cargarIntegrantes(sesion, casoId);
+    } catch (error) {
+      const c = error.clasificacion;
+      if (c?.tipo === 'conflicto' && ESTADOS_EN_LA_MESA.includes(c.estadoActual)) {
+        return { resultado: 'ya_hecho', estado: c.estadoActual, total_alojado: null, liberadas: 0, mensaje: TEXTO_YA_CANCELADO, detalle: c.mensaje, destino: c.destino, nota: null };
+      }
+      if (c?.tipo === 'reintentable') c.mensaje = TEXTO_CANCELAR_INCIERTO;
+      error.incierto = sigueIncierto(c?.tipo, true);
+      throw error;
+    }
+    if (actual.caso?.estado !== 'INGRESO_EN_CURSO' || actual.confirmadas > 0) {
+      throw crearError('INGRESO_CAMBIO', TEXTO_INGRESO_CAMBIO, {
+        incierto: false,
+        clasificacion: { tipo: 'conflicto', mensaje: TEXTO_INGRESO_CAMBIO, estadoActual: actual.caso?.estado || '', destino: 'integrantes' },
+      });
+    }
+  }
   return cerrarIngreso(sesion, (op) => cancelarIngreso(casoId, { motivo }, op), {
     incierto, campos: ['motivo'], produce: ESTADOS_EN_LA_MESA,
     textoIncierto: TEXTO_CANCELAR_INCIERTO, textoYaHecho: TEXTO_YA_CANCELADO,
@@ -899,17 +935,23 @@ export const cancelar = async (sesion, casoId, { motivo } = {}, { incierto = fal
 // `uuid_cliente`. El contrato deja encolar el ingreso directo sin señal, pero M2 en la app va con
 // conexión (plan: «M2 sin conexión se bloquea con aviso»): se manda en el momento y, si queda
 // incierto, se reintenta a mano con el MISMO uuid.
-// El envío sin resultado se guarda en AsyncStorage por usuario, dispositivo y DNI —{ accion, uuid,
-// datos }—: volver, re-entrar o cerrar la app no lo cambian, y mientras exista la pantalla solo ofrece
-// reintentar ESA acción (la otra, con otro uuid, crearía un segundo caso). Tiene el DNI y lo tipeado,
-// así que vive bajo PREFIJO_PUERTA: lo borra el logout, se depura al abrir el módulo con otro usuario y
-// vence a las 48 h (`emergenciaLimpieza`).
-// - Se olvida con 2xx y con las respuestas que dicen que no se creó nada: 400 VALIDACION, 404 y 409
-//   UUID_EN_USO (el próximo envío nace con otro uuid).
+// El envío sin resultado se guarda en AsyncStorage por usuario, dispositivo y el DNI BUSCADO (la
+// pantalla no deja cambiarlo) —{ accion, uuid, datos, creado_en }—: volver, re-entrar o cerrar la app no
+// lo cambian, y mientras exista la pantalla solo ofrece reintentar ESA acción (la otra, con otro uuid,
+// crearía un segundo caso). Lo tipeado tiene datos personales: lo borra el logout / la sesión vencida /
+// perder el módulo, y vence a las 48 h; ahí queda solo el uuid, sin datos y sin el DNI en claro, 7 días
+// (`emergenciaLimpieza`). Con ese uuid solo, el reintento manda el uuid y el DNI: el back busca el uuid
+// antes de validar, así que si el primero llegó devuelve el caso; si no llegó contesta 400 y hay que
+// volver a cargar los datos (sin riesgo: no se creó nada).
+// - Se olvida con 2xx, 400 VALIDACION y 409 UUID_EN_USO (no se creó nada con ese uuid), y con un 404 si
+//   el uuid es recién nacido. Un 404 con un uuid de antes NO lo olvida: el back resuelve el alcance del
+//   dispositivo antes de mirar el uuid, así que el primer envío pudo haber creado el caso.
 // - Se conserva con red, timeout, 5xx, página del WAF, 429, 403 y 401: el pedido pudo haber llegado.
+// - Se olvida también cuando la búsqueda de ese DNI ya trae una derivación o la familia alojada.
 export const ACCIONES_PUERTA = ['ingresar', 'avisar'];
 export const TEXTO_INGRESAR_INCIERTO = 'No se pudo saber si el ingreso llegó. «Reintentar» manda el mismo pedido: si ya había llegado, no crea otro caso.';
 export const TEXTO_AVISAR_INCIERTO = 'No se pudo saber si el aviso llegó. «Reintentar» manda el mismo pedido: si ya había llegado, no crea otro caso.';
+export const TEXTO_REINGRESAR = 'El envío anterior no había llegado al servidor: no se creó ningún caso. Cargá los datos de la familia de nuevo.';
 
 // El Formulario 1 de la puerta empieza con el DNI buscado.
 export const datosDeLaPuerta = (dni = '') => ({ ...datosIniciales(), dni: cleanDigits(dni) });
@@ -933,60 +975,110 @@ export const CAMPOS_FORMULARIO_PUERTA = [
 const CAMPOS_PUERTA_400 = [...CAMPOS_FORMULARIO_PUERTA, 'plazas'];
 
 const clavePuerta = (owner) => `${PREFIJO_PUERTA}${owner}`;
+const clavePuertaUuid = (owner) => `${PREFIJO_PUERTA_UUID}${owner}`;
 const idPuerta = (dispositivoId, dni) => `${dispositivoId}:${cleanDigits(dni)}`;
-const pendienteVigente = (p) => !!p && typeof p === 'object' && ACCIONES_PUERTA.includes(p.accion) && typeof p.uuid === 'string'
+const pendienteConDatos = (p) => uuidVigente(p) && !!p.datos && typeof p.datos === 'object'
   && Date.now() - Number(p.guardado_en || 0) < VIDA_BORRADOR_MS;
+const huellaOSinHuella = (dispositivoId, dni) => huellaPuerta(dispositivoId, dni).catch(() => null);
 
-// El envío de la puerta sin resultado para esa familia en ese dispositivo: { accion, uuid, datos }, o null.
-export const puertaPendiente = async (sesion, dispositivoId, dni) => {
-  if (!sesion?.owner || !cleanDigits(dni)) return null;
-  const todas = await enOrdenGuardado(() => leerMapa(clavePuerta(sesion.owner)));
-  const p = todas[idPuerta(dispositivoId, dni)];
-  return pendienteVigente(p) ? { accion: p.accion, uuid: p.uuid, datos: p.datos && typeof p.datos === 'object' ? p.datos : null } : null;
+// Lee el pendiente (con datos, o el uuid solo) de las dos tiendas. Corre dentro de la cola de guardado.
+const leerPendiente = async (owner, dispositivoId, dni, huella) => {
+  const p = (await leerJson(clavePuerta(owner)))[idPuerta(dispositivoId, dni)];
+  if (pendienteConDatos(p)) return { accion: p.accion, uuid: p.uuid, datos: p.datos, creado_en: Number(p.creado_en || p.guardado_en) };
+  if (uuidVigente(p)) return { accion: p.accion, uuid: p.uuid, datos: null, creado_en: Number(p.creado_en || p.guardado_en) };
+  if (!huella) return null;
+  const h = (await leerJson(clavePuertaUuid(owner)))[huella];
+  return uuidVigente(h) ? { accion: h.accion, uuid: h.uuid, datos: null, creado_en: Number(h.creado_en) } : null;
 };
 
-const RESUELVEN_PUERTA = ['validacion', 'no_encontrado', 'uuid_en_uso'];
+// El envío de la puerta sin resultado para esa familia en ese dispositivo: { accion, uuid, datos }, con
+// `datos: null` si lo tipeado ya se borró (logout, 48 h) y queda solo el uuid; o null.
+export const puertaPendiente = async (sesion, dispositivoId, dni) => {
+  if (!sesion?.owner || !cleanDigits(dni)) return null;
+  const huella = await huellaOSinHuella(dispositivoId, dni);
+  const p = await enOrdenGuardado(() => leerPendiente(sesion.owner, dispositivoId, dni, huella));
+  return p ? { accion: p.accion, uuid: p.uuid, datos: p.datos } : null;
+};
+
+// Se olvida el pendiente de esa familia en ese dispositivo (las dos tiendas). Con `uuid`, solo si es ese.
+export const olvidarPuerta = async (sesion, dispositivoId, dni, uuid = null) => {
+  if (!sesion?.owner || !cleanDigits(dni)) return;
+  const huella = await huellaOSinHuella(dispositivoId, dni);
+  await enOrdenGuardado(async () => {
+    const id = idPuerta(dispositivoId, dni);
+    const todas = await leerJson(clavePuerta(sesion.owner));
+    if (todas[id] && (!uuid || todas[id].uuid === uuid)) {
+      delete todas[id];
+      await escribirJson(clavePuerta(sesion.owner), todas);
+    }
+    if (huella) {
+      const sinDatos = await leerJson(clavePuertaUuid(sesion.owner));
+      if (sinDatos[huella] && (!uuid || sinDatos[huella].uuid === uuid)) {
+        delete sinDatos[huella];
+        await escribirJson(clavePuertaUuid(sesion.owner), sinDatos);
+      }
+    }
+  });
+};
+
+const tituloAccion = (accion) => (accion === 'ingresar' ? 'Ingresar igual' : 'Avisar a la mesa');
+
+// Manda el cuerpo de la puerta y normaliza; los errores salen con `clasificacion` (local o del pedido).
+const mandarPuerta = async (sesion, dispositivoId, accion, cuerpo, uuid) => {
+  const llamar = accion === 'ingresar' ? ingresoDirecto : avisarALaMesa;
+  const payload = await conSesion(sesion, (op) => llamar(dispositivoId, cuerpo, op), { timeoutMs: LIMITES.accionMs, campos: CAMPOS_PUERTA_400 });
+  if (accion === 'avisar') return { accion, caso: normalizarCaso(payload?.caso), uuid };
+  const integrantes = normalizarIntegrantes(payload);
+  return { accion, caso: integrantes.caso, reservadas: entero(payload?.reservadas), faltantes: entero(payload?.faltantes), integrantes, uuid };
+};
+
+const respondioElServidor = (error) => Number(error?.status) > 0 && !error?.unexpectedHtml;
+
+// ¿Este error dice que con ese uuid no se creó nada? 400 VALIDACION y 409 UUID_EN_USO siempre; 404 solo
+// con un uuid recién nacido (con uno de antes, el primer envío pudo haber llegado).
+const resuelvePuerta = (tipo, nuevo) => tipo === 'validacion' || tipo === 'uuid_en_uso' || (tipo === 'no_encontrado' && nuevo);
 
 // `accion`: 'ingresar' o 'avisar'. `datos`: el Formulario 1 de la pantalla (claves de utils/emergencia).
+// `dni`: el DNI buscado, que es la clave del pendiente y el que viaja (lo de `datos.dni` no cuenta).
 // Devuelve, con el 2xx:
 // - ingresar → { accion, caso, reservadas, faltantes, integrantes, uuid };
 // - avisar → { accion, caso, uuid }.
 // Los errores salen con `clasificacion`, `incierto` (queda un envío sin resultado) y `uuid`.
-export const enviarPuerta = async (sesion, dispositivoId, accion, datos = {}) => {
+export const enviarPuerta = async (sesion, dispositivoId, accion, datos = {}, { dni } = {}) => {
   if (!ACCIONES_PUERTA.includes(accion)) throw new Error(`Acción desconocida: ${accion}`);
-  const errores = validarPuerta(datos);
+  const dniClave = cleanDigits(dni ?? datos.dni);
+  const conDni = { ...datos, dni: dniClave };
+  const errores = validarPuerta(conDni);
   if (Object.keys(errores).length) throw crearErrorLocal(errores);
-  const id = idPuerta(dispositivoId, datos.dni);
-  const clave = clavePuerta(sesion.owner);
+  const owner = sesion.owner;
+  const id = idPuerta(dispositivoId, dniClave);
+  const huella = await huellaOSinHuella(dispositivoId, dniClave);
   let nuevo = false;
-  const uuid = await modificarMapa(clave, (todas) => {
-    const previo = todas[id];
-    if (pendienteVigente(previo) && previo.accion !== accion) {
+  const uuid = await enOrdenGuardado(async () => {
+    const previo = await leerPendiente(owner, dispositivoId, dniClave, huella);
+    if (previo && previo.accion !== accion) {
       throw crearError('OTRA_ACCION_PENDIENTE', 'Hay otro envío de esta familia sin resultado.', {
-        clasificacion: { tipo: 'rechazo', mensaje: `Primero reintentá «${previo.accion === 'ingresar' ? 'Ingresar igual' : 'Avisar a la mesa'}»: ese envío todavía no tiene resultado.` },
+        clasificacion: { tipo: 'rechazo', mensaje: `Primero reintentá «${tituloAccion(previo.accion)}»: ese envío todavía no tiene resultado.` },
       });
     }
-    const uuidPrevio = pendienteVigente(previo) ? previo.uuid : null;
-    if (!uuidPrevio) nuevo = true;
-    todas[id] = { accion, uuid: uuidPrevio || crearUuid(), datos, guardado_en: Date.now() };
+    if (!previo) nuevo = true;
+    const todas = await leerJson(clavePuerta(owner));
+    todas[id] = { accion, uuid: previo?.uuid || crearUuid(), datos: conDni, guardado_en: Date.now(), creado_en: previo?.creado_en || Date.now() };
+    await escribirJson(clavePuerta(owner), todas);
+    if (huella) {
+      // El uuid sin datos pasa a tener datos otra vez (los recién cargados): una sola copia.
+      const sinDatos = await leerJson(clavePuertaUuid(owner));
+      if (sinDatos[huella]) {
+        delete sinDatos[huella];
+        await escribirJson(clavePuertaUuid(owner), sinDatos);
+      }
+    }
     return todas[id].uuid;
   });
-  const olvidar = () => modificarMapa(clave, (todas) => { if (todas[id]?.uuid === uuid) delete todas[id]; });
-  const cuerpo = { ...datosDelCaso(datos), uuid_cliente: uuid };
-  const llamar = accion === 'ingresar' ? ingresoDirecto : avisarALaMesa;
   try {
-    const payload = await conSesion(sesion, (op) => llamar(dispositivoId, cuerpo, op), { timeoutMs: LIMITES.accionMs, campos: CAMPOS_PUERTA_400 });
-    await olvidar();
-    if (accion === 'avisar') return { accion, caso: normalizarCaso(payload?.caso), uuid };
-    const integrantes = normalizarIntegrantes(payload);
-    return {
-      accion,
-      caso: integrantes.caso,
-      reservadas: entero(payload?.reservadas),
-      faltantes: entero(payload?.faltantes),
-      integrantes,
-      uuid,
-    };
+    const r = await mandarPuerta(sesion, dispositivoId, accion, { ...datosDelCaso(conDni), uuid_cliente: uuid }, uuid);
+    await olvidarPuerta(sesion, dispositivoId, dniClave, uuid);
+    return r;
   } catch (error) {
     if (!error.clasificacion) {
       // FECHA_INVALIDA de emergenciaApi (antes de mandar nada): va al campo.
@@ -995,14 +1087,44 @@ export const enviarPuerta = async (sesion, dispositivoId, accion, datos = {}) =>
         : { tipo: 'rechazo', mensaje: error?.message || 'No se pudo mandar.' };
     }
     const tipo = error.clasificacion.tipo;
-    // El servidor dijo que no se creó nada: se olvida. Sin red o con un error local no salió nada: un uuid
-    // recién nacido no queda como pendiente (uno de antes, sí: el primer envío pudo haber llegado).
-    const respondio = Number(error.status) > 0 && !error.unexpectedHtml;
+    // Sin red o con un error local no salió nada: un uuid recién nacido no queda como pendiente (uno de
+    // antes, sí: el primer envío pudo haber llegado).
+    const respondio = respondioElServidor(error);
     const noSalio = tipo === 'sin_red' || (!respondio && ['validacion', 'rechazo'].includes(tipo));
-    if ((respondio && RESUELVEN_PUERTA.includes(tipo)) || (nuevo && noSalio)) await olvidar();
+    if ((respondio && resuelvePuerta(tipo, nuevo)) || (nuevo && noSalio)) await olvidarPuerta(sesion, dispositivoId, dniClave, uuid);
     if (tipo === 'reintentable') error.clasificacion.mensaje = accion === 'ingresar' ? TEXTO_INGRESAR_INCIERTO : TEXTO_AVISAR_INCIERTO;
-    error.incierto = !!await puertaPendiente(sesion, dispositivoId, datos.dni).catch(() => null);
+    error.incierto = !!await puertaPendiente(sesion, dispositivoId, dniClave).catch(() => null);
     error.uuid = uuid;
+    throw error;
+  }
+};
+
+// El reintento de un envío de la puerta cuyo Formulario 1 ya se borró del teléfono (logout, 48 h): manda
+// solo el uuid y el DNI buscado. Si el primero había llegado, el back devuelve el caso (200); si no,
+// contesta 400 (el formulario vacío no es válido): no se creó nada, el uuid se olvida y el error sale con
+// `reingresar: true` y TEXTO_REINGRESAR. Mismo resultado y mismas reglas que enviarPuerta.
+export const reintentarPuertaSinDatos = async (sesion, dispositivoId, dni) => {
+  const dniClave = cleanDigits(dni);
+  const previo = await puertaPendiente(sesion, dispositivoId, dniClave);
+  if (!previo) {
+    throw crearError('SIN_PENDIENTE', 'No hay un envío para reintentar.', { clasificacion: { tipo: 'rechazo', mensaje: 'No hay un envío para reintentar.' } });
+  }
+  const { accion, uuid } = previo;
+  try {
+    const r = await mandarPuerta(sesion, dispositivoId, accion, { uuid_cliente: uuid, dni: dniClave }, uuid);
+    await olvidarPuerta(sesion, dispositivoId, dniClave, uuid);
+    return r;
+  } catch (error) {
+    const tipo = error.clasificacion?.tipo;
+    if (respondioElServidor(error) && resuelvePuerta(tipo, false)) await olvidarPuerta(sesion, dispositivoId, dniClave, uuid);
+    if (tipo === 'validacion') {
+      error.reingresar = true;
+      error.clasificacion = { ...error.clasificacion, mensaje: TEXTO_REINGRESAR, errores: { generales: [TEXTO_REINGRESAR] } };
+    }
+    if (tipo === 'reintentable') error.clasificacion.mensaje = accion === 'ingresar' ? TEXTO_INGRESAR_INCIERTO : TEXTO_AVISAR_INCIERTO;
+    error.incierto = !!await puertaPendiente(sesion, dispositivoId, dniClave).catch(() => null);
+    error.uuid = uuid;
+    error.accion = accion;
     throw error;
   }
 };

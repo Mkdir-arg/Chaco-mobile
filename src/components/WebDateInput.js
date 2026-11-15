@@ -3,7 +3,7 @@ import { View } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
 
 // Dates stay calendar dates: never convert through UTC (which can change the day).
-export default function WebDateInput({ value, onSelect, label, required, maximumDate, style }) {
+export default function WebDateInput({ value, onSelect, label, required, maximumDate, style, disabled = false }) {
   const { theme, typography, isDark } = useTheme();
   const [focused, setFocused] = useState(false);
   const max = maximumDate instanceof Date && !Number.isNaN(maximumDate.getTime())
@@ -12,10 +12,11 @@ export default function WebDateInput({ value, onSelect, label, required, maximum
   return (
     <View style={[style, { backgroundColor: theme.colors.surface,
       borderColor: focused ? theme.colors.primary : theme.colors.border, justifyContent: 'center' }]}>
-      <input type="date" value={value} max={max} required={required}
+      <input type="date" value={value} max={max} required={required} disabled={disabled}
         aria-label={`${label}${required ? ', obligatorio' : ''}`}
         onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
         onChange={event => {
+          if (disabled) return;
           const iso = event.target.value;
           if (!iso) { onSelect(''); return; }
           if (!event.target.validity.valid || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return;

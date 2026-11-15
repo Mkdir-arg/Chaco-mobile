@@ -52,7 +52,8 @@ export const CIERRES = {
 // ingreso» (motivo). Con conexión: sin red no se manda nada. El token se fija al abrir.
 // Ninguno de los tres es idempotente: si el envío queda incierto (red, timeout, 5xx, WAF), «Reintentar»
 // manda lo mismo sin volver a preguntar, y el 409 con el estado que esa acción produce es «se hizo»
-// (muestra el `detail` del servidor: puede haberlo hecho otra guardia).
+// (muestra el `detail` del servidor: puede haberlo hecho otra guardia). Antes de reenviar un cancelar
+// incierto se releen los integrantes: si el ingreso cambió, no se reenvía (`cancelar` del servicio).
 // - `onCerrado(resultado)`: 200, o el «se hizo» tras un intento incierto. `resultado.cierre` dice cuál.
 // - `onConflicto(clasificacion)`: 409 de estado → el padre recarga por `estado_actual` (§13.1).
 // - `onNoEncontrado()`: 404. `onSinModulo(mensaje)`: 403. `onEnviando(bool)`: hay un envío en curso.
@@ -203,7 +204,8 @@ export default function EmergenciaCierreScreen({
       else r = await cancelar(sesion, caso.id, datosDelCierre(), opciones);
       if (r.resultado === 'ya_hecho') {
         // El detail del servidor dice qué pasó (este teléfono antes, otra guardia o el backoffice).
-        showToast({ type: 'info', message: r.detalle || r.mensaje });
+        // Alojar: lo cargado acá puede no haberse guardado (quizás lo cerró otra guardia): `nota` lo dice.
+        showToast({ type: 'info', message: [r.detalle || r.mensaje, r.nota].filter(Boolean).join(' ') });
       } else {
         const liberadas = textoDeLiberadas(r.liberadas);
         const hecho = cierre === 'cancelar' ? 'Ingreso cancelado: el caso volvió a la mesa.'

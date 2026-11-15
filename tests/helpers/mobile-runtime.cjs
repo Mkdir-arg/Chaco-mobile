@@ -83,7 +83,11 @@ async function setup(platform = 'android', {secureStoreSeparado = false, mocks: 
     'expo-file-system/legacy': {documentDirectory: 'file:///test/', getInfoAsync: (...args) => fileInfoHandler(...args), copyAsync: async () => {}, makeDirectoryAsync: async () => {}, EncodingType: {Base64: 'base64'}, readAsStringAsync: async () => 'aW1hZ2U='},
     'expo-sqlite': {openDatabaseAsync: async () => db},
     'expo-location': {getCurrentPositionAsync: (...args) => locationHandler(...args)},
-    'expo-crypto': {randomUUID: () => require('node:crypto').randomUUID()},
+    'expo-crypto': {randomUUID: () => require('node:crypto').randomUUID(), CryptoDigestAlgorithm: {SHA256: 'SHA-256'},
+      digestStringAsync: async (algoritmo, texto) => {
+        assert.equal(algoritmo, 'SHA-256');
+        return require('node:crypto').createHash('sha256').update(texto).digest('hex');
+      }},
     'expo-constants': {default: {get expoConfig() { return {version: appVersion}; }}},
     'expo-image-manipulator': {ImageManipulator: {manipulate() { throw new Error('Sin mock de expo-image-manipulator'); }}, SaveFormat: {JPEG: 'jpeg'}},
     ...mocksExtra,

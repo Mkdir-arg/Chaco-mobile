@@ -202,7 +202,7 @@ test('Alojar: un corte deja «Reintentar» sin volver a preguntar y con todo fij
     assert.equal(ui.alerts.length, alertas, 'el reintento no pregunta de nuevo');
     assert.equal(posts(ui.calls).length, 2);
     assert.deepEqual(ui.eventos.map(e => [e[0], e[1].resultado, e[1].estado]), [['cerrado', 'ya_hecho', 'ALOJADO']]);
-    assert.deepEqual(plano(ui.toasts.at(-1)), {type: 'info', message: ALOJADA_409.detail});
+    assert.deepEqual(plano(ui.toasts.at(-1)), {type: 'info', message: `${ALOJADA_409.detail} Revisá los datos de alojamiento en la ficha: si lo cerró otra guardia, lo que cargaste acá no se guardó.`});
   } finally { await ui.close(); }
 });
 
@@ -260,7 +260,7 @@ test('Cerrar con diferencia: motivo obligatorio y qué pasó con «Otro»; confi
   } finally { await ui.close(); }
 });
 
-test('Cancelar ingreso: pide motivo; 200 avisa que volvió a la mesa; tras un corte, el 409 EN_GESTION es «se hizo»', async () => {
+test('Cancelar ingreso: pide motivo; 200 avisa que volvió a la mesa; tras un corte, relee y el caso en la mesa es «se hizo» sin reenviar', async () => {
   let intento = 0;
   const ui = await montarCierre(() => { intento += 1; return intento === 1 ? fallaDeRed() : response(409, {detail: 'La derivación ya fue rechazada o el ingreso se canceló. Buscá a la familia de nuevo.', estado_actual: 'NUEVO'}); },
     {cierre: 'cancelar', confirmadas: 0});
@@ -274,7 +274,8 @@ test('Cancelar ingreso: pide motivo; 200 avisa que volvió a la mesa; tras un co
     await ui.aceptarAlerta('Cancelar el ingreso');
     assert.ok(ui.button('Reintentar: cancelar el ingreso'));
     await ui.pressButton('Reintentar: cancelar el ingreso');
-    assert.deepEqual(posts(ui.calls).map(c => c.body), [{motivo: 'La familia se fue con parientes'}, {motivo: 'La familia se fue con parientes'}]);
+    assert.deepEqual(ui.calls.map(c => [c.method, c.url]), [['POST', '/api/emergencia/casos/184/cancelar-ingreso/'], ['GET', '/api/emergencia/casos/184/integrantes/']],
+      'el reintento relee antes y, con el caso ya en la mesa, no reenvía');
     assert.deepEqual(ui.eventos.map(e => [e[0], e[1].cierre, e[1].resultado, e[1].estado]), [['cerrado', 'cancelar', 'ya_hecho', 'NUEVO']]);
   } finally { await ui.close(); }
   const ok = await montarCierre(() => response(200, {estado: 'EN_GESTION', total_alojado: null, liberadas: 3}), {cierre: 'cancelar', confirmadas: 0});
@@ -508,6 +509,91 @@ test('Puerta: dos toques sin espera mandan un solo POST; la respuesta de otra se
     await otra.aceptarAlerta('Ingresar igual');
     assert.deepEqual(otra.eventos, [], 'la respuesta era de la sesión anterior');
   } finally { await otra.close(); }
+});
+
+test('Cancelar (m3): tras un corte, si el ingreso cambió (alguien confirmado) no reenvía y va a los integrantes', async () => {
+  let intento = 0;
+  const ui = await montarCierre((call) => {
+    intento += 1;
+    if (intento === 1) return fallaDeRed();
+    return response(200, {caso: CASO, integrantes: [CONFIRMADAS[0]], confirmadas: 1, total_declarado: 3, declaradas_al_relevar: 3, con_ficha_incompleta: 0});
+  }, {cierre: 'cancelar', confirmadas: 0});
+  try {
+    await ui.escribir('Motivo de la cancelación', 'Se fueron');
+    await ui.pressButton('Cancelar el ingreso');
+    await ui.aceptarAlerta('Cancelar el ingreso');
+    await ui.pressButton('Reintentar: cancelar el ingreso');
+    assert.equal(posts(ui.calls).length, 1, 'no se reenvía');
+    assert.deepEqual(ui.eventos.map(e => [e[0], e[1].destino, e[1].mensaje]),
+      [['conflicto', 'integrantes', ui.llegadas.TEXTO_INGRESO_CAMBIO]]);
+  } finally { await ui.close(); }
+});
+
+test('Puerta (M1, m5): el DNI es el buscado y no se edita; con un envío pendiente la fecha queda fija también', async () => {
+  const env = await entorno(fallaDeRed);
+  const ui = await montarPuerta(null, {env});
+  try {
+    const dni = ui.input('DNI del responsable');
+    assert.deepEqual([dni.props.editable, dni.props.value, dni.props.onChangeText], [false, '30111222', undefined]);
+    assert.ok(ui.labels().includes('Es el DNI que buscaste. Para otra persona, volvé y buscá de nuevo.'));
+    assert.equal(ui.tree.root.findByType('FechaInput').props.disabled, false);
+    await ui.llenar();
+    await ui.pressButton('Ingresar igual');
+    await ui.aceptarAlerta('Ingresar igual');
+    assert.equal(ui.tree.root.findByType('FechaInput').props.disabled, true);
+    assert.equal(posts(env.calls)[0].body.dni, '30111222');
+  } finally { await ui.close(); }
+});
+
+test('Puerta (m6): con el uuid solo (lo cargado se borró), no muestra el formulario y «Reintentar» manda uuid y DNI', async () => {
+  let respuesta = fallaDeRed;
+  const env = await entorno((call) => respuesta(call));
+  const primera = await montarPuerta(null, {env, accion: 'avisar'});
+  await primera.llenar();
+  await primera.pressButton('Avisar a la mesa');
+  await primera.aceptarAlerta('Avisar a la mesa');
+  await primera.close();
+  await env.runtime.load('./emergenciaLimpieza').limpiarDatosLocalesEmergencia();
+  const uuid = posts(env.calls)[0].body.uuid_cliente;
+  respuesta = () => response(200, AVISO);
+  const segunda = await montarPuerta(null, {env});
+  try {
+    assert.ok(segunda.labels().includes('Hay un envío de esta familia sin resultado, pero lo cargado ya se borró del teléfono (se cerró la sesión o pasaron 48 h). «Reintentar» manda solo su identificador: si había llegado, se recupera el caso; si no, vas a tener que cargar los datos de nuevo.'));
+    assert.equal(segunda.input('Nombre'), undefined, 'sin formulario');
+    assert.deepEqual(segunda.titulos(), ['Reintentar: avisar a la mesa']);
+    await segunda.pressButton('Reintentar: avisar a la mesa');
+    assert.deepEqual(posts(env.calls).at(-1).body, {uuid_cliente: uuid, dni: '30111222'});
+    assert.deepEqual(segunda.eventos, [['avisado', '2026-000191']]);
+  } finally { await segunda.close(); }
+});
+
+test('Puerta (m6): con el uuid solo, un 400 dice que no había llegado y vuelve al formulario vacío con las dos acciones', async () => {
+  let respuesta = fallaDeRed;
+  const env = await entorno((call) => respuesta(call));
+  const primera = await montarPuerta(null, {env});
+  await primera.llenar();
+  await primera.pressButton('Ingresar igual');
+  await primera.aceptarAlerta('Ingresar igual');
+  await primera.close();
+  await env.runtime.load('./emergenciaLimpieza').limpiarDatosLocalesEmergencia();
+  respuesta = () => response(400, {code: 'VALIDACION', detail: 'Elegí el traslado.', traslado: ['Elegí el traslado.']});
+  const segunda = await montarPuerta(null, {env});
+  try {
+    await segunda.pressButton('Reintentar: ingresar igual');
+    assert.ok(segunda.labels().includes(env.llegadas.TEXTO_REINGRESAR));
+    assert.deepEqual(segunda.titulos(), ['Ingresar igual', 'Avisar a la mesa']);
+    assert.equal(segunda.input('Nombre').props.editable, true);
+  } finally { await segunda.close(); }
+});
+
+test('Puerta (m1): si el reenvío devuelve el caso ya alojado, no dice «ingreso en curso»', async () => {
+  const ui = await montarPuerta(() => response(200, {...INGRESO, caso: {...INGRESO.caso, estado: 'ALOJADO'}}));
+  try {
+    await ui.llenar();
+    await ui.pressButton('Ingresar igual');
+    await ui.aceptarAlerta('Ingresar igual');
+    assert.deepEqual(plano(ui.toasts.at(-1)), {type: 'info', message: 'Caso 2026-000190: el ingreso ya se había hecho y la familia ya figura alojada.'});
+  } finally { await ui.close(); }
 });
 
 // ---- EmergenciaApp: el tramo de la parte 3 ----

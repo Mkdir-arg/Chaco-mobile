@@ -418,7 +418,8 @@ Reglas (`src/services/emergenciaLlegadas.js`, `src/utils/fichaEmergencia.js`):
   camas se liberaron. Alojada o con diferencia vuelve a los integrantes en lectura; cancelado, a
   buscar con el DNI (el caso volvió a la mesa).
 - **Sin derivación** (`EmergenciaPuertaScreen`, §13.10, M2-6): «Ingresar igual» (solo con camas
-  libres) y «Avisar a la mesa» abren el Formulario 1 de la puerta con el DNI buscado: traslado, DNI,
+  libres) y «Avisar a la mesa» abren el Formulario 1 de la puerta con el DNI buscado (fijo: para otra
+  persona se vuelve a buscar; es la clave del envío pendiente): traslado, DNI,
   nombre, apellido, fecha de nacimiento, teléfono, documento extraviado, las seis cantidades, la
   asistencia y los avisos, dirección (opcional: vale la del dispositivo) y observaciones. Sin hora,
   fotos, GPS ni localidad. Nombre y apellido no bloquean (con la persona en el legajo alcanza el DNI;
@@ -432,15 +433,31 @@ Reglas (`src/services/emergenciaLlegadas.js`):
   un envío incierto ofrece «Reintentar» (sin volver a preguntar y con lo cargado fijo), y el 409 del
   reintento con el estado que esa acción produce es «se hizo»: `ALOJADO`/`CERRADO` para alojar y
   diferencia, `EN_GESTION`/`NUEVO` para cancelar. Se muestra el `detail` del servidor (puede haberlo
-  hecho otra guardia). Otro estado, o un 409 sin intento incierto, va al router de §13.1. Un 400
-  `non_field_errors` (la acción ya no corresponde al contador) se muestra en la pantalla.
+  hecho otra guardia; al alojar, además pide revisar los datos de alojamiento en la ficha, porque lo
+  cargado puede no haberse guardado). Otro estado, o un 409 sin intento incierto, va al router de §13.1.
+  Un 400 `non_field_errors` (la acción ya no corresponde al contador) se muestra en la pantalla.
+- **Reintento de un cancelar incierto**: antes de reenviar se releen los integrantes. Con el caso ya en
+  la mesa es «se hizo» sin reenviar; con el ingreso en otro estado o con personas confirmadas, no se
+  reenvía y se vuelve a los integrantes. **Límite conocido**: el GET de integrantes (§13.5) no expone la
+  derivación, así que si el primer cancelar llegó, la mesa volvió a derivar al mismo dispositivo y otra
+  guardia aceptó **sin confirmar a nadie** en ese lapso, el reintento cancelaría ese ingreso nuevo. Para
+  cerrarlo haría falta que el back exponga el id de la derivación (o un uuid en cancelar).
 - **Ingresar igual y avisar a la mesa son idempotentes**: el `uuid_cliente` nace al mandar y se
   guarda con lo cargado en AsyncStorage por usuario, dispositivo y DNI hasta saber el resultado:
   volver, re-entrar o cerrar la app no lo cambian, y al volver a esa familia **solo** se ofrece
   reintentar ese envío con el mismo uuid (la otra acción, con otro uuid, crearía un segundo caso).
-  Se olvida con 2xx, 400, 404 y 409 `UUID_EN_USO`; se conserva con red, timeout, 5xx, página del WAF,
-  429 y 403. Tiene el DNI y lo tipeado: lo borra el logout y se depura al abrir el módulo (otro
-  usuario, 48 h), como los borradores de la ficha (`emergenciaLimpieza`).
+  Se olvida con 2xx, 400 y 409 `UUID_EN_USO`, con un 404 solo si el uuid es recién nacido (el back
+  resuelve el alcance del dispositivo antes de mirar el uuid: con uno de antes, el primer envío pudo
+  haber llegado), y cuando la búsqueda de ese DNI ya trae una derivación o la familia alojada. Se
+  conserva con red, timeout, 5xx, página del WAF, 429 y 403. Si el reenvío devuelve el caso en otro
+  estado (ya alojado, de vuelta en la mesa), se dice eso y no «ingreso en curso».
+- **Datos personales de la puerta**: lo tipeado (y el DNI) se borra en el logout, con la sesión
+  vencida o sin el módulo, al abrir el módulo con otro usuario y a las 48 h (`emergenciaLimpieza`).
+  El uuid **no** se pierde: queda `{ uuid, accion, dispositivo, creado_en }` por usuario, bajo el
+  SHA-256 de dispositivo y DNI (seudonimización: un DNI se puede recuperar por fuerza bruta), 7 días.
+  Al volver a esa familia se ofrece solo «Reintentar», que manda el uuid y el DNI: el back busca el
+  uuid antes de validar el Formulario 1, así que si el primero llegó devuelve el caso; si no, contesta
+  400 (no se creó nada) y se vuelve a cargar el formulario.
 - **Con conexión**: el contrato deja encolar el ingreso directo sin señal, pero en la app M2 se
   bloquea sin red (sin red no sale nada y se avisa); el reintento es a mano.
 - 429 deja el botón en «Reintentar en N s» (`Retry-After`). 404 vuelve a «mis dispositivos»; 403
