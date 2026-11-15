@@ -31,7 +31,7 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
       fecha_hasta:'2099-12-31T23:59:59-03:00',definicion_formulario:{version:3,globales:[],requisitos:[]}};
     let posts=0, uploads=0, rejectUpload=true, casos=0, localidades=0;
     const recepciones=[];
-    const m2={buscar:0,aceptar:[],integrantes:0};
+    const m2={buscar:0,aceptar:[],integrantes:0,persona:0,plazas:0,confirmar:[],patch:[]};
     const launch = async () => {
       const ctx = await chromium.launchPersistentContext(profile, {headless:true,
         ...(process.env.CHROME_PATH ? {executablePath:process.env.CHROME_PATH} : {})});
@@ -88,9 +88,36 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
               {n:2,estado:'SIN_CONFIRMAR',ficha_completa:false,persona:null,plaza:null,parentesco:'',confirmada_en:null,egresado_en:null}],
             confirmadas:0,total_declarado:2,declaradas_al_relevar:2,con_ficha_incompleta:0};
         }
+        else if(req.method()==='GET' && url.endsWith('/api/emergencia/casos/184/integrantes/1/')) {
+          m2.persona++;
+          body={n:1,estado:m2.confirmar.length>1?'CONFIRMADA':'SIN_CONFIRMAR',ficha_completa:false,persona:null,plaza:null,parentesco:'',confirmada_en:null,egresado_en:null,
+            ficha:{},secciones_incompletas:['Educación','Vacunación','Salud y medicación','Trabajo','Observaciones, mascotas y adulto responsable']};
+        }
+        else if(req.method()==='GET' && url.endsWith('/api/emergencia/dispositivos/9/plazas/?caso=184')) {
+          m2.plazas++;
+          body={caso:184,sectores:[{sector:{id:3,nombre:'Pabellón A',perfil:'Familias'},total:3,libres:1,reservadas_familia:1,plazas:[
+            {id:40,codigo:'A-00',nombre:'A-00 (Pabellón A)',estado:'OCUPADA',elegible:false,texto:'Ocupada',tono:'info',detalle:''},
+            {id:41,codigo:'A-01',nombre:'A-01 (Pabellón A)',estado:'RESERVADA_FAMILIA',elegible:true,texto:'Reservada para esta familia',tono:'warning',detalle:''},
+            {id:42,codigo:'A-02',nombre:'A-02 (Pabellón A)',estado:'LIBRE',elegible:true,texto:'Libre',tono:'success',detalle:''}]}]};
+        }
+        else if(req.method()==='POST' && url.endsWith('/api/emergencia/casos/184/integrantes/1/confirmar/')) {
+          assert.match(req.headers()['content-type'],/application\/json/);
+          assert.equal(req.headers()['authorization'],'Token test-token');
+          m2.confirmar.push(JSON.parse(req.postData()||'{}'));
+          // El primero se corta (la respuesta se pierde, pero el servidor confirmó): el reenvío con el mismo uuid es 200.
+          if(m2.confirmar.length===1) {await route.abort('connectionreset');return;}
+          body={integrante:{n:1,estado:'CONFIRMADA',ficha_completa:false,persona:{id:9,nombre:'Benítez, Rosa',dni:'30111222'},
+            plaza:{id:41,codigo:'A-01',nombre:'A-01 (Pabellón A)'},parentesco:'Jefe/a de hogar',confirmada_en:'2026-11-12T10:20:00-03:00',egresado_en:null},
+            confirmadas:1,total_declarado:2,reserva_liberada:false};
+        }
+        else if(req.method()==='PATCH' && url.endsWith('/api/emergencia/casos/184/integrantes/1/')) {
+          assert.match(req.headers()['content-type'],/application\/json/);
+          m2.patch.push(JSON.parse(req.postData()||'{}'));
+          body={ficha_completa:false,secciones_incompletas:['Vacunación','Salud y medicación','Trabajo','Observaciones, mascotas y adulto responsable']};
+        }
         else if(url.endsWith('/relevamientos/')) body=[campaign];
         else if(url.endsWith('/relevamientos/1/')) body=campaign;
-        await route.fulfill({status,contentType:'application/json',headers:{'Access-Control-Allow-Origin':'http://localhost:4174','Access-Control-Allow-Credentials':'true','Access-Control-Allow-Headers':'authorization,content-type','Access-Control-Allow-Methods':'GET,POST,OPTIONS',...extra},body:JSON.stringify(body)});
+        await route.fulfill({status,contentType:'application/json',headers:{'Access-Control-Allow-Origin':'http://localhost:4174','Access-Control-Allow-Credentials':'true','Access-Control-Allow-Headers':'authorization,content-type','Access-Control-Allow-Methods':'GET,POST,PATCH,OPTIONS',...extra},body:JSON.stringify(body)});
       });
       return ctx;
     };
@@ -338,6 +365,46 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
     assert.equal(m2.integrantes,1);
     assert.deepEqual(errors,[]);
     console.log('PASS: Emergencia M2 offline blocked, search 429 with Retry-After, accept lost response + 409 INGRESO_EN_CURSO treated as done, integrantes.');
+    // Emergencia M2 (parte 2): una persona, el mapa de camas (se propone la guardada para la familia),
+    // «Confirmar persona» con la respuesta perdida: el uuid queda guardado por persona y sobrevive a
+    // recargar la PWA; el reenvío con el MISMO uuid devuelve la misma fila. Después, la ficha (PATCH
+    // solo con la sección que cambió) y el borrador local de lo tipeado.
+    const ficha1=await page.evaluate(async()=>{
+      const l=window.__pwaTest.llegadas;
+      const sesion=await l.abrirSesion();
+      const persona=await l.cargarPersona(sesion,184,1);
+      const mapa=await l.cargarCamas(sesion,9,184);
+      const cama=l.camaPorDefecto(mapa);
+      const plano={parentesco:'JEFE',dni:'30.111.222',embarazo:false,discapacidad:false,electrodependiente:false,medicacion_critica:false,alergias_graves:false};
+      await l.guardarBorradorFicha(sesion,184,1,{modo:'confirmar',plano,plazaId:cama.id});
+      let primero=null;
+      try { await l.confirmarPersona(sesion,184,1,{plano,plazaId:cama.id}); } catch(e){ primero=e.clasificacion.tipo; }
+      return {estado:persona.estado,cama:cama.codigo,primero,pendiente:await l.confirmarPendiente(sesion,184,1)};
+    });
+    assert.deepEqual({...ficha1,pendiente:typeof ficha1.pendiente},{estado:'SIN_CONFIRMAR',cama:'A-01',primero:'reintentable',pendiente:'string'});
+    await page.reload(); await page.waitForFunction(()=>window.__pwaTest);
+    const ficha2=await page.evaluate(async()=>{
+      const l=window.__pwaTest.llegadas;
+      const sesion=await l.abrirSesion();
+      const borrador=await l.leerBorradorFicha(sesion,184,1,'confirmar');
+      const pendiente=await l.confirmarPendiente(sesion,184,1);
+      const ok=await l.confirmarPersona(sesion,184,1,{plano:borrador.plano,plazaId:borrador.plazaId});
+      await l.borrarBorradorFicha(sesion,184,1);
+      const guardada=await l.completarFicha(sesion,184,1,{plano:{nivel_educativo:'PRIMARIO',asiste_escuela:false},secciones:['educacion']});
+      return {pendiente,borrador:borrador.plano.dni,ok:{estado:ok.integrante.estado,cama:ok.integrante.plaza.codigo,otraCama:ok.otraCama,confirmadas:ok.confirmadas},
+        despues:await l.confirmarPendiente(sesion,184,1),guardada};
+    });
+    assert.equal(ficha2.pendiente,ficha1.pendiente,'el uuid sobrevive a recargar');
+    assert.deepEqual({...ficha2,pendiente:undefined},{pendiente:undefined,borrador:'30.111.222',ok:{estado:'CONFIRMADA',cama:'A-01',otraCama:null,confirmadas:1},despues:null,
+      guardada:{ficha_completa:false,secciones_incompletas:['Vacunación','Salud y medicación','Trabajo','Observaciones, mascotas y adulto responsable']}});
+    assert.equal(m2.confirmar.length,2);
+    assert.equal(m2.confirmar[1].uuid_cliente,m2.confirmar[0].uuid_cliente,'el reenvío lleva el MISMO uuid');
+    assert.equal(m2.confirmar[0].plaza_id,41);
+    assert.deepEqual(m2.confirmar[0].ficha.datos_personales,{dni:'30111222'});
+    assert.deepEqual(m2.patch,[{ficha:{educacion:{nivel_educativo:'PRIMARIO',asiste_escuela:false}}}]);
+    assert.equal(m2.plazas,1);
+    assert.deepEqual(errors,[]);
+    console.log('PASS: Emergencia M2 parte 2: persona, default family bed, lost confirm response retried with same uuid after reload, PATCH only changed section, draft.');
   } finally {
     fs.writeFileSync(entry,original);
     await context?.close(); server?.kill(); fs.rmSync(profile,{recursive:true,force:true});

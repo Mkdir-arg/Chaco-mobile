@@ -22,13 +22,15 @@ const CIERRES = {
 // M2-3 · Integrantes de la familia (§13.5): el contador «1 de 7 confirmadas», una fila por persona y
 // «Agregar persona». Con la familia alojada o el caso cerrado, modo lectura. Con conexión: sin red no
 // se carga nada (no hay lectura guardada) y se avisa; al volver la red se carga sola.
-// Confirmar a una persona, su ficha, las camas y los cierres (§13.6 a §13.9) son de la próxima
-// versión: tocarlos llama a `onProximamente(titulo)`.
+// Tocar una persona abre su ficha (`onAbrirPersona(integrante, caso)`): sin confirmar, para confirmarla
+// con su cama (solo con el ingreso en curso); confirmada, para ver y completar las secciones 4 a 8
+// (también con la familia alojada; con el caso cerrado, en lectura). Los cierres (§13.9) son de la
+// próxima versión: tocarlos llama a `onProximamente(titulo)`.
 // - `onConflicto(clasificacion)`: 409 de estado → el padre recarga por `estado_actual` (§13.1).
 // - `onNoEncontrado()`: 404. `onSinModulo(mensaje)`: 403. `onEnviando(bool)`: «Agregar persona» en curso.
 // `recarga` cambia cuando se pide volver a consultar (botón de sincronizar del Banner).
 export default function EmergenciaIntegrantesScreen({
-  caso: casoInicial, recarga = 0, onConflicto, onNoEncontrado, onSinModulo, onProximamente, onEnviando,
+  caso: casoInicial, recarga = 0, onConflicto, onNoEncontrado, onSinModulo, onProximamente, onEnviando, onAbrirPersona,
 }) {
   const { theme, typography } = useTheme();
   const { showAlert, showToast } = useToast();
@@ -237,11 +239,14 @@ export default function EmergenciaIntegrantesScreen({
     ].filter(Boolean).join(' · ');
     const incompleta = integrante.estado === 'CONFIRMADA' && !integrante.ficha_completa;
     const etiquetaA11y = [`${integrante.n}. ${titulo}`, estado.titulo, detalle, incompleta ? TEXTO_FICHA_INCOMPLETA : null].filter(Boolean).join('. ');
-    const accion = integrante.estado === 'SIN_CONFIRMAR' ? 'Confirmar persona' : 'Ficha de la persona';
+    const sinConfirmar = integrante.estado === 'SIN_CONFIRMAR';
+    // Sin confirmar solo se confirma con el ingreso en curso; la ficha de una confirmada se abre siempre.
+    const deshabilitada = (sinConfirmar && lectura) || agregando;
+    const accion = sinConfirmar ? 'Confirmar persona con su ficha y su cama' : 'Ver y completar la ficha';
     return (
       <Pressable key={String(integrante.n)} accessibilityRole="button" accessibilityLabel={etiquetaA11y}
-        accessibilityHint={lectura ? undefined : `${accion}: próximamente`} disabled={lectura}
-        onPress={() => onProximamente?.(accion)}
+        accessibilityHint={deshabilitada ? undefined : accion} accessibilityState={{ disabled: deshabilitada }} disabled={deshabilitada}
+        onPress={() => onAbrirPersona?.(integrante, datos?.caso || casoInicial)}
         style={({ pressed }) => [styles.persona, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }, pressed && styles.presionada]}>
         <View style={styles.cabecera}>
           <Text style={[styles.flex, styles.nombre, { color: theme.colors.text, fontFamily: typography.bold }]}>{`${integrante.n}. ${titulo}`}</Text>
