@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import NetInfo from '@react-native-community/netinfo';
 import relevamientoService from '../services/relevamientoService';
+import { hayRed } from '../services/conectividad';
 import { becasRequest, getBecasToken } from '../services/becasApi';
 import {
   contarNoLeidos, listarAvisos, marcarLeido, marcarTodoLeido, purgarAvisosViejos,
@@ -8,15 +8,6 @@ import {
 import { avisarSiVigente, detectarCola, detectarRechazos, detectarRelevamientosNuevos } from '../services/detectoresAvisos';
 
 const CADA_15_MIN_MS = 15 * 60 * 1000;
-
-const hayRed = async () => {
-  try {
-    const estado = await NetInfo.fetch();
-    return !!estado?.isConnected && estado?.isInternetReachable !== false;
-  } catch {
-    return false;
-  }
-};
 
 // Avisos dentro de la app. Todo error queda acá adentro: nunca llega a la sincronización
 // ni al refresco que llaman a estas funciones.

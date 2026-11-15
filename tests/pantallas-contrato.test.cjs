@@ -120,6 +120,7 @@ async function mountDetail(options = {}) {
     '../services/imagePicker': {}, '../services/ubicacion': {posicionActual: async () => { throw new Error('sin GPS en tests'); }},
     '@expo/vector-icons': {Ionicons: 'Ionicons'},
     '@react-native-community/netinfo': {__esModule: true, default: {fetch: async () => ({isConnected: true, isInternetReachable: true})}},
+    '../services/conectividad': {hayRed: async () => true, hayRedEn: () => true, escucharReconexion: () => () => {}},
     '@react-native-community/datetimepicker': {__esModule: true, default: 'DateTimePicker', DateTimePickerAndroid: {open() {}}},
     '../hooks/useCameraPermissions': {__esModule: true, default: () => [{granted: true}, async () => ({granted: true})]},
     'expo-media-library': {}, 'expo-constants': {},

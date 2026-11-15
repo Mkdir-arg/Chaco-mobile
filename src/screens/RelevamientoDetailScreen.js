@@ -4,7 +4,7 @@ import { consultarIdentidad, identityKey, identityFailure, isValidatedIdentity, 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Image, Pressable, Alert, Modal, KeyboardAvoidingView, Platform, FlatList } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import NetInfo from '@react-native-community/netinfo';
+import { hayRed } from '../services/conectividad';
 import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
 import useCameraPermissions from '../hooks/useCameraPermissions';
 import * as MediaLibrary from 'expo-media-library';
@@ -1367,8 +1367,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
       return;
     }
 
-    const netState = await NetInfo.fetch();
-    if (!netState.isConnected || netState.isInternetReachable === false) {
+    if (!(await hayRed())) {
       setDniForm((prev) => clearPersonIdentityFields(prev));
       setIdentificationOrigin('manual');
       setRenaperStatus('ERROR');
