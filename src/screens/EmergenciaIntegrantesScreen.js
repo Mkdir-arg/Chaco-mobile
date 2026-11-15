@@ -24,13 +24,14 @@ const CIERRES = {
 // se carga nada (no hay lectura guardada) y se avisa; al volver la red se carga sola.
 // Tocar una persona abre su ficha (`onAbrirPersona(integrante, caso)`): sin confirmar, para confirmarla
 // con su cama (solo con el ingreso en curso); confirmada, para ver y completar las secciones 4 a 8
-// (también con la familia alojada; con el caso cerrado, en lectura). Los cierres (§13.9) son de la
-// próxima versión: tocarlos llama a `onProximamente(titulo)`.
+// (también con la familia alojada; con el caso cerrado, en lectura). El cierre que corresponde al
+// contador (§13.9) abre su pantalla: `onCerrar(cierre, datos)`, con `cierre` 'alojar', 'diferencia' o
+// 'cancelar' y `datos` lo último cargado (caso, contador e integrantes).
 // - `onConflicto(clasificacion)`: 409 de estado → el padre recarga por `estado_actual` (§13.1).
 // - `onNoEncontrado()`: 404. `onSinModulo(mensaje)`: 403. `onEnviando(bool)`: «Agregar persona» en curso.
 // `recarga` cambia cuando se pide volver a consultar (botón de sincronizar del Banner).
 export default function EmergenciaIntegrantesScreen({
-  caso: casoInicial, recarga = 0, onConflicto, onNoEncontrado, onSinModulo, onProximamente, onEnviando, onAbrirPersona,
+  caso: casoInicial, recarga = 0, onConflicto, onNoEncontrado, onSinModulo, onCerrar, onEnviando, onAbrirPersona,
 }) {
   const { theme, typography } = useTheme();
   const { showAlert, showToast } = useToast();
@@ -289,7 +290,7 @@ export default function EmergenciaIntegrantesScreen({
             iconLeft="person-add-outline" loading={agregando} disabled={agregando || !sesion} onPress={tocarAgregar} />
           {cierre ? (
             <CustomButton title={CIERRES[cierre].titulo} size="L" iconLeft={CIERRES[cierre].icono} disabled={agregando}
-              onPress={() => onProximamente?.(CIERRES[cierre].titulo)} />
+              onPress={() => onCerrar?.(cierre, datos)} />
           ) : null}
         </>
       ) : null}

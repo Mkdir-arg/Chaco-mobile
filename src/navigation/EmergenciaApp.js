@@ -17,6 +17,8 @@ import EmergenciaLlegadaBuscarScreen from '../screens/EmergenciaLlegadaBuscarScr
 import EmergenciaDerivacionScreen from '../screens/EmergenciaDerivacionScreen';
 import EmergenciaIntegrantesScreen from '../screens/EmergenciaIntegrantesScreen';
 import EmergenciaFichaScreen from '../screens/EmergenciaFichaScreen';
+import EmergenciaCierreScreen from '../screens/EmergenciaCierreScreen';
+import EmergenciaPuertaScreen from '../screens/EmergenciaPuertaScreen';
 import {
   descartar, getBorradorEnCurso, getLocalidadesGuardadas, getPendingCount, getResumenPendientes, reintentar, syncPendientes,
 } from '../services/emergenciaCola';
@@ -37,7 +39,10 @@ const TITULOS = {
   llegadas_derivacion: 'Derivación',
   llegadas_integrantes: 'Integrantes',
   llegadas_ficha: 'Persona',
+  llegadas_cierre: 'Cerrar el ingreso',
+  llegadas_puerta: 'Sin derivación',
 };
+const TITULOS_CIERRE = { alojar: 'Familia alojada', diferencia: 'Cerrar con diferencia', cancelar: 'Cancelar ingreso' };
 // Las vistas que se vuelven a pedir con el botón de sincronizar del Banner.
 const VISTAS_RECARGABLES = ['inicio', 'kits_dispositivos', 'kits_entregas', 'llegadas_dispositivos', 'llegadas_integrantes', 'llegadas_ficha'];
 const VISTAS_M1 = ['envios', 'formulario'];
@@ -65,7 +70,9 @@ const escucharReconexion = (alVolver) => {
 
 // Módulo Emergencia: inicio con los accesos del perfil -> M1 («Ingreso de familias»: mis envíos y
 // el Formulario 1), M2 («Llegada de familias»: mis dispositivos -> buscar por DNI -> derivación ->
-// integrantes -> una persona (confirmar con su ficha y su cama, o completar la ficha), con conexión) y M3 («Recepción de kits»: mis dispositivos -> entregas por recibir ->
+// integrantes -> una persona (confirmar con su ficha y su cama, o completar la ficha) -> cerrar el ingreso
+// (alojar, con diferencia, cancelar); sin derivación, el Formulario 1 de la puerta (ingresar igual o avisar
+// a la mesa); todo con conexión) y M3 («Recepción de kits»: mis dispositivos -> entregas por recibir ->
 // recibir, sin cola y con conexión). Como Dispositivos, no importa nada de los otros módulos: comparte sesión, tema
 // y componentes. La cola de M1 se sincroniza solo mientras este árbol está montado.
 export default function EmergenciaApp({ onCambiarModulo }) {
@@ -82,7 +89,8 @@ export default function EmergenciaApp({ onCambiarModulo }) {
   const [syncTick, setSyncTick] = useState(0);
   const [enviadosTick, setEnviadosTick] = useState(0);
   // Una acción con conexión mandándose (recibir kits, aceptar o rechazar una derivación, agregar,
-  // confirmar a una persona o guardar su ficha): no se sale de la pantalla hasta saber el resultado.
+  // confirmar a una persona o guardar su ficha, cerrar el ingreso, ingresar igual o avisar a la mesa):
+  // no se sale de la pantalla hasta saber el resultado.
   const [enviando, setEnviando] = useState(false);
   // Hasta cuándo (ms) el back pidió no buscar por DNI (429 de §13.2): sobrevive a volver y re-entrar.
   const [esperaBuscarHasta, setEsperaBuscarHasta] = useState(0);
@@ -296,6 +304,36 @@ export default function EmergenciaApp({ onCambiarModulo }) {
     showToast({ type: 'warning', message: TEXTO_PERSONA_NO_ENCONTRADA });
     setPantalla((actual) => ({ ...actual, vista: 'llegadas_integrantes', n: (actual.n || 0) + 1 }));
   };
+  // Cerrar el ingreso (§13.9). `datos`: lo último que mostró integrantes (contador e integrantes).
+  const verCierre = (cierre, datos) => setPantalla((actual) => ({
+    ...actual, vista: 'llegadas_cierre', cierre, caso: datos?.caso || actual.caso, n: (actual.n || 0) + 1,
+    cierreDatos: { confirmadas: datos?.confirmadas ?? 0, total: datos?.total_declarado ?? 0, integrantes: datos?.integrantes || [] },
+  }));
+  // Alojada o cerrada con diferencia: a los integrantes, que se recargan en lectura. Cancelado: el caso
+  // volvió a la mesa → a buscar con el DNI, sin buscar sola.
+  const terminarCierre = (resultado) => {
+    setEnviando(false);
+    setPantalla((actual) => {
+      const base = { dispositivo: actual.dispositivo, unico: actual.unico, dni: actual.dni || '', n: (actual.n || 0) + 1 };
+      if (resultado?.cierre === 'cancelar') return { ...base, vista: 'llegadas_buscar', autoBuscar: false };
+      const caso = actual.caso ? { ...actual.caso, estado: resultado?.estado || actual.caso.estado } : actual.caso;
+      return { ...base, vista: 'llegadas_integrantes', caso };
+    });
+  };
+  // Sin derivación (§13.10): el Formulario 1 de la puerta con lo que dijo la búsqueda.
+  const verPuerta = (accion, busqueda) => setPantalla((actual) => ({
+    ...actual, vista: 'llegadas_puerta', dni: busqueda?.dni || actual.dni || '', n: (actual.n || 0) + 1,
+    puerta: { accion, plazasLibres: busqueda?.plazas_libres ?? 0, mensaje: busqueda?.mensaje || '' },
+  }));
+  const ingresoDirecto = (caso) => {
+    setEnviando(false);
+    if (caso?.id != null) verIntegrantes(caso);
+    else setPantalla((actual) => ({ ...actual, vista: 'llegadas_buscar', autoBuscar: false, n: (actual.n || 0) + 1 }));
+  };
+  const avisoALaMesa = () => {
+    setEnviando(false);
+    setPantalla((actual) => ({ ...actual, vista: 'llegadas_buscar', autoBuscar: false, n: (actual.n || 0) + 1 }));
+  };
   const llegadaNoEncontrada = () => {
     setEnviando(false);
     showToast({ type: 'warning', message: 'Eso ya no está entre lo tuyo. Se recargó la lista de tus dispositivos.' });
@@ -322,14 +360,15 @@ export default function EmergenciaApp({ onCambiarModulo }) {
   const { vista, uuid } = pantalla;
   const titulo = vista === 'inicio' ? `Hola, ${displayName}`
     : (['kits_entregas', 'llegadas_buscar'].includes(vista) && pantalla.dispositivo?.nombre)
-      || (vista === 'llegadas_ficha' && pantalla.persona?.n != null && `Persona ${pantalla.persona.n}`) || TITULOS[vista];
+      || (vista === 'llegadas_ficha' && pantalla.persona?.n != null && `Persona ${pantalla.persona.n}`)
+      || (vista === 'llegadas_cierre' && TITULOS_CIERRE[pantalla.cierre]) || TITULOS[vista];
   const volver = () => {
     if (enviando) return;
     if (vista === 'formulario') setPantalla({ vista: 'envios', uuid: null });
     else if (vista === 'kits_recibir') verEntregas();
     else if (vista === 'kits_entregas' && !pantalla.unico) verDispositivos();
-    else if (vista === 'llegadas_ficha') setPantalla((actual) => ({ ...actual, vista: 'llegadas_integrantes', n: (actual.n || 0) + 1 }));
-    else if (vista === 'llegadas_derivacion' || vista === 'llegadas_integrantes') verBuscar({ dni: pantalla.dni || '' });
+    else if (vista === 'llegadas_ficha' || vista === 'llegadas_cierre') setPantalla((actual) => ({ ...actual, vista: 'llegadas_integrantes', n: (actual.n || 0) + 1 }));
+    else if (['llegadas_derivacion', 'llegadas_integrantes', 'llegadas_puerta'].includes(vista)) verBuscar({ dni: pantalla.dni || '' });
     else if (vista === 'llegadas_buscar' && !pantalla.unico) verDispositivosLlegadas();
     else setPantalla(INICIO);
     refrescarEstado();
@@ -377,7 +416,7 @@ export default function EmergenciaApp({ onCambiarModulo }) {
           <EmergenciaLlegadaBuscarScreen key={`buscar-${pantalla.dispositivo?.id}-${pantalla.n}`} dispositivo={pantalla.dispositivo}
             dniInicial={pantalla.dni} autoBuscar={!!pantalla.autoBuscar} esperaHasta={esperaBuscarHasta} onEspera={setEsperaBuscarHasta}
             onDerivacion={verDerivacion} onIntegrantes={verIntegrantes}
-            onNoEncontrado={llegadaNoEncontrada} onSinModulo={sinModulo} onProximamente={proximamente} />
+            onNoEncontrado={llegadaNoEncontrada} onSinModulo={sinModulo} onSinDerivacion={verPuerta} />
         ) : null}
         {vista === 'llegadas_derivacion' ? (
           <EmergenciaDerivacionScreen key={`derivacion-${pantalla.busqueda?.derivacion?.id}`} busqueda={pantalla.busqueda}
@@ -388,12 +427,24 @@ export default function EmergenciaApp({ onCambiarModulo }) {
         {vista === 'llegadas_integrantes' ? (
           <EmergenciaIntegrantesScreen key={`integrantes-${pantalla.caso?.id}-${pantalla.n}`} caso={pantalla.caso} recarga={recarga}
             onConflicto={recargarPorEstado} onNoEncontrado={llegadaNoEncontrada} onSinModulo={sinModulo}
-            onProximamente={proximamente} onEnviando={setEnviando} onAbrirPersona={verPersona} />
+            onCerrar={verCierre} onEnviando={setEnviando} onAbrirPersona={verPersona} />
         ) : null}
         {vista === 'llegadas_ficha' ? (
           <EmergenciaFichaScreen key={`ficha-${pantalla.caso?.id}-${pantalla.persona?.n}-${pantalla.n}`} caso={pantalla.caso}
             n={pantalla.persona?.n} dispositivo={pantalla.dispositivo} recarga={recarga} onTerminar={terminarPersona}
             onConflicto={recargarPorEstado} onNoEncontrado={personaNoEncontrada} onSinModulo={sinModulo} onEnviando={setEnviando} />
+        ) : null}
+        {vista === 'llegadas_cierre' ? (
+          <EmergenciaCierreScreen key={`cierre-${pantalla.caso?.id}-${pantalla.cierre}-${pantalla.n}`} caso={pantalla.caso} cierre={pantalla.cierre}
+            confirmadas={pantalla.cierreDatos?.confirmadas ?? 0} total={pantalla.cierreDatos?.total ?? 0}
+            integrantes={pantalla.cierreDatos?.integrantes || []} dispositivo={pantalla.dispositivo} onCerrado={terminarCierre}
+            onConflicto={recargarPorEstado} onNoEncontrado={llegadaNoEncontrada} onSinModulo={sinModulo} onEnviando={setEnviando} />
+        ) : null}
+        {vista === 'llegadas_puerta' ? (
+          <EmergenciaPuertaScreen key={`puerta-${pantalla.dispositivo?.id}-${pantalla.dni}-${pantalla.n}`} dispositivo={pantalla.dispositivo}
+            dni={pantalla.dni} plazasLibres={pantalla.puerta?.plazasLibres ?? 0} accion={pantalla.puerta?.accion}
+            mensaje={pantalla.puerta?.mensaje || ''} onIngresado={ingresoDirecto} onAvisado={avisoALaMesa}
+            onNoEncontrado={llegadaNoEncontrada} onSinModulo={sinModulo} onEnviando={setEnviando} />
         ) : null}
       </View>
       {vista === 'inicio' ? (

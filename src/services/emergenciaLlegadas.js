@@ -2,22 +2,24 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Crypto from 'expo-crypto';
 import { getBecasToken, getStoredBecasUser } from './becasApi';
 import {
-  aceptarDerivacion, agregarIntegrante, buscarFamilia, completarFichaIntegrante, confirmarIntegrante, errorObsoleto,
-  esConflictoDeEstado, esUuidEnUso, getIntegrante, getIntegrantes, getPlazas, rechazarDerivacion,
+  aceptarDerivacion, agregarIntegrante, alojarFamilia, avisarALaMesa, buscarFamilia, cancelarIngreso, cerrarConDiferencia,
+  completarFichaIntegrante, confirmarIntegrante, errorObsoleto, esConflictoDeEstado, esUuidEnUso, getIntegrante, getIntegrantes,
+  getPlazas, ingresoDirecto, rechazarDerivacion,
 } from './emergenciaApi';
 import { esSinModulo } from './sinModulo';
-import { erroresDelServidor } from '../utils/emergencia';
+import { CANTIDADES, datosDelCaso, datosIniciales, erroresDelServidor, validarCaso } from '../utils/emergencia';
 import { cleanDigits, isValidDni } from '../utils/dni';
 import { CAMPOS_FICHA, SECCIONES_OPCIONALES, fichaDesdePlano } from '../utils/fichaEmergencia';
 import { hayConexion } from './emergenciaKits';
-import { PREFIJO_BORRADOR_FICHA, VIDA_BORRADOR_MS, enOrdenGuardado } from './emergenciaLimpieza';
+import { PREFIJO_BORRADOR_FICHA, PREFIJO_PUERTA, VIDA_BORRADOR_MS, enOrdenGuardado } from './emergenciaLimpieza';
 
 // La red, como M3: en web `navigator.onLine`, en nativo NetInfo.
 export { escucharRed, hayConexion } from './emergenciaKits';
 
-// M2 · Llegada de familias (contrato-app-emergencia §13.1 a §13.8): buscar a la familia por DNI,
-// aceptar o rechazar la derivación, los integrantes y «agregar persona» (parte 1), y una persona con
-// su ficha, el mapa de camas y «confirmar persona» (parte 2). Va SIN cola y sin
+// M2 · Llegada de familias (contrato-app-emergencia §13.1 a §13.10): buscar a la familia por DNI,
+// aceptar o rechazar la derivación, los integrantes y «agregar persona» (parte 1); una persona con
+// su ficha, el mapa de camas y «confirmar persona» (parte 2); y cerrar el ingreso (alojar, con
+// diferencia, cancelar) y la familia sin derivación (ingresar igual, avisar a la mesa) (parte 3). Va SIN cola y sin
 // lectura guardada: aceptar, confirmar y alojar trabajan sobre camas compartidas con toda la red
 // (RU-3). Sin red la pantalla se bloquea con un aviso.
 //
@@ -735,4 +737,272 @@ export const leerBorradorFicha = async (sesion, casoId, n, modo) => {
 export const borrarBorradorFicha = async (sesion, casoId, n) => {
   if (!sesion?.owner) return;
   await modificarMapa(claveBorrador(sesion.owner), (todas) => { delete todas[idPersona(casoId, n)]; });
+};
+
+// ---- Parte 3: cerrar el ingreso (§13.9) ----
+// Alojar, cerrar con diferencia y cancelar NO son idempotentes (no llevan uuid): como aceptar y
+// rechazar, si un envío queda incierto (red, timeout, 5xx, WAF) el reintento que recibe 409 con el
+// estado que esa acción produce es «se hizo» —o lo hizo otra guardia: el `detail` del servidor lo dice—.
+// - Alojar y diferencia producen ALOJADO (o CERRADO si ya no quedaba nadie con estadía abierta).
+// - Cancelar produce EN_GESTION (o NUEVO si era un ingreso directo).
+// Sin intento incierto, un 409 es un conflicto común: el router recarga por `estado_actual`.
+
+export const MAX_AULA = 80;
+export const MAX_TARJETA = 40;
+export const MAX_ENCARGADO = 120;
+export const MAX_MOTIVO_CANCELAR = 200;
+
+// §13.9, en el orden del contrato (los rótulos son los del back, `MotivoDiferencia`).
+export const MOTIVOS_DIFERENCIA = [
+  { valor: 'QUEDO_CON_FAMILIARES', titulo: 'Quedó con familiares' },
+  { valor: 'NO_LLEGO', titulo: 'No llegó al centro' },
+  { valor: 'DERIVADO_A_SALUD', titulo: 'Derivado a salud' },
+  { valor: 'OTRO', titulo: 'Otro (también: no sabe su número de DNI)' },
+];
+
+export const FALTA_MOTIVO_DIFERENCIA = 'Elegí por qué llegaron menos personas.';
+export const FALTA_MOTIVO_CANCELAR = 'Contá por qué se cancela el ingreso.';
+export const FALTA_TARJETA = 'Indicá el número de la tarjeta familiar entregada.';
+export const largo = (maximo) => `Hasta ${maximo} caracteres.`;
+
+export const TEXTO_ALOJAR_INCIERTO = 'No se pudo saber si la familia quedó alojada. «Reintentar» lo vuelve a mandar: si ya había llegado, el caso figura alojado y se muestra en lectura.';
+export const TEXTO_DIFERENCIA_INCIERTA = 'No se pudo saber si el ingreso se cerró. «Reintentar» lo vuelve a mandar: si ya había llegado, el caso figura alojado y se muestra en lectura.';
+export const TEXTO_CANCELAR_INCIERTO = 'No se pudo saber si el ingreso se canceló. «Reintentar» lo vuelve a mandar: si ya había llegado, el caso figura de vuelta en la mesa.';
+export const TEXTO_YA_ALOJADA = 'La familia ya figura alojada: se muestra en lectura.';
+export const TEXTO_YA_CANCELADO = 'El ingreso ya figura cancelado: el caso está de vuelta en la mesa.';
+
+const texto = (valor) => String(valor ?? '').trim();
+const agregarError = (errores, campo, mensaje) => { errores[campo] = [...(errores[campo] || []), mensaje]; };
+
+// Las mismas reglas que el servicio del back (emergencia_cierre): ayudan antes de mandar; el back decide.
+export const validarAlojar = ({ aula, tarjeta_entregada: entregada, tarjeta_numero: numero, encargado } = {}) => {
+  const errores = {};
+  if (texto(aula).length > MAX_AULA) agregarError(errores, 'aula', largo(MAX_AULA));
+  if (entregada === true && !texto(numero)) agregarError(errores, 'tarjeta_numero', FALTA_TARJETA);
+  if (entregada === true && texto(numero).length > MAX_TARJETA) agregarError(errores, 'tarjeta_numero', largo(MAX_TARJETA));
+  if (texto(encargado).length > MAX_ENCARGADO) agregarError(errores, 'encargado', largo(MAX_ENCARGADO));
+  return errores;
+};
+export const validarDiferencia = ({ motivo, observacion } = {}) => {
+  const errores = {};
+  if (!MOTIVOS_DIFERENCIA.some((m) => m.valor === motivo)) agregarError(errores, 'motivo', FALTA_MOTIVO_DIFERENCIA);
+  if (motivo === 'OTRO' && !texto(observacion)) agregarError(errores, 'observacion', FALTA_OBSERVACION);
+  if (texto(observacion).length > MAX_OBSERVACION) agregarError(errores, 'observacion', largo(MAX_OBSERVACION));
+  return errores;
+};
+export const validarCancelar = ({ motivo } = {}) => {
+  const errores = {};
+  if (!texto(motivo)) agregarError(errores, 'motivo', FALTA_MOTIVO_CANCELAR);
+  else if (texto(motivo).length > MAX_MOTIVO_CANCELAR) agregarError(errores, 'motivo', largo(MAX_MOTIVO_CANCELAR));
+  return errores;
+};
+
+// §13.9 → { estado, total_alojado (null al cancelar), liberadas }.
+export const normalizarCierre = (payload) => {
+  const datos = payload && typeof payload === 'object' ? payload : {};
+  return {
+    estado: textoPlano(datos.estado),
+    total_alojado: datos.total_alojado == null ? null : entero(datos.total_alojado),
+    liberadas: entero(datos.liberadas),
+  };
+};
+
+// «Se liberaron 2 camas», o null si no se liberó ninguna.
+export const textoDeLiberadas = (liberadas) => {
+  const n = entero(liberadas);
+  if (!n) return null;
+  return n === 1 ? 'Se liberó 1 cama reservada.' : `Se liberaron ${n} camas reservadas.`;
+};
+
+// El sector que se propone al alojar (§13.9): el de la mayoría de las camas de la familia (las de los
+// integrantes confirmados, buscadas en el mapa); sin ninguna ubicable, el sector con camas guardadas para
+// la familia; si no, ninguno (el sector es opcional).
+export const sectorDeLaFamilia = (mapa, integrantes = []) => {
+  const sectores = mapa?.sectores || [];
+  const cuenta = new Map();
+  (integrantes || []).forEach((integrante) => {
+    const id = integrante?.plaza?.id;
+    if (id == null) return;
+    const sector = sectores.find((s) => s.plazas.some((p) => String(p.id) === String(id)));
+    if (sector) cuenta.set(sector.sector.id, (cuenta.get(sector.sector.id) || 0) + 1);
+  });
+  if (cuenta.size) {
+    // Empate: el primero en el orden del mapa (por nombre).
+    let elegido = null;
+    sectores.forEach((s) => {
+      const n = cuenta.get(s.sector.id) || 0;
+      if (n && (elegido === null || n > cuenta.get(elegido))) elegido = s.sector.id;
+    });
+    return elegido;
+  }
+  return sectores.find((s) => s.reservadas_familia > 0)?.sector.id ?? null;
+};
+
+const ESTADOS_ALOJADA = ['ALOJADO', 'CERRADO'];
+const ESTADOS_EN_LA_MESA = ['EN_GESTION', 'NUEVO'];
+
+const crearErrorLocal = (errores) => crearError('VALIDACION_LOCAL', 'Hay datos para corregir.', {
+  clasificacion: { tipo: 'validacion', mensaje: 'Corregí lo marcado.', errores },
+});
+
+// Lo común a los tres cierres. `produce`: los `estado_actual` que deja esa acción (su 409 tras un intento
+// incierto es «se hizo»). Devuelve { resultado: 'hecho' | 'ya_hecho', estado, total_alojado, liberadas,
+// detalle? }; los errores salen con `clasificacion` y `incierto`.
+const cerrarIngreso = async (sesion, pedido, { incierto, campos, produce, textoIncierto, textoYaHecho }) => {
+  try {
+    const payload = await conSesion(sesion, pedido, { timeoutMs: LIMITES.accionMs, campos });
+    return { resultado: 'hecho', ...normalizarCierre(payload) };
+  } catch (error) {
+    const c = error.clasificacion;
+    if (incierto && c?.tipo === 'conflicto' && produce.includes(c.estadoActual)) {
+      return { resultado: 'ya_hecho', estado: c.estadoActual, total_alojado: null, liberadas: 0, mensaje: textoYaHecho, detalle: c.mensaje, destino: c.destino };
+    }
+    if (c?.tipo === 'reintentable') c.mensaje = textoIncierto;
+    error.incierto = sigueIncierto(c?.tipo, incierto);
+    throw error;
+  }
+};
+
+// «Familia alojada» (M2-5): con N de N confirmadas. 400 `non_field_errors` si falta confirmar a alguien.
+export const alojar = async (sesion, casoId, datos = {}, { incierto = false } = {}) => {
+  const errores = validarAlojar(datos);
+  if (Object.keys(errores).length) throw crearErrorLocal(errores);
+  return cerrarIngreso(sesion, (op) => alojarFamilia(casoId, datos, op), {
+    incierto, campos: ['sector', 'aula', 'tarjeta_numero', 'encargado'], produce: ESTADOS_ALOJADA,
+    textoIncierto: TEXTO_ALOJAR_INCIERTO, textoYaHecho: TEXTO_YA_ALOJADA,
+  });
+};
+
+// «Cerrar con diferencia» (RN-3.9): al menos una confirmada y falta alguien.
+export const cerrarDiferencia = async (sesion, casoId, { motivo, observacion } = {}, { incierto = false } = {}) => {
+  const errores = validarDiferencia({ motivo, observacion });
+  if (Object.keys(errores).length) throw crearErrorLocal(errores);
+  return cerrarIngreso(sesion, (op) => cerrarConDiferencia(casoId, { motivo, observacion }, op), {
+    incierto, campos: ['motivo', 'observacion'], produce: ESTADOS_ALOJADA,
+    textoIncierto: TEXTO_DIFERENCIA_INCIERTA, textoYaHecho: TEXTO_YA_ALOJADA,
+  });
+};
+
+// «Cancelar el ingreso»: sin nadie confirmado; libera todas las camas y el caso vuelve a la mesa.
+export const cancelar = async (sesion, casoId, { motivo } = {}, { incierto = false } = {}) => {
+  const errores = validarCancelar({ motivo });
+  if (Object.keys(errores).length) throw crearErrorLocal(errores);
+  return cerrarIngreso(sesion, (op) => cancelarIngreso(casoId, { motivo }, op), {
+    incierto, campos: ['motivo'], produce: ESTADOS_EN_LA_MESA,
+    textoIncierto: TEXTO_CANCELAR_INCIERTO, textoYaHecho: TEXTO_YA_CANCELADO,
+  });
+};
+
+// ---- Parte 3: sin derivación (§13.10, M2-6) ----
+// «Ingresar igual» y «Avisar a la mesa» mandan el mismo Formulario 1 (sin hora, fotos ni GPS; la
+// dirección y la localidad son opcionales: valen las del dispositivo) y son idempotentes por
+// `uuid_cliente`. El contrato deja encolar el ingreso directo sin señal, pero M2 en la app va con
+// conexión (plan: «M2 sin conexión se bloquea con aviso»): se manda en el momento y, si queda
+// incierto, se reintenta a mano con el MISMO uuid.
+// El envío sin resultado se guarda en AsyncStorage por usuario, dispositivo y DNI —{ accion, uuid,
+// datos }—: volver, re-entrar o cerrar la app no lo cambian, y mientras exista la pantalla solo ofrece
+// reintentar ESA acción (la otra, con otro uuid, crearía un segundo caso). Tiene el DNI y lo tipeado,
+// así que vive bajo PREFIJO_PUERTA: lo borra el logout, se depura al abrir el módulo con otro usuario y
+// vence a las 48 h (`emergenciaLimpieza`).
+// - Se olvida con 2xx y con las respuestas que dicen que no se creó nada: 400 VALIDACION, 404 y 409
+//   UUID_EN_USO (el próximo envío nace con otro uuid).
+// - Se conserva con red, timeout, 5xx, página del WAF, 429, 403 y 401: el pedido pudo haber llegado.
+export const ACCIONES_PUERTA = ['ingresar', 'avisar'];
+export const TEXTO_INGRESAR_INCIERTO = 'No se pudo saber si el ingreso llegó. «Reintentar» manda el mismo pedido: si ya había llegado, no crea otro caso.';
+export const TEXTO_AVISAR_INCIERTO = 'No se pudo saber si el aviso llegó. «Reintentar» manda el mismo pedido: si ya había llegado, no crea otro caso.';
+
+// El Formulario 1 de la puerta empieza con el DNI buscado.
+export const datosDeLaPuerta = (dni = '') => ({ ...datosIniciales(), dni: cleanDigits(dni) });
+
+// validarCaso (M1) sin lo que en la puerta es opcional: la dirección (vale la del dispositivo) y nombre
+// y apellido (si la persona ya está en el legajo alcanza con el DNI; si no, el back los pide en un 400
+// por campo). El largo de la dirección sí se controla.
+export const validarPuerta = (datos = {}) => {
+  const errores = validarCaso({ ...datos, direccion: texto(datos.direccion) || '-' });
+  delete errores.nombre;
+  delete errores.apellido;
+  return errores;
+};
+
+// Los campos del 400 que van a un campo de la pantalla (los demás, `dispositivo` incluido, a generales).
+export const CAMPOS_FORMULARIO_PUERTA = [
+  'traslado', 'traslado_otro', 'dni', 'nombre', 'apellido', 'fecha_nacimiento', 'telefono', 'documento_extraviado',
+  ...CANTIDADES.map((c) => c.clave), 'dependientes', 'mayores_dependientes', 'lactantes',
+  'embarazo', 'electrodependiente', 'medicacion_critica', 'mascotas', 'direccion', 'localidad', 'observaciones', 'total',
+];
+const CAMPOS_PUERTA_400 = [...CAMPOS_FORMULARIO_PUERTA, 'plazas'];
+
+const clavePuerta = (owner) => `${PREFIJO_PUERTA}${owner}`;
+const idPuerta = (dispositivoId, dni) => `${dispositivoId}:${cleanDigits(dni)}`;
+const pendienteVigente = (p) => !!p && typeof p === 'object' && ACCIONES_PUERTA.includes(p.accion) && typeof p.uuid === 'string'
+  && Date.now() - Number(p.guardado_en || 0) < VIDA_BORRADOR_MS;
+
+// El envío de la puerta sin resultado para esa familia en ese dispositivo: { accion, uuid, datos }, o null.
+export const puertaPendiente = async (sesion, dispositivoId, dni) => {
+  if (!sesion?.owner || !cleanDigits(dni)) return null;
+  const todas = await enOrdenGuardado(() => leerMapa(clavePuerta(sesion.owner)));
+  const p = todas[idPuerta(dispositivoId, dni)];
+  return pendienteVigente(p) ? { accion: p.accion, uuid: p.uuid, datos: p.datos && typeof p.datos === 'object' ? p.datos : null } : null;
+};
+
+const RESUELVEN_PUERTA = ['validacion', 'no_encontrado', 'uuid_en_uso'];
+
+// `accion`: 'ingresar' o 'avisar'. `datos`: el Formulario 1 de la pantalla (claves de utils/emergencia).
+// Devuelve, con el 2xx:
+// - ingresar → { accion, caso, reservadas, faltantes, integrantes, uuid };
+// - avisar → { accion, caso, uuid }.
+// Los errores salen con `clasificacion`, `incierto` (queda un envío sin resultado) y `uuid`.
+export const enviarPuerta = async (sesion, dispositivoId, accion, datos = {}) => {
+  if (!ACCIONES_PUERTA.includes(accion)) throw new Error(`Acción desconocida: ${accion}`);
+  const errores = validarPuerta(datos);
+  if (Object.keys(errores).length) throw crearErrorLocal(errores);
+  const id = idPuerta(dispositivoId, datos.dni);
+  const clave = clavePuerta(sesion.owner);
+  let nuevo = false;
+  const uuid = await modificarMapa(clave, (todas) => {
+    const previo = todas[id];
+    if (pendienteVigente(previo) && previo.accion !== accion) {
+      throw crearError('OTRA_ACCION_PENDIENTE', 'Hay otro envío de esta familia sin resultado.', {
+        clasificacion: { tipo: 'rechazo', mensaje: `Primero reintentá «${previo.accion === 'ingresar' ? 'Ingresar igual' : 'Avisar a la mesa'}»: ese envío todavía no tiene resultado.` },
+      });
+    }
+    const uuidPrevio = pendienteVigente(previo) ? previo.uuid : null;
+    if (!uuidPrevio) nuevo = true;
+    todas[id] = { accion, uuid: uuidPrevio || crearUuid(), datos, guardado_en: Date.now() };
+    return todas[id].uuid;
+  });
+  const olvidar = () => modificarMapa(clave, (todas) => { if (todas[id]?.uuid === uuid) delete todas[id]; });
+  const cuerpo = { ...datosDelCaso(datos), uuid_cliente: uuid };
+  const llamar = accion === 'ingresar' ? ingresoDirecto : avisarALaMesa;
+  try {
+    const payload = await conSesion(sesion, (op) => llamar(dispositivoId, cuerpo, op), { timeoutMs: LIMITES.accionMs, campos: CAMPOS_PUERTA_400 });
+    await olvidar();
+    if (accion === 'avisar') return { accion, caso: normalizarCaso(payload?.caso), uuid };
+    const integrantes = normalizarIntegrantes(payload);
+    return {
+      accion,
+      caso: integrantes.caso,
+      reservadas: entero(payload?.reservadas),
+      faltantes: entero(payload?.faltantes),
+      integrantes,
+      uuid,
+    };
+  } catch (error) {
+    if (!error.clasificacion) {
+      // FECHA_INVALIDA de emergenciaApi (antes de mandar nada): va al campo.
+      const campo = error?.campo === 'fecha_nacimiento' ? 'fecha_nacimiento' : null;
+      error.clasificacion = campo ? { tipo: 'validacion', mensaje: error.message, errores: { [campo]: [error.message] } }
+        : { tipo: 'rechazo', mensaje: error?.message || 'No se pudo mandar.' };
+    }
+    const tipo = error.clasificacion.tipo;
+    // El servidor dijo que no se creó nada: se olvida. Sin red o con un error local no salió nada: un uuid
+    // recién nacido no queda como pendiente (uno de antes, sí: el primer envío pudo haber llegado).
+    const respondio = Number(error.status) > 0 && !error.unexpectedHtml;
+    const noSalio = tipo === 'sin_red' || (!respondio && ['validacion', 'rechazo'].includes(tipo));
+    if ((respondio && RESUELVEN_PUERTA.includes(tipo)) || (nuevo && noSalio)) await olvidar();
+    if (tipo === 'reintentable') error.clasificacion.mensaje = accion === 'ingresar' ? TEXTO_INGRESAR_INCIERTO : TEXTO_AVISAR_INCIERTO;
+    error.incierto = !!await puertaPendiente(sesion, dispositivoId, datos.dni).catch(() => null);
+    error.uuid = uuid;
+    throw error;
+  }
 };

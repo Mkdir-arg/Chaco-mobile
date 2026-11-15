@@ -199,6 +199,11 @@ se conecta directamente a esas integraciones externas.
 | `GET/PATCH /api/emergencia/casos/{id}/integrantes/{n}/` | Una persona con su ficha; completar las secciones 4 a 8 (JSON) |
 | `GET /api/emergencia/dispositivos/{id}/plazas/?caso=` | Mapa de camas para elegir la de una persona |
 | `POST /api/emergencia/casos/{id}/integrantes/{n}/confirmar/` | Confirmar a una persona con su ficha y su cama (JSON, idempotente) |
+| `POST /api/emergencia/casos/{id}/alojar/` | «Familia alojada» con la sección 4 (JSON, no idempotente) |
+| `POST /api/emergencia/casos/{id}/cerrar-diferencia/` | Cerrar el ingreso con diferencia (JSON, no idempotente) |
+| `POST /api/emergencia/casos/{id}/cancelar-ingreso/` | Cancelar el ingreso (JSON, no idempotente) |
+| `POST /api/emergencia/dispositivos/{id}/ingreso-directo/` | «Ingresar igual» sin derivación (JSON, idempotente, con conexión) |
+| `POST /api/emergencia/dispositivos/{id}/avisar-mesa/` | «Avisar a la mesa» sin derivación (JSON, idempotente, con conexión) |
 
 Los adjuntos se envían como multipart; los demás cuerpos normalmente como JSON.
 
@@ -313,9 +318,9 @@ hay notificaciones). Con uno solo entra directo. De ahí:
   7», una fila por persona (cama, parentesco, «Ficha incompleta») y «Agregar persona» (confirma
   antes; idempotente: el uuid nace al tocar y el reintento manda el mismo). Con la familia alojada
   o el caso cerrado, solo lectura.
-- **Próxima versión**: los cierres («Familia alojada», «Cerrar con diferencia», «Cancelar ingreso»,
-  según el contador, §13.9) y el ingreso sin derivación («Ingresar igual», «Avisar a la mesa»,
-  §13.10) ya tienen su botón, que hoy avisa «Próximamente».
+- Los cierres («Familia alojada», «Cerrar con diferencia», «Cancelar ingreso», según el contador,
+  §13.9) y el ingreso sin derivación («Ingresar igual», «Avisar a la mesa», §13.10) son de la parte 3
+  (más abajo).
 
 Reglas (`src/services/emergenciaLlegadas.js`):
 
@@ -378,7 +383,7 @@ Reglas (`src/services/emergenciaLlegadas.js`, `src/utils/fichaEmergencia.js`):
 - **Camas compartidas entre guardias**: un 400 `plaza` (otra guardia tomó la cama, o quedó fuera de
   servicio) se muestra en la cama, recarga el mapa y, si la elegida ya no sirve, propone otra
   guardada para la familia; no se reenvía solo. Sin ninguna elegible, lo dice y no deja confirmar
-  (cerrar con diferencia es de la parte 3).
+  (queda cerrar con diferencia, parte 3).
 - **Guardar la ficha** no necesita uuid: repetir el `PATCH` deja lo mismo; tras un corte, «Reintentar
   guardar» manda lo mismo.
 - **409** (otra guardia la confirmó, el caso se cerró o volvió a la mesa) va al router de §13.1; un
@@ -397,6 +402,50 @@ Reglas (`src/services/emergenciaLlegadas.js`, `src/utils/fichaEmergencia.js`):
   guarda: al volver sigue siendo conflicto.
 - Un campo que depende de otra respuesta (cuál parentesco, la medicación crítica, el detalle de las
   alergias) no se manda si esa respuesta no lo abre, y se limpia al cambiarla.
+
+#### M2 · Llegada de familias, parte 3 (desde 1.2.18)
+
+- **Cerrar el ingreso** (`EmergenciaCierreScreen`, §13.9): el botón de los integrantes abre el cierre
+  que corresponde al contador (el título del Banner es el del cierre; volver lleva a los integrantes):
+  - «Familia alojada» (M2-5, N de N): la sección 4, toda opcional: sector (del mapa de §13.7, se
+    propone el de la mayoría de las camas de la familia; si el mapa no llega, se aloja sin sector),
+    aula o dormitorio, «se entregó la tarjeta familiar» (con su número obligatorio) y quién recibe
+    (vacío: el usuario).
+  - «Cerrar con diferencia» (RN-3.9): motivo del catálogo (`QUEDO_CON_FAMILIARES`, `NO_LLEGO`,
+    `DERIVADO_A_SALUD`, `OTRO`, que es también el de «no sabe su número de DNI») y qué pasó con «Otro».
+  - «Cancelar ingreso»: motivo de texto (hasta 200). Libera todas las camas de la familia.
+  Los tres confirman antes de mandar (diferencia y cancelar como acción destructiva) y dicen cuántas
+  camas se liberaron. Alojada o con diferencia vuelve a los integrantes en lectura; cancelado, a
+  buscar con el DNI (el caso volvió a la mesa).
+- **Sin derivación** (`EmergenciaPuertaScreen`, §13.10, M2-6): «Ingresar igual» (solo con camas
+  libres) y «Avisar a la mesa» abren el Formulario 1 de la puerta con el DNI buscado: traslado, DNI,
+  nombre, apellido, fecha de nacimiento, teléfono, documento extraviado, las seis cantidades, la
+  asistencia y los avisos, dirección (opcional: vale la del dispositivo) y observaciones. Sin hora,
+  fotos, GPS ni localidad. Nombre y apellido no bloquean (con la persona en el legajo alcanza el DNI;
+  si no, el 400 los marca). Confirma antes de mandar. Ingresada, sigue a los integrantes del caso
+  nuevo; avisada, vuelve a buscar. Un 400 `plazas` (las camas se ocuparon) pasa a «Avisar a la
+  mesa» con lo cargado.
+
+Reglas (`src/services/emergenciaLlegadas.js`):
+
+- **Alojar, diferencia y cancelar no son idempotentes** (no llevan uuid): como aceptar y rechazar,
+  un envío incierto ofrece «Reintentar» (sin volver a preguntar y con lo cargado fijo), y el 409 del
+  reintento con el estado que esa acción produce es «se hizo»: `ALOJADO`/`CERRADO` para alojar y
+  diferencia, `EN_GESTION`/`NUEVO` para cancelar. Se muestra el `detail` del servidor (puede haberlo
+  hecho otra guardia). Otro estado, o un 409 sin intento incierto, va al router de §13.1. Un 400
+  `non_field_errors` (la acción ya no corresponde al contador) se muestra en la pantalla.
+- **Ingresar igual y avisar a la mesa son idempotentes**: el `uuid_cliente` nace al mandar y se
+  guarda con lo cargado en AsyncStorage por usuario, dispositivo y DNI hasta saber el resultado:
+  volver, re-entrar o cerrar la app no lo cambian, y al volver a esa familia **solo** se ofrece
+  reintentar ese envío con el mismo uuid (la otra acción, con otro uuid, crearía un segundo caso).
+  Se olvida con 2xx, 400, 404 y 409 `UUID_EN_USO`; se conserva con red, timeout, 5xx, página del WAF,
+  429 y 403. Tiene el DNI y lo tipeado: lo borra el logout y se depura al abrir el módulo (otro
+  usuario, 48 h), como los borradores de la ficha (`emergenciaLimpieza`).
+- **Con conexión**: el contrato deja encolar el ingreso directo sin señal, pero en la app M2 se
+  bloquea sin red (sin red no sale nada y se avisa); el reintento es a mano.
+- 429 deja el botón en «Reintentar en N s» (`Retry-After`). 404 vuelve a «mis dispositivos»; 403
+  `SIN_MODULO` vuelve a pedir el perfil y va al inicio. Mientras se manda no se puede volver.
+
 
 > **Despliegue:** `expo-image-manipulator` es un módulo nativo. Desde 1.2.13 el
 > Formulario 1 importa `src/utils/jpeg.js`: Android/iOS necesitan **un build nuevo**
