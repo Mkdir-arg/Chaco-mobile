@@ -38,9 +38,18 @@ test('DNI de 7 u 8 números; nombre y apellido salvo persona confirmada', async 
   for (const estado of ['no_encontrada', 'sin_red', 'error', 'fallecida']) {
     assert.ok(r.validarCaso({...sinNombre, consulta: {estado}}).nombre, estado);
   }
+  const conSexo = {...sinNombre, dni: '30.111.222', sexo: 'f'};
   for (const estado of ['encontrada', 'escaneado']) {
-    assert.equal(r.validarCaso({...sinNombre, consulta: {estado}}).nombre, undefined, estado);
+    assert.equal(r.validarCaso({...conSexo, consulta: {estado, dni: '30111222', sexo: 'F'}}).nombre, undefined, estado);
+    // La confirmación es de un DNI y un sexo: con otros (o sin decir de quién) no vale.
+    assert.ok(r.validarCaso({...conSexo, consulta: {estado}}).nombre, `${estado} sin dni`);
+    assert.ok(r.validarCaso({...conSexo, consulta: {estado, dni: '30111223', sexo: 'F'}}).nombre, `${estado} otro dni`);
+    assert.ok(r.validarCaso({...conSexo, consulta: {estado, dni: '30111222', sexo: 'M'}}).nombre, `${estado} otro sexo`);
   }
+  assert.equal(r.personaConfirmada({estado: 'encontrada', dni: '30111222', sexo: 'F'}, {dni: '30111222', sexo: 'F'}), true);
+  assert.equal(r.personaConfirmada({estado: 'encontrada', dni: '30111222', sexo: 'F'}, {dni: '30111223', sexo: 'F'}), false);
+  assert.equal(r.personaConfirmada({estado: 'encontrada', dni: '30111222', sexo: 'F'}), false);
+  assert.equal(r.ETIQUETAS.fotos, 'Fotos');
   assert.deepEqual(plano(Object.keys(r.validarConsulta({dni: '30111222', sexo: 'f'}))), []);
   assert.deepEqual(plano(Object.keys(r.validarConsulta({dni: '30', sexo: 'X'}))), ['dni', 'sexo']);
 });

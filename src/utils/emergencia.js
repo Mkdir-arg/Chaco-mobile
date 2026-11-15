@@ -71,6 +71,7 @@ export const ETIQUETAS = {
   precision_m: 'Ubicación',
   observaciones: 'Observaciones',
   non_field_errors: 'Envío',
+  fotos: 'Fotos',
   ...Object.fromEntries(CANTIDADES.map(({ clave, grupo, titulo }) => [clave, `${grupo} · ${titulo}`])),
   ...Object.fromEntries(ASISTENCIA.map(({ clave, titulo }) => [clave, titulo])),
   ...Object.fromEntries(AVISOS.map(({ clave, titulo }) => [clave, titulo])),
@@ -134,8 +135,13 @@ export const validarConsulta = ({ dni, sexo } = {}) => {
 
 // Nombre y apellido se piden salvo que la Base de Personas o el DNI escaneado ya los hayan dado:
 // sin esa confirmación el teléfono no sabe si la persona está en el legajo, y el back los exige
-// para el alta mínima.
-export const personaConfirmada = (consulta) => ['encontrada', 'escaneado'].includes(consulta?.estado);
+// para el alta mínima. La confirmación vale solo para el DNI y el sexo con que se hizo: si cambiaron
+// (o una respuesta lenta llegó tarde), es de otra persona.
+export const mismaIdentidad = (consulta, datos = {}) => !!consulta
+  && String(consulta.dni ?? '') === cleanDigits(datos?.dni)
+  && texto(consulta.sexo).toUpperCase() === texto(datos?.sexo).toUpperCase();
+export const personaConfirmada = (consulta, datos = {}) => ['encontrada', 'escaneado'].includes(consulta?.estado)
+  && mismaIdentidad(consulta, datos);
 
 // Devuelve { campo: [mensajes] } con las claves del §6 (más `total`); vacío si no hay nada.
 export const validarCaso = (datos = {}) => {
@@ -151,7 +157,7 @@ export const validarCaso = (datos = {}) => {
   }
 
   if (!isValidDni(datos.dni)) agregar('dni', 'El DNI del responsable tiene que tener 7 u 8 números.');
-  if (!personaConfirmada(datos.consulta)) {
+  if (!personaConfirmada(datos.consulta, datos)) {
     if (!texto(datos.nombre)) agregar('nombre', 'Escribí el nombre del responsable.');
     if (!texto(datos.apellido)) agregar('apellido', 'Escribí el apellido del responsable.');
   }
@@ -250,7 +256,29 @@ export const TEXTOS_POR_CODE = {
   FECHA_INVALIDA: 'Hay una fecha que no es válida.',
 };
 
+export const TEXTO_DEMORADO = 'Lleva varios intentos sin poder enviarse (sin señal o el servidor no responde). Sigue en la cola y se reintenta solo; no hace falta cargarlo de nuevo.';
+
 export const textoDeCode = (code, detalle = null) => TEXTOS_POR_CODE[code] || detalle || 'No se pudo enviar.';
+
+// Aviso al cerrar sesión con lo que queda en el teléfono (getResumenPendientes), o null si no
+// queda nada. Lo que está en cola sale solo al volver a entrar; lo que está para revisar no.
+export const avisoDeSalida = ({ enCola = 0, paraRevisar = 0, sinTerminar = 0 } = {}) => {
+  const partes = [];
+  if (enCola > 0) {
+    partes.push(enCola === 1
+      ? '1 familia en cola: se envía sola cuando vuelvas a entrar con este usuario.'
+      : `${enCola} familias en cola: se envían solas cuando vuelvas a entrar con este usuario.`);
+  }
+  if (paraRevisar > 0) {
+    partes.push(paraRevisar === 1
+      ? '1 envío para revisar (con error o para corregir): no sale solo; revisalo en «Mis envíos» cuando vuelvas a entrar.'
+      : `${paraRevisar} envíos para revisar (con error o para corregir): no salen solos; revisalos en «Mis envíos» cuando vuelvas a entrar.`);
+  }
+  if (sinTerminar > 0) {
+    partes.push('Un formulario sin terminar: queda guardado en el teléfono para cuando vuelvas a entrar.');
+  }
+  return partes.length ? partes.join('\n') : null;
+};
 
 // Estados del caso en «Mis envíos» (§7) con el tono de statusTones.
 const ESTADOS_CASO = {
@@ -270,6 +298,7 @@ export const estadoDelCaso = (estado) => {
 // Estados locales (lo que todavía está en el teléfono).
 export const ESTADOS_LOCALES = {
   pendiente: { titulo: 'Pendiente de envío', tono: 'warning' },
+  demorado: { titulo: 'Demorado', tono: 'warning' },
   enviando: { titulo: 'Enviando', tono: 'info' },
   error: { titulo: 'Con error', tono: 'danger' },
   corregir: { titulo: 'Para corregir', tono: 'danger' },

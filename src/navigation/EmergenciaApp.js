@@ -10,7 +10,10 @@ import SettingsPanel from '../components/SettingsPanel';
 import EmergenciaInicioScreen from '../screens/EmergenciaInicioScreen';
 import EmergenciaMisEnviosScreen from '../screens/EmergenciaMisEnviosScreen';
 import EmergenciaFormulario1Screen from '../screens/EmergenciaFormulario1Screen';
-import { getLocalidadesGuardadas, getPendingCount, reintentar, syncPendientes } from '../services/emergenciaCola';
+import {
+  descartar, getBorradorEnCurso, getLocalidadesGuardadas, getPendingCount, getResumenPendientes, reintentar, syncPendientes,
+} from '../services/emergenciaCola';
+import { avisoDeSalida } from '../utils/emergencia';
 
 const SYNC_INTERVAL_MS = 8000;
 const RECONNECT_DELAY_MS = 1800;
@@ -32,7 +35,10 @@ export default function EmergenciaApp({ onCambiarModulo }) {
   const [sincronizando, setSincronizando] = useState(false);
   const [pendientes, setPendientes] = useState(0);
   const [syncTick, setSyncTick] = useState(0);
-  const enCurso = useRef(false);
+  const [enviadosTick, setEnviadosTick] = useState(0);
+  // La pasada de fondo en curso (su promesa) y si hay una manual: la manual espera a la de fondo.
+  const fondo = useRef(null);
+  const manual = useRef(false);
   const conectado = useRef(null);
   const reconexion = useRef(null);
   const montado = useRef(true);
@@ -48,17 +54,22 @@ export default function EmergenciaApp({ onCambiarModulo }) {
     }
   };
 
-  const sincronizarDeFondo = async () => {
-    if (enCurso.current) return;
-    enCurso.current = true;
-    try {
-      await syncPendientes();
-    } catch {
-      // Sin conexión o error temporal: queda en cola.
-    } finally {
-      enCurso.current = false;
-      await refrescarEstado();
-    }
+  const avisarEnviados = (resultado) => {
+    if (resultado?.synced > 0 && montado.current) setEnviadosTick((tick) => tick + 1);
+  };
+
+  const sincronizarDeFondo = () => {
+    if (fondo.current || manual.current) return fondo.current;
+    fondo.current = (async () => {
+      try {
+        avisarEnviados(await syncPendientes());
+      } catch {
+        // Sin conexión o error temporal: queda en cola.
+      } finally {
+        await refrescarEstado();
+      }
+    })().finally(() => { fondo.current = null; });
+    return fondo.current;
   };
 
   useEffect(() => {
@@ -86,13 +97,16 @@ export default function EmergenciaApp({ onCambiarModulo }) {
 
   const sincronizarAhora = async () => {
     if (pantalla.vista === 'inicio') setRecarga((valor) => valor + 1);
-    if (enCurso.current) return;
-    enCurso.current = true;
+    if (manual.current) return;
+    manual.current = true;
     setSincronizando(true);
     try {
+      // Si hay una pasada de fondo, se espera a que termine y después se reintenta todo.
+      if (fondo.current) await fondo.current.catch(() => {});
       const pendientesAntes = await getPendingCount().catch(() => 0);
       if (pendientesAntes > 0) {
         const result = await reintentar();
+        avisarEnviados(result);
         if (result?.offline) showToast({ type: 'warning', message: 'Sin conexión. Se envía solo cuando vuelva.' });
         else if (result?.failed > 0) showToast({ type: 'warning', message: `No se pudo enviar ${result.failed}. Mirá «Mis envíos».` });
         else if (result?.synced > 0) showToast({ type: 'success', message: `Se enviaron ${result.synced}.` });
@@ -102,7 +116,7 @@ export default function EmergenciaApp({ onCambiarModulo }) {
     } catch (error) {
       showToast({ type: 'error', message: error?.message || 'No se pudo sincronizar.' });
     } finally {
-      enCurso.current = false;
+      manual.current = false;
       if (montado.current) setSincronizando(false);
       await refrescarEstado();
     }
@@ -110,21 +124,58 @@ export default function EmergenciaApp({ onCambiarModulo }) {
 
   const salir = async () => {
     setSettingsVisible(false);
-    let cantidad = 0;
+    let aviso = null;
     try {
-      cantidad = await getPendingCount();
+      aviso = avisoDeSalida(await getResumenPendientes());
     } catch {
-      cantidad = 0;
+      aviso = null;
     }
-    if (cantidad > 0) {
-      showAlert('Cerrar sesión',
-        `Tenés ${cantidad} envíos sin sincronizar; se van a enviar cuando vuelvas a entrar con este usuario.`, [
-          { text: 'Cancelar', style: 'cancel' },
-          { text: 'Salir', style: 'destructive', onPress: () => logout() },
-        ]);
+    if (aviso) {
+      showAlert('Cerrar sesión', aviso, [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Salir', style: 'destructive', onPress: () => logout() },
+      ]);
       return;
     }
     logout();
+  };
+
+  // «Relevar una familia»: con un formulario sin terminar se pregunta. Hay un solo borrador en curso:
+  // empezar otra descarta el anterior, y eso se confirma aparte.
+  const relevarNueva = async () => {
+    let enCursoBorrador = null;
+    try {
+      enCursoBorrador = await getBorradorEnCurso();
+    } catch {
+      enCursoBorrador = null;
+    }
+    if (!enCursoBorrador) {
+      setPantalla({ vista: 'formulario', uuid: null });
+      return;
+    }
+    const { uuid_cliente: uuidEnCurso, resumen } = enCursoBorrador;
+    const empezarOtra = () => showAlert('Empezar otra familia',
+      `Se descarta lo cargado de «${resumen}», con sus fotos. No se puede deshacer.`, [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Descartar y empezar',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await descartar(uuidEnCurso);
+            } catch (error) {
+              showToast({ type: 'error', message: error?.message || 'No se pudo descartar.' });
+              return;
+            }
+            if (montado.current) setPantalla({ vista: 'formulario', uuid: null });
+          },
+        },
+      ]);
+    showAlert('Formulario sin terminar', `Tenés sin terminar «${resumen}».`, [
+      { text: 'Seguir con ese', onPress: () => setPantalla({ vista: 'formulario', uuid: uuidEnCurso }) },
+      { text: 'Empezar otra', style: 'destructive', onPress: empezarOtra },
+      { text: 'Cancelar', style: 'cancel' },
+    ]);
   };
 
   const abrir = (acceso) => {
@@ -155,8 +206,8 @@ export default function EmergenciaApp({ onCambiarModulo }) {
           <EmergenciaInicioScreen onAbrir={abrir} recarga={recarga} onCargando={setCargandoPerfil} />
         ) : null}
         {vista === 'envios' ? (
-          <EmergenciaMisEnviosScreen syncTick={syncTick} onCambio={refrescarEstado}
-            onNuevo={() => setPantalla({ vista: 'formulario', uuid: null })}
+          <EmergenciaMisEnviosScreen syncTick={syncTick} enviadosTick={enviadosTick} onCambio={refrescarEstado}
+            onNuevo={relevarNueva}
             onCorregir={(abierto) => setPantalla({ vista: 'formulario', uuid: abierto })} />
         ) : null}
         {vista === 'formulario' ? (

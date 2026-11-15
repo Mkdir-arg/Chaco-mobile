@@ -128,7 +128,8 @@ export const consultarPersona = ({ dni, sexo }) => conVerificacion(() => consult
 // `foto_vivienda` y `foto_acceso` como assets de aJpeg, opcionales. Latitud y longitud van
 // juntas: si falta una, no se manda ninguna. `relevado_en` y `fecha_nacimiento` se normalizan
 // (relevadoEnIso, fechaNacimientoIso). 201 creado o 200 ya existía, mismo cuerpo.
-export const enviarCaso = async (datos = {}, fotos = {}, { timeoutMs } = {}) => {
+// `token`: el de la sesión dueña del envío (la cola lo fija al empezar la pasada).
+export const enviarCaso = async (datos = {}, fotos = {}, { timeoutMs, token } = {}) => {
   exigirUuid(datos.uuid_cliente);
   const fields = {};
   CAMPOS_CASO.forEach((campo) => {
@@ -141,7 +142,7 @@ export const enviarCaso = async (datos = {}, fotos = {}, { timeoutMs } = {}) => 
     delete fields.longitud;
   }
   const files = FOTOS_CASO.map((campo) => archivoJpeg(campo, fotos[campo])).filter(Boolean);
-  return conVerificacion(() => uploadMultipart(RUTAS.casos, { fields, files, timeoutMs }));
+  return conVerificacion(() => uploadMultipart(RUTAS.casos, { fields, files, timeoutMs, token }));
 };
 
 export const getMisCasos = () => conVerificacion(() => becasRequest(RUTAS.casosMios));

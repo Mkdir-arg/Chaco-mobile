@@ -26,16 +26,24 @@ const TABLA_OUTBOX = 'outbox_casos';
 const TABLA_LOCALIDADES = 'cache_localidades';
 const TABLA_MIS_CASOS = 'cache_mis_casos';
 const ATTACHMENTS_DIR = `${FileSystem.documentDirectory}attachments/emergencia`;
-export const MAX_RETRY_COUNT = 8;
 export const MAX_FOTO_BYTES = 5 * 1024 * 1024;
-// Un envío con dos fotos por una red mala tarda: el pedido se corta a los 90 s y una IN_FLIGHT se
-// da por abandonada (proceso muerto, otra pestaña) recién a los 2 minutos.
-const ENVIO_TIMEOUT_MS = 90 * 1000;
-const OUTBOX_IN_FLIGHT_TIMEOUT_MS = 2 * 60 * 1000;
+// Una falla transitoria (red, 5xx, timeout, 429, WAF) nunca agota el envío: sigue en la cola con el
+// mismo uuid hasta 200/201 (§6), con espera creciente topeada en 5 minutos. Desde este intento
+// «Mis envíos» lo muestra como demorado.
+export const MAX_ESPERA_REINTENTO_MS = 5 * 60 * 1000;
+export const INTENTOS_DEMORADO = 3;
+// El pedido se corta a un tiempo proporcional al multipart (una foto de 5 MB por una red mala tarda):
+// 90 s más 20 s por MB, hasta 4 minutos. Una IN_FLIGHT se da por abandonada (proceso muerto, otra
+// pestaña) recién después de ese tope, para no mandar dos veces a la vez el mismo envío.
+const ENVIO_TIMEOUT_BASE_MS = 90 * 1000;
+const ENVIO_TIMEOUT_POR_MB_MS = 20 * 1000;
+export const ENVIO_TIMEOUT_MAX_MS = 4 * 60 * 1000;
+const OUTBOX_IN_FLIGHT_TIMEOUT_MS = 5 * 60 * 1000;
 const PAUSED_RETRY_MS = 5 * 60 * 1000;
 const ESPERA_ENVIO_MS = 1500;
 export const LOCALIDADES_VIGENCIA_MS = 24 * 60 * 60 * 1000;
-// Lo ya entregado o descartado se guarda una semana (solo la fila, sin fotos) y después se poda.
+// Lo ya entregado o descartado se guarda una semana y después se poda. Esas filas ya no tienen
+// fotos: al entregar o descartar se vacía `fotos_json` y se borran los archivos.
 const RETENCION_MS = 7 * 24 * 60 * 60 * 1000;
 
 export const ERROR_ARCHIVO_LOCAL_FALTANTE = 'ARCHIVO_LOCAL_FALTANTE';
@@ -65,7 +73,12 @@ const exigirOwner = async () => {
   if (!ownerId) throw createError('SIN_SESION', 'No hay sesión iniciada.');
   return ownerId;
 };
-export const calculateBackoffMs = (retryCount = 0) => Math.min(5 * 60 * 1000, 2500 * (2 ** Math.max(0, retryCount)));
+export const calculateBackoffMs = (retryCount = 0) => Math.min(MAX_ESPERA_REINTENTO_MS, 2500 * (2 ** Math.max(0, retryCount)));
+
+export const timeoutDelEnvio = (bytes = 0) => {
+  const mb = Math.max(0, Number(bytes) || 0) / (1024 * 1024);
+  return Math.min(ENVIO_TIMEOUT_MAX_MS, Math.round(ENVIO_TIMEOUT_BASE_MS + ENVIO_TIMEOUT_POR_MB_MS * mb));
+};
 
 const getSqliteDb = async () => {
   if (!sqliteDbPromise) {
@@ -100,6 +113,43 @@ const podarViejos = async (db) => {
     `DELETE FROM ${TABLA_OUTBOX} WHERE status IN ('DONE', 'DISCARDED') AND updated_at <= ?`, limite);
 };
 
+// Las fotos (en web, data URLs de varios MB) viven en `fotos_json`, aparte del payload: listar y
+// contar la cola no las lee. Una base de una versión de prueba anterior las tenía dentro del payload.
+const separarFotosDelPayload = async (db) => {
+  const columnas = await db.getAllAsync(`PRAGMA table_info(${TABLA_OUTBOX})`);
+  if (!columnas.some((columna) => columna.name === 'fotos_json')) {
+    await db.execAsync(`ALTER TABLE ${TABLA_OUTBOX} ADD COLUMN fotos_json TEXT NOT NULL DEFAULT '{}'`);
+  }
+  const viejas = await db.getAllAsync(
+    `SELECT op_id, payload_json FROM ${TABLA_OUTBOX} WHERE payload_json LIKE '%"fotos":%'`);
+  for (const fila of viejas) {
+    const { fotos = {}, ...payload } = safeParse(fila.payload_json, {}) || {};
+    await db.runAsync(`UPDATE ${TABLA_OUTBOX} SET payload_json = ?, fotos_json = ? WHERE op_id = ?`,
+      JSON.stringify(payload), JSON.stringify(fotos || {}), fila.op_id);
+  }
+};
+
+// Nativo: un archivo de la carpeta propia que no nombra ninguna fila quedó de un proceso cortado
+// (copiado y sin guardar en la base, o borrado de la fila sin borrar el archivo). Corre al abrir la
+// base, antes de que ponerFoto pueda copiar nada.
+const barrerFotosHuerfanas = async (db) => {
+  if (Platform.OS === 'web' || typeof FileSystem.readDirectoryAsync !== 'function') return;
+  try {
+    const dir = await FileSystem.getInfoAsync(ATTACHMENTS_DIR);
+    if (!dir?.exists) return;
+    const usadas = new Set();
+    const juntar = (json) => Object.values(safeParse(json, {}) || {}).forEach((item) => { if (item?.uri) usadas.add(item.uri); });
+    (await db.getAllAsync(`SELECT fotos_json FROM ${TABLA_BORRADORES}`)).forEach((fila) => juntar(fila.fotos_json));
+    (await db.getAllAsync(`SELECT fotos_json FROM ${TABLA_OUTBOX}`)).forEach((fila) => juntar(fila.fotos_json));
+    for (const nombre of await FileSystem.readDirectoryAsync(ATTACHMENTS_DIR)) {
+      const uri = `${ATTACHMENTS_DIR}/${nombre}`;
+      if (!usadas.has(uri)) await borrarUri(uri);
+    }
+  } catch {
+    // Un barrido que falla no cambia nada para el agente: se intenta en la próxima apertura.
+  }
+};
+
 const ensureSqliteReady = async () => {
   if (!sqliteInitPromise) {
     sqliteInitPromise = (async () => {
@@ -125,6 +175,7 @@ const ensureSqliteReady = async () => {
           uuid_cliente TEXT NOT NULL UNIQUE,
           status TEXT NOT NULL DEFAULT 'PENDING',
           payload_json TEXT NOT NULL,
+          fotos_json TEXT NOT NULL DEFAULT '{}',
           created_at TEXT NOT NULL,
           started_at TEXT,
           ack_at TEXT,
@@ -149,8 +200,10 @@ const ensureSqliteReady = async () => {
           updated_at TEXT NOT NULL
         );
       `);
+      await separarFotosDelPayload(db);
       await recoverStaleInFlightOperations(db);
       await podarViejos(db);
+      await barrerFotosHuerfanas(db);
     })().catch((error) => {
       sqliteInitPromise = null;
       throw error;
@@ -164,7 +217,14 @@ const withDb = async () => {
   return getSqliteDb();
 };
 
+// En web, `navigator.onLine`: NetInfo web guarda el último estado y su `isInternetReachable` es un
+// HEAD a `/` del origen de la PWA (no del API) que, si falló, se repite recién a los 5 s; al volver la
+// red puede seguir diciendo «sin internet» por una prueba hecha sin señal, y la cola no salía. Un
+// fetch que igual falla queda como falla de red (transitoria) y se reintenta.
 const getConnectivitySnapshot = async () => {
+  if (Platform.OS === 'web' && typeof navigator !== 'undefined' && typeof navigator?.onLine === 'boolean') {
+    return navigator.onLine;
+  }
   try {
     const state = await NetInfo.fetch();
     return !!state?.isConnected && state?.isInternetReachable !== false;
@@ -254,6 +314,31 @@ const leerBorrador = async (ownerId, uuid) => {
     `SELECT * FROM ${TABLA_BORRADORES} WHERE owner_user_id = ? AND uuid_cliente = ?`, ownerId, String(uuid)));
 };
 
+// Un borrador en curso «tiene algo» si se cargó algún dato o alguna foto: uno vacío (se abrió el
+// formulario y se volvió) se reusa sin preguntar.
+const datosCargados = (datos = {}) => {
+  const iniciales = datosIniciales();
+  return Object.keys(iniciales).some((clave) => clave !== 'consulta'
+    && JSON.stringify(datos?.[clave] ?? iniciales[clave]) !== JSON.stringify(iniciales[clave]));
+};
+const SELECT_BORRADOR_LIVIANO = `uuid_cliente, owner_user_id, datos_json, errores_json, error_code, created_at, updated_at,
+  (fotos_json <> '{}') AS con_fotos`;
+
+// El formulario sin terminar (sin errores del servidor) con lo cargado, o null si no hay o está
+// vacío. «Relevar una familia» pregunta si seguir con ese o empezar otra.
+export const getBorradorEnCurso = async () => {
+  const ownerId = await getCurrentOwnerId();
+  if (!ownerId) return null;
+  const db = await withDb();
+  const row = await db.getFirstAsync(
+    `SELECT ${SELECT_BORRADOR_LIVIANO} FROM ${TABLA_BORRADORES} WHERE owner_user_id = ? AND errores_json IS NULL
+     ORDER BY updated_at DESC, rowid DESC LIMIT 1`, ownerId);
+  if (!row) return null;
+  const datos = { ...datosIniciales(), ...safeParse(row.datos_json, {}) };
+  if (!datosCargados(datos) && !Number(row.con_fotos)) return null;
+  return { uuid_cliente: row.uuid_cliente, resumen: resumenDeFamilia(datos), actualizado_en: row.updated_at };
+};
+
 // Con `uuid`, ese borrador (el que volvió con errores) o null. Sin `uuid`, el que se estaba
 // cargando (sin errores); si no hay, uno nuevo: el `uuid_cliente` nace acá y ya no cambia.
 export const abrirBorrador = async ({ uuid = null } = {}) => {
@@ -286,10 +371,11 @@ export const guardarBorrador = async (uuid, datos) => {
 // aJpeg creó (no la foto original del selector) y se borra una vez copiado. En web se libera la
 // blob: URL de aJpeg apenas se guardó la data URL.
 export const ponerFoto = async (uuid, campo, asset, { temporal = false } = {}) => {
-  if (!CAMPOS_FOTO.includes(campo)) throw createError(ERROR_FOTO_INVALIDA, 'Esa foto no es del formulario.');
-  const ownerId = await exigirOwner();
   let item;
   try {
+    // Dentro del try: aunque no haya sesión o el campo no exista, la salida de aJpeg se libera.
+    if (!CAMPOS_FOTO.includes(campo)) throw createError(ERROR_FOTO_INVALIDA, 'Esa foto no es del formulario.');
+    const ownerId = await exigirOwner();
     const borrador = await leerBorrador(ownerId, uuid);
     if (!borrador) throw createError('SIN_BORRADOR', 'El borrador ya no existe.');
     item = await persistirFoto(asset, { temporal });
@@ -341,6 +427,7 @@ const mapOutboxRow = (row = {}) => ({
   status: row.status || 'PENDING',
   payload: safeParse(row.payload_json, {}),
   created_at: row.created_at,
+  updated_at: row.updated_at || null,
   started_at: row.started_at || null,
   ack_at: row.ack_at || null,
   retry_count: Number(row.retry_count || 0),
@@ -352,6 +439,7 @@ const mapOutboxRow = (row = {}) => ({
 });
 
 const ESTADO_ENVIO = { PENDING: 'pendiente', IN_FLIGHT: 'enviando', FAILED_PERMANENT: 'error', DONE: 'enviado', DISCARDED: 'descartado' };
+export const estaDemorado = (op) => ['PENDING', 'IN_FLIGHT'].includes(op?.status) && Number(op?.retry_count || 0) >= INTENTOS_DEMORADO;
 
 const mapEnvio = (op) => op && ({
   tipo: 'envio',
@@ -368,17 +456,30 @@ const mapEnvio = (op) => op && ({
   resultado: op.resultado,
   retry_count: op.retry_count,
   next_retry_at: op.next_retry_at,
+  demorado: estaDemorado(op),
   creado_en: op.created_at,
+  actualizado_en: op.updated_at,
   puedeReintentar: op.status === 'FAILED_PERMANENT' && op.last_error_code !== 'UUID_EN_USO',
   puedeDescartar: ['PENDING', 'FAILED_PERMANENT'].includes(op.status),
 });
 
+// Todo menos `fotos_json`: listar, contar y recorrer la cola no carga las fotos.
+const COLUMNAS_SIN_FOTOS = `op_id, owner_user_id, uuid_cliente, status, payload_json, created_at, started_at, ack_at,
+  retry_count, next_retry_at, last_error, last_error_code, last_error_json, resultado_json, updated_at`;
+
 const readOperations = async (ownerId, where = '1 = 1', ...args) => {
   const db = await withDb();
   const rows = await db.getAllAsync(
-    `SELECT * FROM ${TABLA_OUTBOX} WHERE owner_user_id = ? AND ${where} ORDER BY created_at ASC, rowid ASC`,
+    `SELECT ${COLUMNAS_SIN_FOTOS} FROM ${TABLA_OUTBOX} WHERE owner_user_id = ? AND ${where} ORDER BY created_at ASC, rowid ASC`,
     ownerId, ...args);
   return rows.map(mapOutboxRow);
+};
+
+// Las fotos de un envío, solo cuando hacen falta (mandarlo, devolverlo a borrador, borrarlas).
+const leerFotosDeOperacion = async (opId) => {
+  const db = await withDb();
+  const row = await db.getFirstAsync(`SELECT fotos_json FROM ${TABLA_OUTBOX} WHERE op_id = ?`, opId);
+  return safeParse(row?.fotos_json, {}) || {};
 };
 
 export const getEnvio = async (uuid) => {
@@ -398,13 +499,34 @@ export const getEnviosLocales = async () => {
   const db = await withDb();
   const ops = (await readOperations(ownerId, "status IN ('PENDING', 'IN_FLIGHT', 'FAILED_PERMANENT')")).map(mapEnvio);
   const borradores = (await db.getAllAsync(
-    `SELECT * FROM ${TABLA_BORRADORES} WHERE owner_user_id = ? AND errores_json IS NOT NULL`, ownerId))
+    `SELECT ${SELECT_BORRADOR_LIVIANO} FROM ${TABLA_BORRADORES} WHERE owner_user_id = ? AND errores_json IS NOT NULL`, ownerId))
     .map(mapBorrador)
     .map((b) => ({ ...b, estado: 'corregir', resumen: resumenDeFamilia(b.datos), puedeDescartar: true, puedeReintentar: false }));
   return [...ops, ...borradores].sort((a, b) => String(b.creado_en).localeCompare(String(a.creado_en)));
 };
 
-// Lo que guarda datos de una familia sin entregar: el badge del Banner y el aviso al salir.
+// Lo que el teléfono guarda sin entregar, por tipo: `enCola` sale solo (al volver la red o a entrar),
+// `paraRevisar` necesita al agente (con error o devuelto para corregir) y `sinTerminar` es el
+// formulario a medio cargar. Sin leer payloads ni fotos.
+export const getResumenPendientes = async () => {
+  const vacio = { enCola: 0, paraRevisar: 0, sinTerminar: 0 };
+  const ownerId = await getCurrentOwnerId();
+  if (!ownerId) return vacio;
+  const db = await withDb();
+  const ops = await db.getAllAsync(
+    `SELECT status, COUNT(*) AS count FROM ${TABLA_OUTBOX}
+     WHERE owner_user_id = ? AND status IN ('PENDING', 'IN_FLIGHT', 'FAILED_PERMANENT') GROUP BY status`, ownerId);
+  const corregir = await db.getFirstAsync(
+    `SELECT COUNT(*) AS count FROM ${TABLA_BORRADORES} WHERE owner_user_id = ? AND errores_json IS NOT NULL`, ownerId);
+  const contar = (estados) => ops.filter((fila) => estados.includes(fila.status)).reduce((n, fila) => n + Number(fila.count || 0), 0);
+  return {
+    enCola: contar(['PENDING', 'IN_FLIGHT']),
+    paraRevisar: contar(['FAILED_PERMANENT']) + Number(corregir?.count || 0),
+    sinTerminar: (await getBorradorEnCurso()) ? 1 : 0,
+  };
+};
+
+// Lo que guarda datos de una familia sin entregar: el badge del Banner.
 export const getPendingCount = async () => {
   const ownerId = await getCurrentOwnerId();
   if (!ownerId) return 0;
@@ -448,7 +570,6 @@ export const encolarCaso = async (uuid, { datos = null, relevadoEn = new Date() 
     modulo: 'emergencia',
     uuid_cliente: borrador.uuid_cliente,
     datos: { ...datosDelCaso(formulario), uuid_cliente: borrador.uuid_cliente, relevado_en: relevadoEnIso(relevadoEn) },
-    fotos: borrador.fotos || {},
     formulario,
     capturado_en: stamp,
   };
@@ -456,9 +577,9 @@ export const encolarCaso = async (uuid, { datos = null, relevadoEn = new Date() 
   await runSqliteTx(db, async (tx) => {
     if (previa) await tx.runAsync(`DELETE FROM ${TABLA_OUTBOX} WHERE op_id = ?`, previa.op_id);
     await tx.runAsync(
-      `INSERT INTO ${TABLA_OUTBOX} (op_id, owner_user_id, uuid_cliente, status, payload_json, created_at, updated_at)
-       VALUES (?, ?, ?, 'PENDING', ?, ?, ?)`,
-      opId, ownerId, borrador.uuid_cliente, JSON.stringify(payload), stamp, stamp);
+      `INSERT INTO ${TABLA_OUTBOX} (op_id, owner_user_id, uuid_cliente, status, payload_json, fotos_json, created_at, updated_at)
+       VALUES (?, ?, ?, 'PENDING', ?, ?, ?, ?)`,
+      opId, ownerId, borrador.uuid_cliente, JSON.stringify(payload), JSON.stringify(borrador.fotos || {}), stamp, stamp);
     await tx.runAsync(`DELETE FROM ${TABLA_BORRADORES} WHERE owner_user_id = ? AND uuid_cliente = ?`, ownerId, borrador.uuid_cliente);
   });
 
@@ -481,10 +602,12 @@ const cerrarOperacion = async (opId, { status, retryCount = 0, nextRetryAt = nul
   const db = await withDb();
   const stamp = nowIso();
   const done = status === 'DONE';
+  // Entregado: la fila queda una semana para «Mis envíos», pero sin las fotos.
   await db.runAsync(
     `UPDATE ${TABLA_OUTBOX}
      SET status = ?, started_at = NULL, ack_at = ?, retry_count = ?, next_retry_at = ?,
          last_error = ?, last_error_code = ?, last_error_json = ?, resultado_json = ?, updated_at = ?
+         ${done ? ", fotos_json = '{}'" : ''}
      WHERE op_id = ?`,
     status, done ? stamp : null, retryCount, nextRetryAt,
     done ? null : info?.message ?? null, done ? null : info?.code ?? null,
@@ -496,13 +619,14 @@ const volverABorrador = async (operation, errores, code) => {
   const db = await withDb();
   const stamp = nowIso();
   const { payload } = operation;
+  const fotos = operation.fotos || await leerFotosDeOperacion(operation.op_id);
   await runSqliteTx(db, async (tx) => {
     await tx.runAsync(
       `INSERT OR REPLACE INTO ${TABLA_BORRADORES}
        (uuid_cliente, owner_user_id, datos_json, fotos_json, errores_json, error_code, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       operation.uuid_cliente, operation.owner_user_id, JSON.stringify(payload.formulario || {}),
-      JSON.stringify(payload.fotos || {}), JSON.stringify(errores), code, operation.created_at, stamp);
+      JSON.stringify(fotos), JSON.stringify(errores), code, operation.created_at, stamp);
     await tx.runAsync(`DELETE FROM ${TABLA_OUTBOX} WHERE op_id = ?`, operation.op_id);
   });
 };
@@ -546,15 +670,11 @@ const aplicarFalla = async (operation, error) => {
   } else if (accion === 'espera') {
     await cerrarOperacion(operation.op_id, { status: 'PENDING', retryCount, info, nextRetryAt: en(clasificado.espera) });
   } else if (accion === 'reintento') {
+    // Nunca se agota (§6): sigue en la cola. `retry_count` solo dice cuántas veces falló, para
+    // mostrarlo como demorado.
     const proximo = retryCount + 1;
-    if (proximo > MAX_RETRY_COUNT) {
-      await cerrarOperacion(operation.op_id, {
-        status: 'FAILED_PERMANENT', retryCount: proximo, info: { ...info, code: 'REINTENTOS_AGOTADOS' },
-      });
-    } else {
-      const espera = Math.max(calculateBackoffMs(proximo), clasificado.espera || 0);
-      await cerrarOperacion(operation.op_id, { status: 'PENDING', retryCount: proximo, info, nextRetryAt: en(espera) });
-    }
+    const espera = Math.min(MAX_ESPERA_REINTENTO_MS, Math.max(calculateBackoffMs(proximo), clasificado.espera || 0));
+    await cerrarOperacion(operation.op_id, { status: 'PENDING', retryCount: proximo, info, nextRetryAt: en(espera) });
   } else if (accion === 'borrador') {
     await volverABorrador(operation, hayErrores(clasificado.errores)
       ? clasificado.errores : { non_field_errors: [info.detail || info.message] }, info.code);
@@ -564,42 +684,64 @@ const aplicarFalla = async (operation, error) => {
   return clasificado;
 };
 
-const ejecutarOperacion = async (operation) => {
-  const { payload } = operation;
-  const faltan = await fotosQueFaltan(payload.fotos);
+const bytesDeFotos = (fotos = {}) => Object.values(fotos || {})
+  .reduce((total, item) => total + (Number(item?.size) || (item?.uri?.startsWith?.('data:') ? item.uri.length * 0.75 : 0)), 0);
+
+// `token` es el de la sesión dueña de la pasada: el envío sale con ese, nunca con uno releído.
+const ejecutarOperacion = async (operation, token) => {
+  const { payload, fotos } = operation;
+  const faltan = await fotosQueFaltan(fotos);
   if (faltan.length) {
     const errores = Object.fromEntries(faltan.map((campo) => [campo, ['La foto ya no está en el teléfono: volvé a sacarla.']]));
     throw createError(ERROR_ARCHIVO_LOCAL_FALTANTE, 'Falta una foto en el teléfono.', { errores });
   }
-  return enviarCaso(payload.datos, payload.fotos, { timeoutMs: ENVIO_TIMEOUT_MS });
+  return enviarCaso(payload.datos, fotos, { timeoutMs: timeoutDelEnvio(bytesDeFotos(fotos)), token });
 };
 
+const sesionVigente = async (ownerId, token) => (await getCurrentOwnerId()) === ownerId && (await getBecasToken()) === token;
+
+// Una pasada es de UNA sesión: el dueño y el token se fijan al empezar, cada envío sale con ese
+// token, y si entre envío y envío cambió la sesión (logout, otro usuario) la pasada se corta.
 export const syncPendientes = async () => {
   await ensureSqliteReady();
   if (syncInFlightPromise) return syncInFlightPromise;
   syncInFlightPromise = (async () => {
+    const vacio = { synced: 0, failed: 0, errors: [] };
     const ownerId = await getCurrentOwnerId();
-    if (!ownerId) return { synced: 0, failed: 0, errors: [] };
+    const token = await getBecasToken();
+    if (!ownerId || !token) return vacio;
     const db = await getSqliteDb();
     await recoverStaleInFlightOperations(db);
-    const queue = await readOperations(ownerId, "status = 'PENDING'");
-    if (!queue.length) return { synced: 0, failed: 0, errors: [] };
+    const cuenta = await db.getFirstAsync(
+      `SELECT COUNT(*) AS count FROM ${TABLA_OUTBOX} WHERE owner_user_id = ? AND status = 'PENDING'`, ownerId);
+    const pendientes = Number(cuenta?.count || 0);
+    if (!pendientes) return vacio;
+    // La red antes de leer la cola: sin señal no se carga nada.
     if (!await getConnectivitySnapshot()) {
-      return { synced: 0, failed: 0, skipped: queue.length, offline: true, errors: [{ message: 'Sin conexión' }] };
+      return { synced: 0, failed: 0, skipped: pendientes, offline: true, errors: [{ message: 'Sin conexión' }] };
     }
+    const queue = await readOperations(ownerId, "status = 'PENDING'");
     let synced = 0;
     let failed = 0;
     const errors = [];
     const ahora = Date.now();
-    for (const operation of queue) {
-      if (!await getBecasToken()) break;
-      const proximo = operation.next_retry_at ? Date.parse(operation.next_retry_at) : null;
+    for (const pendiente of queue) {
+      if (!await sesionVigente(ownerId, token)) break;
+      const proximo = pendiente.next_retry_at ? Date.parse(pendiente.next_retry_at) : null;
       if (proximo && Number.isFinite(proximo) && proximo > ahora) continue;
-      if (!await marcarEnVuelo(operation.op_id)) continue;
+      if (!await marcarEnVuelo(pendiente.op_id)) continue;
+      const operation = { ...pendiente, fotos: await leerFotosDeOperacion(pendiente.op_id) };
+      // marcarEnVuelo y leer las fotos esperan a la base: otra sesión pudo entrar en el medio.
+      if (!await sesionVigente(ownerId, token)) {
+        await db.runAsync(
+          `UPDATE ${TABLA_OUTBOX} SET status = 'PENDING', started_at = NULL, updated_at = ? WHERE op_id = ? AND status = 'IN_FLIGHT'`,
+          nowIso(), operation.op_id);
+        break;
+      }
       try {
-        const resultado = await ejecutarOperacion(operation);
+        const resultado = await ejecutarOperacion(operation, token);
         await cerrarOperacion(operation.op_id, { status: 'DONE', resultado: resultado && typeof resultado === 'object' ? resultado : null });
-        await borrarFotos(operation.payload.fotos);
+        await borrarFotos(operation.fotos);
         synced += 1;
       } catch (error) {
         failed += 1;
@@ -653,12 +795,13 @@ export const descartar = async (uuid) => {
   const db = await withDb();
   const [op] = await readOperations(ownerId, "uuid_cliente = ? AND status IN ('PENDING', 'FAILED_PERMANENT')", String(uuid));
   if (op) {
+    const fotos = await leerFotosDeOperacion(op.op_id);
     const result = await db.runAsync(
-      `UPDATE ${TABLA_OUTBOX} SET status = 'DISCARDED', payload_json = ?, next_retry_at = NULL, updated_at = ?
+      `UPDATE ${TABLA_OUTBOX} SET status = 'DISCARDED', fotos_json = '{}', next_retry_at = NULL, updated_at = ?
        WHERE op_id = ? AND status IN ('PENDING', 'FAILED_PERMANENT')`,
-      JSON.stringify({ ...op.payload, fotos: {} }), nowIso(), op.op_id);
+      nowIso(), op.op_id);
     if (!Number(result?.changes || 0)) return false;
-    await borrarFotos(op.payload.fotos);
+    await borrarFotos(fotos);
     return true;
   }
   return descartarBorrador(uuid);
@@ -735,6 +878,8 @@ export default {
   quitarFoto,
   descartarBorrador,
   encolarCaso,
+  getBorradorEnCurso,
+  getResumenPendientes,
   syncPendientes,
   reintentar,
   descartar,

@@ -4,7 +4,7 @@ import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
 import CustomButton from '../components/CustomButton';
 import { descartar, getEnviosLocales, getMisEnvios, reintentar } from '../services/emergenciaCola';
-import { ESTADOS_LOCALES, estadoDelCaso, listaDeErrores, textoDeCode } from '../utils/emergencia';
+import { ESTADOS_LOCALES, TEXTO_DEMORADO, estadoDelCaso, listaDeErrores, textoDeCode } from '../utils/emergencia';
 import { formatDate } from '../utils/dates';
 import { statusTones } from '../theme/statusBadges';
 import { fontSizes, radii } from '../theme';
@@ -14,8 +14,10 @@ export const AVISO_DESACTUALIZADA = 'No se pudo actualizar: se muestra la últim
 
 // «Mis envíos» de M1: lo que todavía está en el teléfono (en cola, con error o devuelto para
 // corregir) y lo que ya recibió el servidor (§7). `syncTick` cambia cuando termina una
-// sincronización de fondo: se relee lo local. `onNuevo` abre el Formulario 1.
-export default function EmergenciaMisEnviosScreen({ syncTick = 0, onNuevo, onCorregir, onCambio }) {
+// sincronización de fondo: se relee lo local. `enviadosTick` cambia cuando una sincronización de
+// fondo entregó algo: se vuelve a pedir «Recibidos», para que lo que salió de «En el teléfono» no
+// parezca perdido. `onNuevo` abre el Formulario 1.
+export default function EmergenciaMisEnviosScreen({ syncTick = 0, enviadosTick = 0, onNuevo, onCorregir, onCambio }) {
   const { theme, typography } = useTheme();
   const { showToast, showAlert } = useToast();
   const [locales, setLocales] = useState([]);
@@ -56,6 +58,7 @@ export default function EmergenciaMisEnviosScreen({ syncTick = 0, onNuevo, onCor
     return () => { montado.current = false; };
   }, [cargar]);
   useEffect(() => { if (syncTick) leerLocales(); }, [syncTick, leerLocales]);
+  useEffect(() => { if (enviadosTick) cargar(); }, [enviadosTick, cargar]);
 
   const reintentarUno = async (item) => {
     setOcupado(item.uuid_cliente);
@@ -98,10 +101,14 @@ export default function EmergenciaMisEnviosScreen({ syncTick = 0, onNuevo, onCor
   );
 
   const tarjetaLocal = (item) => {
-    const estado = ESTADOS_LOCALES[item.estado] || ESTADOS_LOCALES.pendiente;
+    const estado = item.demorado && item.estado === 'pendiente'
+      ? ESTADOS_LOCALES.demorado
+      : ESTADOS_LOCALES[item.estado] || ESTADOS_LOCALES.pendiente;
     const errores = item.estado === 'corregir' ? listaDeErrores(item.errores) : [];
     const motivo = item.estado === 'error' ? textoDeCode(item.code, item.detail) : null;
-    const espera = item.estado === 'pendiente' && item.code === 'RATE_LIMITED' ? textoDeCode('RATE_LIMITED') : null;
+    let espera = null;
+    if (item.estado === 'pendiente' && item.code === 'RATE_LIMITED') espera = textoDeCode('RATE_LIMITED');
+    else if (item.demorado) espera = TEXTO_DEMORADO;
     return (
       <View key={item.uuid_cliente} style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
         <View style={styles.cabecera}>

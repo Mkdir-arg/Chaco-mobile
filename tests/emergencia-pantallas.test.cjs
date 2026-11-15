@@ -212,6 +212,7 @@ test('m2: EmergenciaApp pasa «syncing» al Banner mientras carga el perfil', as
     '@react-native-community/netinfo': {__esModule: true, default: {addEventListener: () => () => {}}},
     '../services/emergenciaCola': {syncPendientes: async () => ({}), getPendingCount: async () => 0,
       reintentar: async () => ({}), getLocalidadesGuardadas: async () => ({localidades: []})},
+    '../utils/emergencia': {avisoDeSalida: () => null},
   });
   let tree;
   await renderer.act(async () => { tree = renderer.create(React.createElement(App)); });

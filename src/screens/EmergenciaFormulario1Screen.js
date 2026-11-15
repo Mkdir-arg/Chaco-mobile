@@ -12,6 +12,7 @@ import * as ImagePicker from '../services/imagePicker';
 import { consultarPersona } from '../services/emergenciaApi';
 import { identityFailure, DECEASED_MESSAGE } from '../services/identityLookup';
 import { posicionActual, UBICACION_DEMORADA } from '../services/ubicacion';
+import { forgetWebFile } from '../services/webAttachments';
 import {
   abrirBorrador, guardarBorrador, ponerFoto, quitarFoto, encolarCaso, descartar, getLocalidadesGuardadas,
 } from '../services/emergenciaCola';
@@ -19,7 +20,7 @@ import { aJpeg } from '../utils/jpeg';
 import { cleanDigits, isValidDni, normalizeDateText, normalizeSex, parseDniCode } from '../utils/dni';
 import {
   ASISTENCIA, AVISOS, CANTIDADES, FOTOS, MAX_DIRECCION, MAX_TRASLADO_OTRO, SEXOS, TRASLADOS,
-  aCantidad, filtrarLocalidades, hayErrores, listaDeErrores, personaConfirmada, textoDeCode, totalDeclarado,
+  aCantidad, filtrarLocalidades, hayErrores, listaDeErrores, mismaIdentidad, personaConfirmada, textoDeCode, totalDeclarado,
   validarCaso, validarConsulta,
 } from '../utils/emergencia';
 import { statusTones } from '../theme/statusBadges';
@@ -61,6 +62,12 @@ export default function EmergenciaFormulario1Screen({ uuid = null, onTerminar })
   const ultimo = useRef(null);
   const terminado = useRef(false);
   const scannerTrabadoRef = useRef(false);
+  // Lo último que hay en pantalla (para descartar una respuesta de identidad que llegó tarde), el
+  // pedido de identidad en curso y el envío en curso (un segundo toque no hace nada).
+  const datosRef = useRef(null);
+  const consultaEnCurso = useRef(0);
+  const enviandoRef = useRef(false);
+  datosRef.current = datos;
 
   useEffect(() => {
     montado.current = true;
@@ -99,6 +106,13 @@ export default function EmergenciaFormulario1Screen({ uuid = null, onTerminar })
   }, []);
 
   const cambiar = (cambios) => {
+    const cambiaIdentidad = CAMPOS_IDENTIDAD.some((campo) => campo in cambios
+      && String(cambios[campo] ?? '') !== String(datosRef.current?.[campo] ?? ''));
+    if (cambiaIdentidad) {
+      // La consulta en vuelo era de otra persona: su respuesta se descarta.
+      consultaEnCurso.current += 1;
+      setConsultando(false);
+    }
     setDatos((prev) => {
       const next = { ...prev, ...cambios };
       if (CAMPOS_IDENTIDAD.some((campo) => campo in cambios && cambios[campo] !== prev[campo])) next.consulta = null;
@@ -130,23 +144,34 @@ export default function EmergenciaFormulario1Screen({ uuid = null, onTerminar })
       setAvisoConsulta({ tono: 'warning', texto: listaDeErrores(faltan).map((e) => e.texto).join(' ') });
       return;
     }
+    consultaEnCurso.current += 1;
+    const pedido = consultaEnCurso.current;
     setConsultando(true);
     setAvisoConsulta(null);
     const dni = cleanDigits(datos.dni);
     const sexo = String(datos.sexo).toUpperCase();
+    // Solo vale si sigue siendo el último pedido y en pantalla siguen ese DNI y ese sexo.
+    const vigente = () => montado.current && consultaEnCurso.current === pedido
+      && mismaIdentidad({ dni, sexo }, datosRef.current || {});
     try {
       const respuesta = await consultarPersona({ dni, sexo });
-      if (!montado.current) return;
+      if (!vigente()) return;
       const persona = respuesta?.data || {};
-      cambiar({
-        nombre: persona.nombre || datos.nombre,
-        apellido: persona.apellido || datos.apellido,
-        fecha_nacimiento: persona.fecha_nacimiento ? normalizeDateText(persona.fecha_nacimiento) : datos.fecha_nacimiento,
+      setDatos((prev) => (!mismaIdentidad({ dni, sexo }, prev) ? prev : {
+        ...prev,
+        nombre: persona.nombre || prev.nombre,
+        apellido: persona.apellido || prev.apellido,
+        fecha_nacimiento: persona.fecha_nacimiento ? normalizeDateText(persona.fecha_nacimiento) : prev.fecha_nacimiento,
+        consulta: { estado: 'encontrada', dni, sexo },
+      }));
+      setErroresServidor((prev) => {
+        if (!prev.nombre && !prev.apellido && !prev.fecha_nacimiento) return prev;
+        const { nombre: _n, apellido: _a, fecha_nacimiento: _f, ...resto } = prev;
+        return resto;
       });
-      setDatos((prev) => ({ ...prev, consulta: { estado: 'encontrada', dni, sexo } }));
       setAvisoConsulta({ tono: 'success', texto: `Encontramos a ${[persona.nombre, persona.apellido].filter(Boolean).join(' ')} en la Base de Personas.` });
     } catch (e) {
-      if (!montado.current) return;
+      if (!vigente()) return;
       let estado = 'error';
       let aviso;
       if (Number(e?.status) === 404 && e?.payload?.fallecido === true) {
@@ -161,10 +186,10 @@ export default function EmergenciaFormulario1Screen({ uuid = null, onTerminar })
       } else {
         aviso = { tono: 'warning', texto: identityFailure(e).message };
       }
-      setDatos((prev) => ({ ...prev, consulta: { estado, dni, sexo } }));
+      setDatos((prev) => (mismaIdentidad({ dni, sexo }, prev) ? { ...prev, consulta: { estado, dni, sexo } } : prev));
       setAvisoConsulta(aviso);
     } finally {
-      if (montado.current) setConsultando(false);
+      if (montado.current && consultaEnCurso.current === pedido) setConsultando(false);
     }
   };
 
@@ -198,15 +223,21 @@ export default function EmergenciaFormulario1Screen({ uuid = null, onTerminar })
     const sexo = normalizeSex(leido.dni_sexo);
     const dni = cleanDigits(leido.dni_numero);
     const conNombre = !!(leido.nombres && leido.apellido);
-    setDatos((prev) => ({
-      ...prev,
-      dni,
-      sexo: ['F', 'M'].includes(sexo) ? sexo : prev.sexo,
-      nombre: leido.nombres || prev.nombre,
-      apellido: leido.apellido || prev.apellido,
-      fecha_nacimiento: leido.fecha_nacimiento || prev.fecha_nacimiento,
-      consulta: conNombre ? { estado: 'escaneado', dni, sexo } : null,
-    }));
+    // Una consulta de identidad en vuelo ya no es de este DNI.
+    consultaEnCurso.current += 1;
+    setConsultando(false);
+    setDatos((prev) => {
+      const sexoFinal = ['F', 'M'].includes(sexo) ? sexo : prev.sexo;
+      return {
+        ...prev,
+        dni,
+        sexo: sexoFinal,
+        nombre: leido.nombres || prev.nombre,
+        apellido: leido.apellido || prev.apellido,
+        fecha_nacimiento: leido.fecha_nacimiento || prev.fecha_nacimiento,
+        consulta: conNombre ? { estado: 'escaneado', dni, sexo: sexoFinal } : null,
+      };
+    });
     setAvisoConsulta(conNombre ? { tono: 'success', texto: 'Datos tomados del DNI.' } : null);
     cerrarScanner();
   };
@@ -219,6 +250,8 @@ export default function EmergenciaFormulario1Screen({ uuid = null, onTerminar })
       const convertido = await aJpeg(asset);
       const temporal = Platform.OS !== 'web' && convertido.uri !== asset.uri;
       const item = await ponerFoto(uuidCliente, campo, convertido, { temporal });
+      // En web, el original del selector ya quedó guardado (data URL): se suelta su File de memoria.
+      if (Platform.OS === 'web' && asset.uri) forgetWebFile(asset.uri);
       if (!montado.current) return;
       setFotos((prev) => ({ ...prev, [campo]: item }));
       setErroresServidor((prev) => {
@@ -294,6 +327,7 @@ export default function EmergenciaFormulario1Screen({ uuid = null, onTerminar })
 
   // ---- Envío ----
   const enviar = async () => {
+    if (enviandoRef.current) return;
     const locales = validarCaso(datos);
     setIntentado(true);
     if (hayErrores(locales)) {
@@ -301,6 +335,7 @@ export default function EmergenciaFormulario1Screen({ uuid = null, onTerminar })
       showToast({ type: 'warning', message: `Falta${cantidad === 1 ? '' : 'n'} ${cantidad} dato${cantidad === 1 ? '' : 's'} para poder enviar.` });
       return;
     }
+    enviandoRef.current = true;
     setEnviando(true);
     try {
       await guardarBorrador(uuidCliente, datos);
@@ -327,6 +362,7 @@ export default function EmergenciaFormulario1Screen({ uuid = null, onTerminar })
       if (e?.errores && montado.current) setIntentado(true);
       if (montado.current) showAlert('No se pudo enviar', e?.message || 'Probá de nuevo.');
     } finally {
+      enviandoRef.current = false;
       if (montado.current) setEnviando(false);
     }
   };
@@ -427,7 +463,7 @@ export default function EmergenciaFormulario1Screen({ uuid = null, onTerminar })
   );
 
   const total = totalDeclarado(datos);
-  const confirmada = personaConfirmada(datos.consulta);
+  const confirmada = personaConfirmada(datos.consulta, datos);
   const sugeridas = filtrarLocalidades(localidades, busquedaLocalidad);
   const conUbicacion = datos.latitud != null && datos.longitud != null;
   const listado = listaDeErrores(errores);
@@ -577,6 +613,7 @@ export default function EmergenciaFormulario1Screen({ uuid = null, onTerminar })
             </View>
           );
         })}
+        {errorCampo(['fotos'])}
 
         <Text style={[etiqueta, styles.separado]}>Observaciones</Text>
         <TextInput value={datos.observaciones} onChangeText={(texto) => cambiar({ observaciones: texto })} multiline

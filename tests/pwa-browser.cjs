@@ -14,7 +14,7 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
 (async () => {
   const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
   try {
-    fs.writeFileSync(entry, original + `\nimport service from './src/services/relevamientoService';\nimport * as api from './src/services/becasApi';\nimport * as emergencia from './src/services/emergenciaCola';\nimport { API_CONFIG } from './src/config/apiConfig';\nwindow.__pwaTest = {service, api, emergencia, config: API_CONFIG};\n`);
+    fs.writeFileSync(entry, original + `\nimport service from './src/services/relevamientoService';\nimport * as api from './src/services/becasApi';\nimport * as emergencia from './src/services/emergenciaCola';\nimport { API_CONFIG } from './src/config/apiConfig';\nimport NetInfo from '@react-native-community/netinfo';\nwindow.__pwaTest = {service, api, emergencia, netinfo: NetInfo, config: API_CONFIG};\n`);
     try {
       run(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['expo','export','--clear','--platform','web','--output-dir','dist-browser']);
       // Runtime setting intentionally differs from the Expo build-time URL.
@@ -172,6 +172,12 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
     assert.equal(offlineM1.localidades,1,'localidades sin red');
     assert.equal(offlineM1.sync.offline,true);
     assert.equal(casos,0);
+    // NetInfo web prueba la red con un HEAD a `/` y guarda el resultado: la prueba hecha sin señal
+    // dice «sin internet» hasta la próxima (5 s o más). En el CI esa ventana dejaba la cola sin salir
+    // (0 envíos). Acá esa prueba falla siempre, para que el escenario no dependa del momento: la
+    // cola tiene que mirar la red del navegador, no ese estado guardado.
+    const sondeoNetInfo=route=>route.request().method()==='HEAD'?route.abort():route.fallback();
+    await context.route('http://localhost:4174/',sondeoNetInfo);
     await context.setOffline(false);
     // Volver la red no es instantáneo para el navegador: se espera a que la app la vea antes de
     // sincronizar, y después se repite la sincronización para comprobar que no se reenvía.
@@ -179,20 +185,27 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
     const onlineM1=await page.evaluate(async uuid=>{
       const cola=window.__pwaTest.emergencia;
       let synced=0;
+      const ni=await window.__pwaTest.netinfo.fetch();
+      const pasadas=[{netinfo:{isConnected:ni.isConnected,isInternetReachable:ni.isInternetReachable,type:ni.type},hasConnection:!!navigator.connection}];
       for(let intento=0;intento<10&&await cola.getPendingCount()>0;intento+=1){
+        const t0=Date.now();
         const sync=await cola.syncPendientes();
+        const e=await cola.getEnvio(uuid);
+        pasadas.push({ms:Date.now()-t0,sync,onLine:navigator.onLine,
+          fila:e&&{status:e.status,retry_count:e.retry_count,next_retry_at:e.next_retry_at,code:e.code,detail:e.detail}});
         synced+=sync.synced||0;
         if(sync.offline) await new Promise(resolve=>setTimeout(resolve,200));
       }
       const otra=await cola.syncPendientes();
-      return {synced,otra,pending:await cola.getPendingCount(),envio:await cola.getEnvio(uuid)};
+      return {synced,otra,pasadas,pending:await cola.getPendingCount(),envio:await cola.getEnvio(uuid)};
     },uuidM1);
-    assert.equal(onlineM1.synced,1,'se envía una vez al volver la red');
+    assert.equal(onlineM1.synced,1,'se envía una vez al volver la red: '+JSON.stringify({pasadas:onlineM1.pasadas,casos}));
     assert.equal(onlineM1.otra.synced,0,'una segunda sincronización no reenvía');
     assert.equal(onlineM1.pending,0);
     assert.equal(onlineM1.envio.estado,'enviado');
     assert.equal(onlineM1.envio.resultado.numero,'2026-000184');
     assert.equal(casos,1,'M1 se envía una sola vez');
+    await context.unroute('http://localhost:4174/',sondeoNetInfo);
     assert.deepEqual(errors,[]);
     console.log('PASS: Emergencia M1 offline -> reload -> online, multipart with photo, single send, cached localidades.');
   } finally {

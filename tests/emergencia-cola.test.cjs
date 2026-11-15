@@ -22,7 +22,9 @@ async function preparar(platform = 'android') {
   const borrados = [];
   const copias = [];
   let existe = () => true;
+  let directorio = [];
   const fs = {
+    readDirectoryAsync: async () => directorio,
     documentDirectory: 'file:///test/', EncodingType: {Base64: 'base64'},
     getInfoAsync: async (uri) => ({exists: existe(uri), size: 2048}),
     copyAsync: async (args) => { copias.push(args); }, makeDirectoryAsync: async () => {},
@@ -34,7 +36,7 @@ async function preparar(platform = 'android') {
   await r.api.loginBecas({username: 'agente', password: 'x'});
   const cola = r.load('./emergenciaCola');
   const perfil = r.load('./emergenciaPerfil');
-  return {r, cola, perfil, borrados, copias, setExiste: (fn) => { existe = fn; }};
+  return {r, cola, perfil, borrados, copias, setExiste: (fn) => { existe = fn; }, setDirectorio: (lista) => { directorio = lista; }};
 }
 
 const router = (r, handler) => {
@@ -139,7 +141,8 @@ test('400 VALIDACION: vuelve a borrador editable con los errores por campo y el 
   const ctx = await preparar();
   const {r, cola, borrados} = ctx;
   const {uuid} = await encolado(ctx);
-  const fotosEncoladas = JSON.parse(op(r).payload_json).fotos;
+  const fotosEncoladas = JSON.parse(op(r).fotos_json);
+  assert.ok(!('fotos' in JSON.parse(op(r).payload_json)), 'las fotos no van en el payload');
   const cuerpo = {total: ['Cargá al menos una persona.'], direccion: ['Escribí la dirección.'],
     detail: 'Cargá al menos una persona.', non_field_errors: ['Cargá al menos una persona.', 'Escribí la dirección.'], code: 'VALIDACION'};
   const calls = router(r, async () => response(400, cuerpo));
@@ -209,7 +212,7 @@ test('429 respeta Retry-After sin gastar reintentos', async () => {
   assert.equal(posts(calls).length, 2); assert.equal(op(r).status, 'DONE');
 });
 
-test('5xx y falta de red reintentan con backoff y el mismo uuid; al agotar, error que se puede reintentar', async () => {
+test('5xx y falta de red reintentan con backoff topeado en 5 min y el mismo uuid; nunca pasan a error', async () => {
   const ctx = await preparar();
   const {r, cola} = ctx;
   const {uuid} = await encolado(ctx, {fotos: false});
@@ -217,6 +220,8 @@ test('5xx y falta de red reintentan con backoff y el mismo uuid; al agotar, erro
   const calls = router(r, async () => {
     if (modo === 'red') throw new TypeError('Failed to fetch');
     if (modo === '503') return response(503, {detail: 'caído'}, {'Retry-After': '600'});
+    if (modo === 'waf') return {status: 403, ok: false, headers: {get: (n) => (String(n).toLowerCase() === 'content-type' ? 'text/html' : null)}, text: async () => '<html>WAF</html>'};
+    if (modo === '429') return response(429, {detail: 'Pará'}, {'Retry-After': '30'});
     return response(201, CREADO);
   });
   await cola.syncPendientes();
@@ -227,18 +232,57 @@ test('5xx y falta de red reintentan con backoff y el mismo uuid; al agotar, erro
   modo = '503'; r.setNow(T0 + 6000);
   await cola.syncPendientes();
   assert.equal(op(r).retry_count, 2);
-  assert.equal(Date.parse(op(r).next_retry_at), T0 + 6000 + 600 * 1000, 'el Retry-After del 5xx manda si es mayor');
+  assert.equal(Date.parse(op(r).next_retry_at), T0 + 6000 + 5 * MIN, 'el Retry-After del 5xx manda, topeado en 5 min');
   let ahora = T0 + 6000;
-  for (let i = 0; i < 10 && op(r).status === 'PENDING'; i += 1) {
-    ahora += 11 * MIN; r.setNow(ahora);
+  const modos = ['red', '503', 'waf', 'red', '503', 'waf', 'red', '503', 'waf', 'red', '503', 'waf', 'red', '503'];
+  for (const m of modos) {
+    modo = m; ahora += 5 * MIN + 1000; r.setNow(ahora);
     await cola.syncPendientes();
+    assert.equal(op(r).status, 'PENDING', `sigue en la cola tras ${m}`);
+    assert.ok(Date.parse(op(r).next_retry_at) - ahora <= 5 * MIN, 'espera topeada en 5 min');
   }
-  assert.equal(op(r).status, 'FAILED_PERMANENT'); assert.equal(op(r).last_error_code, 'REINTENTOS_AGOTADOS');
+  assert.equal(op(r).retry_count, 2 + modos.length);
+  const envio = await cola.getEnvio(uuid);
+  assert.equal(envio.estado, 'pendiente'); assert.equal(envio.demorado, true); assert.equal(envio.puedeReintentar, false);
+  assert.equal(await cola.getPendingCount(), 1);
   assert.ok(new Set(posts(calls).map((c) => campos(c).uuid_cliente)).size === 1);
   assert.equal(campos(posts(calls)[0]).uuid_cliente, uuid);
-  modo = 'ok';
-  const res = await cola.reintentar(uuid);
+  modo = 'ok'; r.setNow(ahora + 5 * MIN + 1000);
+  const res = await cola.syncPendientes();
   assert.equal(res.synced, 1); assert.equal(op(r).status, 'DONE');
+});
+
+test('demorado recién desde el intento INTENTOS_DEMORADO', async () => {
+  const ctx = await preparar();
+  const {r, cola} = ctx;
+  const {uuid} = await encolado(ctx, {fotos: false});
+  router(r, async () => { throw new TypeError('Failed to fetch'); });
+  let ahora = T0;
+  for (let i = 1; i <= cola.INTENTOS_DEMORADO; i += 1) {
+    await cola.syncPendientes();
+    assert.equal((await cola.getEnvio(uuid)).demorado, i >= cola.INTENTOS_DEMORADO, `intento ${i}`);
+    ahora += 6 * MIN; r.setNow(ahora);
+  }
+});
+
+test('timeout del envío proporcional al multipart, con tope', async () => {
+  const ctx = await preparar();
+  const {r, cola} = ctx;
+  assert.equal(cola.timeoutDelEnvio(0), 90 * 1000);
+  assert.equal(cola.timeoutDelEnvio(2 * 1024 * 1024), 130 * 1000);
+  assert.equal(cola.timeoutDelEnvio(100 * 1024 * 1024), cola.ENVIO_TIMEOUT_MAX_MS);
+  // El envío real usa el tamaño de sus fotos; uno que cuelga se corta y sigue en la cola.
+  await encolado(ctx);
+  const tiempos = [];
+  const realSetTimeout = setTimeout;
+  r.setGlobal('setTimeout', (fn, ms, ...a) => { tiempos.push(ms); return realSetTimeout(fn, 0, ...a); });
+  router(r, async () => new Promise(() => {}));
+  await cola.syncPendientes();
+  r.setGlobal('setTimeout', realSetTimeout);
+  const fotos = Object.values(JSON.parse(op(r).fotos_json)).reduce((n, f) => n + f.size, 0);
+  assert.ok(fotos > 0);
+  assert.ok(tiempos.includes(cola.timeoutDelEnvio(fotos)), JSON.stringify(tiempos));
+  assert.equal(op(r).status, 'PENDING'); assert.equal(op(r).retry_count, 1);
 });
 
 test('timeout del pedido reintenta (no es un rechazo)', async () => {
@@ -262,7 +306,10 @@ test('rescata una IN_FLIGHT colgada (proceso muerto) y no toca una reciente', as
   await cola.syncPendientes();
   assert.equal(posts(calls).length, 0, 'reciente: puede seguir en vuelo');
   assert.equal(await cola.getPendingCount(), 1);
-  r.setNow(T0 + 3 * MIN);
+  r.setNow(T0 + 4 * MIN);
+  await cola.syncPendientes();
+  assert.equal(posts(calls).length, 0, 'a los 4 min un envío grande puede seguir subiendo');
+  r.setNow(T0 + 6 * MIN);
   await cola.syncPendientes();
   assert.equal(posts(calls).length, 1);
   assert.equal(op(r).status, 'DONE');
@@ -309,7 +356,7 @@ test('una foto que ya no está en el teléfono devuelve el envío a borrador con
   const ctx = await preparar();
   const {r, cola} = ctx;
   const {uuid} = await encolado(ctx);
-  const acceso = JSON.parse(op(r).payload_json).fotos.foto_acceso.uri;
+  const acceso = JSON.parse(op(r).fotos_json).foto_acceso.uri;
   ctx.setExiste((uri) => uri !== acceso);
   const calls = router(r, async () => response(201, CREADO));
   await cola.syncPendientes();
@@ -420,4 +467,226 @@ test('lo de otro usuario no se ve ni se envía', async () => {
   const calls = router(r, async () => response(201, CREADO));
   await cola.syncPendientes();
   assert.equal(posts(calls).length, 0);
+});
+
+// ---- Sesión de la pasada (M-1) ----
+
+test('una pasada de A no manda nada con el token de B: logout y login de B a mitad de la pasada', async () => {
+  const ctx = await preparar();
+  const {r, cola} = ctx;
+  await encolado(ctx);
+  await encolado(ctx);
+  // A la mitad del primer envío (mientras se revisan sus fotos, antes de armar el multipart) A
+  // cierra sesión y entra B en el mismo teléfono.
+  let cambiada = false;
+  ctx.setExiste(() => {
+    if (!cambiada) {
+      cambiada = true;
+      r.values.set('becas_auth_token', 'tok-B');
+      r.values.set('user_data', JSON.stringify({id: 8}));
+    }
+    return true;
+  });
+  const calls = router(r, async () => response(201, CREADO));
+  await cola.syncPendientes();
+  assert.ok(cambiada);
+  const tokens = posts(calls).map((c) => c.init.headers.Authorization);
+  assert.ok(tokens.length <= 1, 'la pasada se corta: el segundo de A no sale');
+  assert.ok(tokens.every((t) => t === 'Token tok'), `ningún envío de A con el token de B: ${tokens}`);
+  const filas = r.sql.prepare('SELECT status FROM outbox_casos ORDER BY rowid').all().map((f) => f.status);
+  assert.ok(!filas.includes('IN_FLIGHT'), 'nada queda colgado en vuelo');
+  assert.equal(filas.filter((f) => f === 'PENDING').length, 2 - tokens.length);
+  // B no ve ni manda lo de A.
+  await cola.syncPendientes();
+  assert.ok(posts(calls).every((c) => c.init.headers.Authorization === 'Token tok'));
+});
+
+test('un 401 de un envío de A no borra la sesión de B que entró mientras tanto', async () => {
+  const ctx = await preparar();
+  const {r, cola} = ctx;
+  await encolado(ctx, {fotos: false});
+  router(r, async () => {
+    r.values.set('becas_auth_token', 'tok-B');
+    r.values.set('user_data', JSON.stringify({id: 8}));
+    return response(401, {detail: 'Invalid token.'});
+  });
+  await cola.syncPendientes();
+  assert.equal(await r.api.getBecasToken(), 'tok-B');
+});
+
+test('uploadMultipart con `token` explícito usa ese y no relee la sesión', async () => {
+  const {r} = await preparar();
+  const pedidos = [];
+  r.setFetch(async (url, init) => { pedidos.push(init); return response(401, {detail: 'x'}); });
+  await assert.rejects(r.api.uploadMultipart('/x/', {fields: {a: 1}, token: 'tok-viejo'}), (e) => e.status === 401);
+  assert.equal(pedidos[0].headers.Authorization, 'Token tok-viejo');
+  assert.equal(await r.api.getBecasToken(), 'tok', 'el 401 de otro token no borra la sesión actual');
+  await assert.rejects(r.api.uploadMultipart('/x/', {fields: {a: 1}}), (e) => e.status === 401);
+  assert.equal(pedidos[1].headers.Authorization, 'Token tok', 'sin `token`, lo de siempre');
+  assert.equal(await r.api.getBecasToken(), null);
+});
+
+// ---- Fotos fuera de las listas (M-4) ----
+
+const espiarConsultas = (r) => {
+  const consultas = [];
+  const prepare = r.sql.prepare.bind(r.sql);
+  r.sql.prepare = (q) => { consultas.push(q); return prepare(q); };
+  return {consultas, soltar: () => { r.sql.prepare = prepare; }};
+};
+const leeFotos = (q) => /SELECT\s+\*/i.test(q) || q.replace("(fotos_json <> '{}')", '').includes('fotos_json');
+
+test('contar, listar y sincronizar sin red no leen las fotos ni la cola', async () => {
+  const ctx = await preparar('web');
+  const {r, cola} = ctx;
+  const b = await cola.abrirBorrador();
+  const file = new File([new Uint8Array(4096).fill(7)], 'v.jpg', {type: 'image/jpeg'});
+  r.load('./webAttachments').rememberWebFile({uri: 'blob:https://app.test/9', file});
+  await cola.ponerFoto(b.uuid_cliente, 'foto_vivienda', {uri: 'blob:https://app.test/9', file, fileName: 'v.jpg', mimeType: 'image/jpeg', size: file.size});
+  r.setOnline(false);
+  await cola.encolarCaso(b.uuid_cliente, {datos: FORMULARIO}, {sincronizar: false});
+  assert.match(op(r).fotos_json, /data:image\/jpeg;base64,/);
+  assert.ok(!op(r).payload_json.includes('data:image'), 'el payload no lleva fotos');
+  const espia = espiarConsultas(r);
+  try {
+    assert.equal(await cola.getPendingCount(), 1);
+    assert.equal((await cola.getEnviosLocales()).length, 1);
+    assert.deepEqual({...await cola.getResumenPendientes()}, {enCola: 1, paraRevisar: 0, sinTerminar: 0});
+  } finally { espia.soltar(); }
+  assert.deepEqual(espia.consultas.filter(leeFotos), []);
+  const espiaSync = espiarConsultas(r);
+  try {
+    const sync = await cola.syncPendientes();
+    assert.equal(sync.offline, true); assert.equal(sync.skipped, 1);
+  } finally { espiaSync.soltar(); }
+  assert.ok(!espiaSync.consultas.some((q) => q.includes('payload_json') || q.includes('fotos_json')), 'sin red ni se lee la cola');
+});
+
+for (const plataforma of ['android', 'web']) {
+  test(`${plataforma}: lo entregado queda una semana sin fotos`, async () => {
+    const ctx = await preparar(plataforma);
+    const {r, cola} = ctx;
+    if (plataforma === 'web') {
+      const b = await cola.abrirBorrador();
+      await cola.guardarBorrador(b.uuid_cliente, {...b.datos, ...FORMULARIO});
+      const file = new File([new Uint8Array([0xff, 0xd8, 0xff, 1])], 'v.jpg', {type: 'image/jpeg'});
+      r.load('./webAttachments').rememberWebFile({uri: 'blob:https://app.test/2', file});
+      await cola.ponerFoto(b.uuid_cliente, 'foto_vivienda', {uri: 'blob:https://app.test/2', file, fileName: 'v.jpg', mimeType: 'image/jpeg', size: 4});
+      r.setOnline(false);
+      await cola.encolarCaso(b.uuid_cliente, {relevadoEn: new Date(T0)});
+      r.setOnline(true);
+    } else {
+      await encolado(ctx);
+    }
+    assert.notEqual(op(r).fotos_json, '{}');
+    router(r, async () => response(201, CREADO));
+    await cola.syncPendientes();
+    assert.equal(op(r).status, 'DONE');
+    assert.equal(op(r).fotos_json, '{}');
+    assert.ok(!op(r).payload_json.includes('fotos') && !op(r).payload_json.includes('data:image'));
+  });
+}
+
+test('una base de prueba con las fotos dentro del payload se separa al abrirla', async () => {
+  const ctx = await preparar();
+  const {r, cola} = ctx;
+  r.sql.exec(`CREATE TABLE outbox_casos (op_id TEXT PRIMARY KEY NOT NULL, owner_user_id TEXT NOT NULL,
+    uuid_cliente TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'PENDING', payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL, started_at TEXT, ack_at TEXT, retry_count INTEGER NOT NULL DEFAULT 0, next_retry_at TEXT,
+    last_error TEXT, last_error_code TEXT, last_error_json TEXT, resultado_json TEXT, updated_at TEXT NOT NULL)`);
+  const foto = {uri: 'file:///test/attachments/emergencia/v.jpg', fileName: 'v.jpg', mimeType: 'image/jpeg', size: 10};
+  r.sql.prepare(`INSERT INTO outbox_casos (op_id, owner_user_id, uuid_cliente, payload_json, created_at, updated_at)
+    VALUES ('o1', '7', 'u1', ?, 'x', 'x')`).run(JSON.stringify({uuid_cliente: 'u1', datos: {uuid_cliente: 'u1', traslado: 'BOMBEROS', dni: '30111222', direccion: 'a', adultos_f: 1}, formulario: FORMULARIO, fotos: {foto_vivienda: foto}}));
+  assert.equal(await cola.getPendingCount(), 1);
+  const fila = op(r);
+  assert.deepEqual(JSON.parse(fila.fotos_json), {foto_vivienda: foto});
+  assert.ok(!('fotos' in JSON.parse(fila.payload_json)));
+  const calls = router(r, async () => response(201, CREADO));
+  await cola.syncPendientes();
+  assert.ok(campos(posts(calls)[0]).foto_vivienda, 'la foto sigue saliendo');
+});
+
+test('nativo: al abrir la cola se borran las fotos de la carpeta que ninguna fila nombra', async () => {
+  const ctx = await preparar();
+  const {r, cola, borrados} = ctx;
+  r.sql.exec(`CREATE TABLE borradores_casos (uuid_cliente TEXT PRIMARY KEY NOT NULL, owner_user_id TEXT NOT NULL,
+    datos_json TEXT NOT NULL, fotos_json TEXT NOT NULL DEFAULT '{}', errores_json TEXT, error_code TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
+  r.sql.prepare(`INSERT INTO borradores_casos VALUES ('b1', '9', '{}', ?, NULL, NULL, 'x', 'x')`)
+    .run(JSON.stringify({foto_acceso: {uri: 'file:///test/attachments/emergencia/de-otro-usuario.jpg'}}));
+  ctx.setDirectorio(['de-otro-usuario.jpg', 'huerfana.jpg']);
+  await cola.getPendingCount();
+  assert.ok(borrados.includes('file:///test/attachments/emergencia/huerfana.jpg'));
+  assert.ok(!borrados.includes('file:///test/attachments/emergencia/de-otro-usuario.jpg'), 'la de otro usuario se respeta');
+});
+
+// ---- Borrador en curso y resumen para el logout (m-2, m-3) ----
+
+test('borrador en curso: vacío no cuenta; con datos o fotos sí, con su resumen', async () => {
+  const ctx = await preparar();
+  const {cola} = ctx;
+  assert.equal(await cola.getBorradorEnCurso(), null);
+  const b = await cola.abrirBorrador();
+  assert.equal(await cola.getBorradorEnCurso(), null, 'abierto y vacío');
+  await cola.guardarBorrador(b.uuid_cliente, {...b.datos, apellido: 'Benitez', dni: '30111222'});
+  const enCurso = await cola.getBorradorEnCurso();
+  assert.equal(enCurso.uuid_cliente, b.uuid_cliente);
+  assert.equal(enCurso.resumen, 'Benitez · DNI 30111222');
+  assert.deepEqual({...await cola.getResumenPendientes()}, {enCola: 0, paraRevisar: 0, sinTerminar: 1});
+  await cola.guardarBorrador(b.uuid_cliente, b.datos);
+  await cola.ponerFoto(b.uuid_cliente, 'foto_acceso', jpeg('a.jpg'));
+  assert.ok(await cola.getBorradorEnCurso(), 'solo una foto también');
+});
+
+test('resumen de pendientes: en cola, para revisar (error y para corregir) y sin terminar', async () => {
+  const ctx = await preparar();
+  const {r, cola} = ctx;
+  await encolado(ctx, {fotos: false});
+  await encolado(ctx, {fotos: false});
+  await encolado(ctx, {fotos: false});
+  let n = 0;
+  router(r, async () => {
+    n += 1;
+    if (n === 1) return response(404, {detail: 'No'});
+    if (n === 2) return response(400, {direccion: ['Mal.'], code: 'VALIDACION'});
+    throw new TypeError('Failed to fetch');
+  });
+  await cola.syncPendientes();
+  assert.deepEqual({...await cola.getResumenPendientes()}, {enCola: 1, paraRevisar: 2, sinTerminar: 0});
+  assert.equal(await cola.getPendingCount(), 3);
+});
+
+test('ponerFoto libera la salida de aJpeg aunque no haya sesión o el campo no exista', async () => {
+  const ctx = await preparar('web');
+  const {r, cola} = ctx;
+  const jpegUtil = r.load('../utils/jpeg');
+  const b = await cola.abrirBorrador();
+  const liberadas = [];
+  const original = jpegUtil.liberarJpeg;
+  jpegUtil.liberarJpeg = (asset) => { liberadas.push(asset.uri); return original(asset); };
+  try {
+    await assert.rejects(cola.ponerFoto(b.uuid_cliente, 'foto_x', {uri: 'blob:x1'}), (e) => e.code === 'FOTO_INVALIDA');
+    r.values.delete('user_data');
+    await assert.rejects(cola.ponerFoto(b.uuid_cliente, 'foto_acceso', {uri: 'blob:x2'}), (e) => e.code === 'SIN_SESION');
+  } finally { jpegUtil.liberarJpeg = original; }
+  assert.deepEqual(liberadas, ['blob:x1', 'blob:x2']);
+});
+
+test('web: la red la dice navigator.onLine, no el estado guardado de NetInfo (CI de Playwright)', async () => {
+  const ctx = await preparar('web');
+  const {r, cola} = ctx;
+  const b = await cola.abrirBorrador();
+  r.setOnline(false);
+  await cola.encolarCaso(b.uuid_cliente, {datos: FORMULARIO}, {sincronizar: false});
+  // Volvió la red, pero NetInfo web sigue con su prueba de `/` hecha sin señal.
+  r.setNavigator({onLine: true});
+  const calls = router(r, async () => response(201, CREADO));
+  assert.equal((await cola.syncPendientes()).synced, 1);
+  assert.equal(posts(calls).length, 1);
+  // Y al revés: sin red para el navegador no se intenta aunque NetInfo diga que hay.
+  const otro = await cola.abrirBorrador();
+  await cola.encolarCaso(otro.uuid_cliente, {datos: FORMULARIO}, {sincronizar: false});
+  r.setOnline(true); r.setNavigator({onLine: false});
+  assert.equal((await cola.syncPendientes()).offline, true);
+  assert.equal(posts(calls).length, 1);
 });

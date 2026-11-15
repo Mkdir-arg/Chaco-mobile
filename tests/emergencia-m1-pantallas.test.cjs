@@ -128,7 +128,9 @@ async function montarFormulario({borrador, encolar, consultar, props = {}, jpeg}
   const conversiones = [];
   const ubicacion = {pedidos: 0};
   const terminados = [];
+  const olvidados = [];
   Object.assign(mocks, {
+    '../services/webAttachments': {forgetWebFile: (uri) => { olvidados.push(uri); return true; }},
     'expo-location': {requestForegroundPermissionsAsync: async () => ({status: 'granted'}), Accuracy: {High: 4}},
     '../services/imagePicker': {
       requestCameraPermissionsAsync: async () => ({granted: true}),
@@ -142,7 +144,7 @@ async function montarFormulario({borrador, encolar, consultar, props = {}, jpeg}
   });
   const Screen = loadScreen('src/screens/EmergenciaFormulario1Screen.js', mocks);
   const ui = await render(Screen, {onTerminar: (r) => terminados.push(r), ...props});
-  return {...ui, cola, toasts, alerts, consultas, conversiones, ubicacion, terminados, emergencia};
+  return {...ui, cola, toasts, alerts, consultas, conversiones, ubicacion, terminados, emergencia, olvidados};
 }
 
 const COMPLETO = {traslado: 'BOMBEROS', dni: '30111222', sexo: 'F', nombre: 'Rosa', apellido: 'Benitez', adultos_f: 1, direccion: 'Calle 1'};
@@ -413,9 +415,9 @@ test('Mis envíos: sin red muestra la lista guardada con aviso', async () => {
 
 // ---- EmergenciaApp ----
 
-async function montarApp({pendientes = 0} = {}) {
+async function montarApp({pendientes = 0, resumen = null, enCurso = null, sync = null, reintento = null} = {}) {
   const {mocks, toasts, alerts} = await baseMocks();
-  const llamadas = {sync: 0, logout: 0, reintentar: 0, localidades: 0, intervalos: [], limpiados: [], desuscripto: 0};
+  const llamadas = {sync: 0, logout: 0, reintentar: 0, localidades: 0, intervalos: [], limpiados: [], desuscripto: 0, descartados: [], orden: []};
   const pantallas = {};
   const capturar = nombre => props => { pantallas[nombre] = props; return null; };
   Object.assign(mocks, {
@@ -427,9 +429,12 @@ async function montarApp({pendientes = 0} = {}) {
     '../screens/EmergenciaMisEnviosScreen': {__esModule: true, default: capturar('envios')},
     '../screens/EmergenciaFormulario1Screen': {__esModule: true, default: capturar('formulario')},
     '../services/emergenciaCola': {
-      syncPendientes: async () => { llamadas.sync += 1; return {synced: 0}; },
+      syncPendientes: async () => { llamadas.sync += 1; llamadas.orden.push('sync'); return sync ? sync() : {synced: 0}; },
       getPendingCount: async () => pendientes,
-      reintentar: async () => { llamadas.reintentar += 1; return {synced: 1, failed: 0}; },
+      getResumenPendientes: async () => resumen || {enCola: pendientes, paraRevisar: 0, sinTerminar: 0},
+      getBorradorEnCurso: async () => enCurso,
+      descartar: async (uuid) => { llamadas.descartados.push(uuid); return true; },
+      reintentar: async () => { llamadas.reintentar += 1; llamadas.orden.push('reintentar'); return reintento ? reintento() : {synced: 1, failed: 0}; },
       getLocalidadesGuardadas: async () => { llamadas.localidades += 1; return {localidades: []}; },
     },
   });
@@ -480,7 +485,7 @@ test('EmergenciaApp: cerrar sesión con familias sin entregar avisa antes de sal
     assert.equal(ui.llamadas.logout, 0);
     const [titulo, mensaje, opciones] = ui.alerts.at(-1);
     assert.equal(titulo, 'Cerrar sesión');
-    assert.equal(mensaje, 'Tenés 3 envíos sin sincronizar; se van a enviar cuando vuelvas a entrar con este usuario.');
+    assert.equal(mensaje, '3 familias en cola: se envían solas cuando vuelvas a entrar con este usuario.');
     opciones.find(o => o.text === 'Salir').onPress();
     assert.equal(ui.llamadas.logout, 1);
   } finally { await ui.close(); }
@@ -497,5 +502,203 @@ test('EmergenciaApp: el botón de sincronizar reintenta lo pendiente', async () 
     await renderer.act(async () => { await ui.tree.root.findByType('Banner').props.onSyncPress(); });
     assert.equal(ui.llamadas.reintentar, 1);
     assert.equal(ui.toasts.at(-1).message, 'Se enviaron 1.');
+  } finally { await ui.close(); }
+});
+
+// ---- Revisión M1: identidad, doble envío, fotos, demorado, logout, borrador en curso, sync manual ----
+
+const diferida = () => {
+  let resolver;
+  let rechazar;
+  const promesa = new Promise((res, rej) => { resolver = res; rechazar = rej; });
+  return {promesa, resolver, rechazar};
+};
+
+test('Formulario 1: una consulta lenta no confirma a otra persona si cambió el DNI o el sexo', async () => {
+  const pedidos = [];
+  const ui = await montarFormulario({consultar: () => { const d = diferida(); pedidos.push(d); return d.promesa; }});
+  // Sin esperar: la consulta queda en vuelo hasta que el test la resuelve.
+  const disparar = async (u, titulo) => renderer.act(async () => { u.button(titulo).props.onPress(); await esperar(); });
+  try {
+    await ui.escribir('DNI del responsable', '30111222');
+    await ui.press('Sexo: Femenino');
+    await disparar(ui, 'Buscar persona');
+    assert.equal(pedidos.length, 1);
+    await ui.escribir('DNI del responsable', '30111223');
+    await renderer.act(async () => { pedidos[0].resolver({success: true, data: {nombre: 'Rosa', apellido: 'Benitez'}}); await esperar(); });
+    assert.equal(ui.input('Nombre').props.value, '', 'no completa con los datos de otro DNI');
+    assert.ok(ui.labels().includes('Nombre *'), 'sigue pidiendo nombre');
+    assert.ok(!ui.labels().some(l => l.startsWith('Encontramos')));
+    assert.equal(ui.button('Buscar persona').props.loading, false);
+
+    // Mismo DNI, otro sexo: tampoco.
+    await disparar(ui, 'Buscar persona');
+    await ui.press('Sexo: Masculino');
+    await renderer.act(async () => { pedidos[1].resolver({success: true, data: {nombre: 'Rosa', apellido: 'Benitez'}}); await esperar(); });
+    assert.ok(ui.labels().includes('Nombre *'));
+    // Un 404 tardío tampoco marca nada.
+    await disparar(ui, 'Buscar persona');
+    await ui.escribir('DNI del responsable', '30111224');
+    await renderer.act(async () => { pedidos[2].rechazar(Object.assign(new Error('No'), {status: 404, payload: {}})); await esperar(); });
+    assert.ok(!ui.labels().includes('No figura en la Base de Personas: cargá nombre y apellido para darla de alta.'));
+
+    // Dos pedidos seguidos del mismo DNI: vale el último.
+    await disparar(ui, 'Buscar persona');
+    await disparar(ui, 'Buscar persona');
+    await renderer.act(async () => { pedidos[4].resolver({success: true, data: {nombre: 'Juan', apellido: 'Paz'}}); await esperar(); });
+    await renderer.act(async () => { pedidos[3].resolver({success: true, data: {nombre: 'Viejo', apellido: 'Lento'}}); await esperar(); });
+    assert.equal(ui.input('Nombre').props.value, 'Juan');
+    assert.ok(ui.labels().includes('Nombre'), 'confirmada para el DNI y sexo actuales');
+    // La confirmación que se guarda dice de quién es.
+    await ui.press('Traslado: Bomberos');
+    await ui.press('Sumar Adultos · Varones');
+    await ui.escribir('Dirección o referencia', 'Calle 1');
+    await ui.pressButton('Enviar');
+    const [, {datos}] = ui.cola.calls.encolados[0];
+    assert.deepEqual({...datos.consulta}, {estado: 'encontrada', dni: '30111224', sexo: 'M'});
+  } finally { await ui.close(); }
+});
+
+test('Formulario 1: un segundo toque en «Enviar» mientras se envía no hace nada', async () => {
+  const pendiente = diferida();
+  const ui = await montarFormulario({borrador: {datos: COMPLETO}, encolar: () => pendiente.promesa});
+  try {
+    const enviar = ui.button('Enviar');
+    await renderer.act(async () => { enviar.props.onPress(); enviar.props.onPress(); await esperar(); });
+    await renderer.act(async () => { await ui.button('Enviar').props.onPress(); });
+    assert.equal(ui.cola.calls.encolados.length, 1);
+    await renderer.act(async () => { pendiente.resolver({uuid_cliente: 'uuid-1', envio: {estado: 'pendiente'}}); await esperar(); });
+    assert.equal(ui.alerts.length, 0, 'sin alert de UNIQUE ni de nada');
+    assert.equal(ui.terminados.length, 1);
+  } finally { await ui.close(); }
+});
+
+test('Formulario 1: un error de `fotos` del servidor se muestra en la sección de fotos', async () => {
+  const ui = await montarFormulario({props: {uuid: 'u'}, borrador: {uuid_cliente: 'u', nuevo: false, datos: COMPLETO,
+    errores: {fotos: ['Mandá las fotos en JPEG.']}}});
+  try {
+    assert.ok(ui.labels().includes('• Fotos: Mandá las fotos en JPEG.'));
+    assert.ok(ui.labels().includes('Mandá las fotos en JPEG.'), 'también junto a las fotos');
+  } finally { await ui.close(); }
+});
+
+test('Formulario 1 web: tras guardar la foto se suelta el File del selector', async () => {
+  plataforma.OS = 'web';
+  try {
+    const ui = await montarFormulario({jpeg: async (asset) => ({...asset, uri: 'blob:https://app.test/jpeg', mimeType: 'image/jpeg'})});
+    try {
+      await ui.pressButton('Agregar foto de la vivienda');
+      await renderer.act(async () => { await ui.alerts.at(-1)[2].find(o => o.text === 'Galería').onPress(); });
+      assert.equal(ui.cola.calls.fotos.length, 1);
+      assert.deepEqual(ui.olvidados, ['file:///cache/galeria.png']);
+    } finally { await ui.close(); }
+  } finally { plataforma.OS = 'android'; }
+});
+
+test('Mis envíos: un envío demorado lo dice, y sigue sin botón de reintentar', async () => {
+  const ui = await montarMisEnvios({locales: [local({uuid_cliente: 'd', estado: 'pendiente', demorado: true, retry_count: 4})]});
+  try {
+    assert.ok(ui.labels().includes('Demorado'));
+    assert.ok(ui.labels().some(l => l.startsWith('Lleva varios intentos sin poder enviarse')));
+    assert.ok(!ui.tree.root.findAllByType('CustomButton').some(b => b.props.title === 'Reintentar'));
+  } finally { await ui.close(); }
+});
+
+test('Mis envíos: cuando la sincronización de fondo entregó algo, se vuelve a pedir «Recibidos»', async () => {
+  const {mocks} = await baseMocks();
+  const cola = colaFalsa();
+  let pedidos = 0;
+  cola.getMisEnvios = async () => { pedidos += 1; return {casos: pedidos > 1 ? [{numero: '2026-000190', estado: 'NUEVO', total_declarado: 1}] : []}; };
+  mocks['../services/emergenciaCola'] = cola;
+  const Screen = loadScreen('src/screens/EmergenciaMisEnviosScreen.js', mocks);
+  let tree;
+  await renderer.act(async () => { tree = renderer.create(React.createElement(Screen, {syncTick: 0, enviadosTick: 0})); await esperar(); });
+  assert.equal(pedidos, 1);
+  await renderer.act(async () => { tree.update(React.createElement(Screen, {syncTick: 1, enviadosTick: 0})); await esperar(); });
+  assert.equal(pedidos, 1, 'una pasada sin entregas solo relee lo local');
+  await renderer.act(async () => { tree.update(React.createElement(Screen, {syncTick: 2, enviadosTick: 1})); await esperar(); });
+  assert.equal(pedidos, 2);
+  assert.ok(tree.root.findAllByType('Text').map(text).includes('Caso 2026-000190'));
+  await renderer.act(async () => tree.unmount());
+});
+
+test('aviso de salida: separa en cola, para revisar y sin terminar, con plurales', async () => {
+  const {runtime} = await baseMocks();
+  const {avisoDeSalida} = runtime.load('../utils/emergencia');
+  assert.equal(avisoDeSalida({}), null);
+  assert.equal(avisoDeSalida({enCola: 1}), '1 familia en cola: se envía sola cuando vuelvas a entrar con este usuario.');
+  assert.equal(avisoDeSalida({paraRevisar: 1}),
+    '1 envío para revisar (con error o para corregir): no sale solo; revisalo en «Mis envíos» cuando vuelvas a entrar.');
+  assert.equal(avisoDeSalida({enCola: 2, paraRevisar: 3, sinTerminar: 1}), [
+    '2 familias en cola: se envían solas cuando vuelvas a entrar con este usuario.',
+    '3 envíos para revisar (con error o para corregir): no salen solos; revisalos en «Mis envíos» cuando vuelvas a entrar.',
+    'Un formulario sin terminar: queda guardado en el teléfono para cuando vuelvas a entrar.'].join('\n'));
+});
+
+test('EmergenciaApp: cerrar sesión con solo un formulario sin terminar también avisa', async () => {
+  const ui = await montarApp({resumen: {enCola: 0, paraRevisar: 1, sinTerminar: 1}});
+  try {
+    await renderer.act(async () => { await ui.tree.root.findByType('SettingsPanel').props.onLogout(); });
+    assert.equal(ui.llamadas.logout, 0);
+    const [, mensaje] = ui.alerts.at(-1);
+    assert.ok(mensaje.includes('1 envío para revisar') && mensaje.includes('Un formulario sin terminar'));
+    assert.ok(!mensaje.includes('en cola'));
+  } finally { await ui.close(); }
+});
+
+test('EmergenciaApp: «Relevar una familia» con un borrador en curso pregunta; empezar otra descarta con confirmación', async () => {
+  const ui = await montarApp({enCurso: {uuid_cliente: 'b-1', resumen: 'Benitez · DNI 30111222'}});
+  try {
+    await renderer.act(async () => { ui.pantallas.inicio.onAbrir({clave: 'relevar', titulo: 'Ingreso de familias'}); });
+    await renderer.act(async () => { await ui.pantallas.envios.onNuevo(); });
+    const [titulo, mensaje, opciones] = ui.alerts.at(-1);
+    assert.equal(titulo, 'Formulario sin terminar');
+    assert.ok(mensaje.includes('«Benitez · DNI 30111222»'));
+    assert.deepEqual([...opciones.map(o => o.text)], ['Seguir con ese', 'Empezar otra', 'Cancelar']);
+    assert.equal(ui.tree.root.findByType('Banner').props.title, 'Ingreso de familias', 'no abre en silencio');
+    await renderer.act(async () => { opciones.find(o => o.text === 'Seguir con ese').onPress(); });
+    assert.equal(ui.pantallas.formulario.uuid, 'b-1');
+    await renderer.act(async () => { ui.pantallas.formulario.onTerminar(); });
+
+    await renderer.act(async () => { await ui.pantallas.envios.onNuevo(); });
+    await renderer.act(async () => { ui.alerts.at(-1)[2].find(o => o.text === 'Empezar otra').onPress(); });
+    const [titulo2, , confirmar] = ui.alerts.at(-1);
+    assert.equal(titulo2, 'Empezar otra familia');
+    assert.deepEqual(ui.llamadas.descartados, [], 'no descarta sin confirmar');
+    await renderer.act(async () => { await confirmar.find(o => o.text === 'Descartar y empezar').onPress(); });
+    assert.deepEqual(ui.llamadas.descartados, ['b-1']);
+    assert.equal(ui.tree.root.findByType('Banner').props.title, 'Relevar una familia');
+    assert.equal(ui.pantallas.formulario.uuid, null);
+  } finally { await ui.close(); }
+  const sinBorrador = await montarApp();
+  try {
+    await renderer.act(async () => { sinBorrador.pantallas.inicio.onAbrir({clave: 'relevar', titulo: 'Ingreso de familias'}); });
+    await renderer.act(async () => { await sinBorrador.pantallas.envios.onNuevo(); });
+    assert.equal(sinBorrador.tree.root.findByType('Banner').props.title, 'Relevar una familia');
+    assert.equal(sinBorrador.alerts.length, 0);
+  } finally { await sinBorrador.close(); }
+});
+
+test('EmergenciaApp: el sync manual con una pasada de fondo en curso la espera, reintenta y muestra el resultado', async () => {
+  const fondo = diferida();
+  let primera = true;
+  const ui = await montarApp({pendientes: 1, sync: () => { if (primera) { primera = false; return fondo.promesa; } return {synced: 0}; },
+    reintento: () => ({synced: 1, failed: 0})});
+  try {
+    let manual;
+    await renderer.act(async () => { manual = ui.tree.root.findByType('Banner').props.onSyncPress(); await esperar(); });
+    assert.equal(ui.llamadas.reintentar, 0, 'espera a la pasada de fondo');
+    assert.equal(ui.tree.root.findByType('Banner').props.syncStatus, 'syncing');
+    await renderer.act(async () => { fondo.resolver({synced: 0}); await manual; });
+    assert.deepEqual(ui.llamadas.orden, ['sync', 'reintentar']);
+    assert.equal(ui.toasts.at(-1).message, 'Se enviaron 1.');
+  } finally { await ui.close(); }
+});
+
+test('EmergenciaApp: una pasada de fondo que entregó algo avisa a «Mis envíos»', async () => {
+  const ui = await montarApp({sync: () => ({synced: 1, failed: 0})});
+  try {
+    await renderer.act(async () => { ui.pantallas.inicio.onAbrir({clave: 'relevar', titulo: 'Ingreso de familias'}); });
+    assert.ok(ui.pantallas.envios.enviadosTick >= 1);
   } finally { await ui.close(); }
 });
