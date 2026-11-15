@@ -538,7 +538,7 @@ test('Recibir incierto: nada se cambia (ni la foto), no hay «Descartar» ni ant
   try {
     await ui.sacarRemito();
     await ui.pressButton('Recibir');
-    assert.ok(ui.labels().includes('Ya mandaste esta recepción y no se pudo confirmar si llegó. Nada se puede cambiar: «Reintentar» manda la misma (no hace falta volver a sacar la foto) y no se duplica.'));
+    assert.ok(ui.labels().some(l => l.startsWith('Ya mandaste esta recepción y no se pudo confirmar si llegó. Nada se puede cambiar: «Reintentar» manda la misma (no hace falta volver a sacar la foto) y no se duplica.')));
     assert.equal(ui.button('Cambiar').props.disabled, true, 'la foto tampoco se cambia');
     assert.equal(ui.pressables().find(p => p.props.accessibilityLabel === 'Quitar foto del remito').props.disabled, true);
     await ui.pressButton('Reintentar');
@@ -565,8 +565,9 @@ test('Recibir incierto recuperado: el reintento sale sin foto (§12 no la pide c
     runtime.setFetch(fallaDeRed);
     await previo.enviarRecepcion({entrega, recepcion: r, cantidades: {12: '9', 14: '3'}, remito: {uri: 'file:///r.jpg', fileName: 'r.jpg'}}).catch(() => {});
     runtime.setFetch(async (url, init = {}) => {
-      const call = {url: String(url).replace('https://example.test', ''), method: init.method || 'GET', init};
-      return response(200, {estado: 'RECIBIDA_CON_DIFERENCIAS', diferencias: [{item: 12, enviada: 10, recibida: 9}]}, {}, call);
+      // La verificación automática (§11) no consigue respuesta: sigue incierta.
+      if ((init.method || 'GET') === 'GET') return fallaDeRed();
+      return response(200, {estado: 'RECIBIDA_CON_DIFERENCIAS', diferencias: [{item: 12, enviada: 10, recibida: 9}]});
     });
   }});
   try {
@@ -670,5 +671,81 @@ test('Mis dispositivos: con `entrarDirecto={false}` (vuelta por 404) no entra so
   try {
     assert.deepEqual(elegidos, []);
     assert.equal(ui.pressables().length, 1);
+  } finally { await ui.close(); }
+});
+
+// ---- Segunda revisión: «Verificar si llegó» ----
+
+test('Recibir: un rechazo fijo (405) deja la recepción incierta; «Verificar si llegó» con la entrega pendiente la destraba con el MISMO uuid', async () => {
+  const respuestas = [fallaDeRed, () => response(405, {detail: 'Método no permitido.'}), ok()];
+  const ui = await montarRecibir((call, todas) => (call.method === 'GET'
+    ? response(200, ENTREGA) : respuestas[posts(todas).length - 1]()));
+  try {
+    await ui.sacarRemito();
+    await ui.pressButton('Recibir');
+    await ui.pressButton('Reintentar');
+    assert.ok(ui.labels().includes('Método no permitido.'));
+    assert.equal(ui.input('Cantidad recibida de Colchón').props.editable, false);
+    await ui.pressButton('Verificar si llegó');
+    assert.ok(ui.calls.some(c => c.method === 'GET' && c.url === '/api/emergencia/entregas/31/'));
+    assert.equal(ui.input('Cantidad recibida de Colchón').props.editable, true, 'destrabada: se puede corregir');
+    assert.equal(ui.button('Verificar si llegó'), undefined);
+    assert.ok(ui.button('Recibir'));
+    await ui.escribir('Cantidad recibida de Colchón', '10');
+    await ui.pressButton('Recibir');
+    const enviados = posts(ui.calls);
+    assert.equal(enviados.length, 3);
+    assert.equal(new Set(enviados.map(uuidDe)).size, 1, 'mismo uuid');
+    assert.ok(camposDe(enviados[2]).some(([n]) => n === 'remito'), 'destrabada, vuelve a mandar la foto');
+    assert.ok(!camposDe(enviados[1]).some(([n]) => n === 'remito'), 'el reenvío incierto va sin foto');
+    assert.equal(ui.terminados[0][0], 'recibida');
+  } finally { await ui.close(); }
+});
+
+test('Recibir: «Verificar si llegó» con la entrega ya recibida muestra lo registrado y vuelve a las entregas', async () => {
+  const ui = await montarRecibir((call) => (call.method === 'GET'
+    ? response(200, {...ENTREGA, estado: 'RECIBIDA', lineas: ENTREGA.lineas.map(l => ({...l, recibida: l.enviada}))})
+    : Promise.reject(new TypeError('Load failed'))));
+  try {
+    await ui.sacarRemito();
+    await ui.pressButton('Recibir');
+    await ui.pressButton('Verificar si llegó');
+    const [titulo, mensaje] = ui.alerts.at(-1);
+    assert.equal(titulo, 'La recepción ya figura registrada');
+    assert.match(mensaje, /Colchón: 10 de 10/);
+    assert.equal(ui.terminados[0][0], 'conflicto');
+  } finally { await ui.close(); }
+});
+
+test('Recibir: «Verificar si llegó» sin respuesta deja todo como estaba y lo dice', async () => {
+  const ui = await montarRecibir(() => Promise.reject(new TypeError('Load failed')));
+  try {
+    await ui.sacarRemito();
+    await ui.pressButton('Recibir');
+    await ui.pressButton('Verificar si llegó');
+    assert.equal(ui.toasts.at(-1).type, 'warning');
+    assert.equal(ui.input('Cantidad recibida de Colchón').props.editable, false);
+    assert.deepEqual(ui.terminados, []);
+  } finally { await ui.close(); }
+});
+
+test('Recibir: una incierta recuperada se verifica sola al abrir; con la entrega pendiente queda editable', async () => {
+  const ui = await montarRecibir((call) => (call.method === 'GET' ? response(200, ENTREGA) : ok()()), {antes: async ({kits, runtime, calls}) => {
+    const entrega = kits.normalizarEntrega(ENTREGA);
+    const r = await kits.abrirRecepcion(entrega, 7);
+    runtime.setFetch(async () => { throw new TypeError('Load failed'); });
+    await kits.enviarRecepcion({entrega, recepcion: r, cantidades: {12: '9', 14: '3'}, remito: {uri: 'file:///r.jpg'}}).catch(() => {});
+    assert.equal((await kits.abrirRecepcion(entrega, 7)).incierto, true);
+    runtime.setFetch(async (url, init = {}) => {
+      const call = {url: String(url).replace('https://example.test', ''), method: init.method || 'GET', init};
+      calls.push(call);
+      return call.method === 'GET' ? response(200, ENTREGA) : ok()();
+    });
+  }});
+  try {
+    await renderer.act(async () => { await esperar(10); });
+    assert.equal(ui.input('Cantidad recibida de Colchón').props.editable, true);
+    assert.equal(ui.input('Cantidad recibida de Colchón').props.value, '9');
+    assert.ok(ui.calls.some(c => c.method === 'GET'));
   } finally { await ui.close(); }
 });

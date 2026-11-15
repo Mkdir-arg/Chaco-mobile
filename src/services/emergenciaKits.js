@@ -193,11 +193,14 @@ export const clasificarErrorRecepcion = (error) => {
     return { tipo: 'conflicto', mensaje: detalle || 'La entrega ya no se puede recibir.', estadoActual: error.payload.estado_actual };
   }
   if (status === 404 && !error?.unexpectedHtml) return { tipo: 'no_encontrada', mensaje: TEXTO_NO_ENCONTRADA };
-  if (status === 400 && !error?.unexpectedHtml) {
+  // Solo un 400 con code VALIDACION es del serializer de §12 (el back no escribió nada). Otro 400 (un
+  // ParseError de DRF, {detail} sin code) no prueba nada: es un rechazo.
+  if (status === 400 && !error?.unexpectedHtml && error?.payload?.code === 'VALIDACION') {
     const errores = erroresDeRecepcion(error?.payload);
     return { tipo: 'validacion', mensaje: TEXTO_VALIDACION, errores: hayErroresRecepcion(errores) ? errores : { generales: [detalle || TEXTO_VALIDACION] } };
   }
   if (status === 413) return { tipo: 'pesada', mensaje: TEXTO_REMITO_PESADO, errores: { remito: [TEXTO_REMITO_PESADO] } };
+  if (status === 400 && !error?.unexpectedHtml) return { tipo: 'rechazo', mensaje: detalle || 'El servidor rechazó la recepción.' };
   if (esFallaTransitoria(error)) {
     const espera = Number(error?.retryAfter) > 0 ? Number(error.retryAfter) : null;
     return { tipo: 'reintentable', mensaje: status === 429 ? TEXTO_ESPERAR : TEXTO_REINTENTAR, espera };
@@ -445,6 +448,9 @@ export const enviarRecepcion = async ({ entrega, recepcion, cantidades = {}, rem
   }
   const numeros = armarCantidades(entrega, cantidades);
   const nota = String(observacion || '').trim();
+  // Reenvío de un intento incierto: el back no vuelve a validar (§12), así que va sin foto (un 413
+  // de la foto no lo trabaría otra vez).
+  const archivo = previo.incierto ? null : remito;
   await modificar(owner, (todas) => {
     const actual = todas[id] || {};
     todas[id] = {
@@ -462,8 +468,8 @@ export const enviarRecepcion = async ({ entrega, recepcion, cantidades = {}, rem
     if (todas[id]) Object.assign(todas[id], cambios);
   });
   try {
-    const respuesta = await recibirEntrega(entrega.id, { uuid_cliente: uuid, cantidades: numeros, remito, observacion: nota },
-      { timeoutMs: timeoutDelEnvio(bytesDe(remito)), token });
+    const respuesta = await recibirEntrega(entrega.id, { uuid_cliente: uuid, cantidades: numeros, remito: archivo, observacion: nota },
+      { timeoutMs: timeoutDelEnvio(bytesDe(archivo)), token });
     await cerrarRecepcion(owner, entrega.id);
     return { ...resultadoDeRecepcion(respuesta, entrega), distintas: cantidadesDistintas(entrega, numeros, respuesta) };
   } catch (error) {
@@ -494,6 +500,42 @@ export const enviarRecepcion = async ({ entrega, recepcion, cantidades = {}, rem
     error.recepcion = estado;
     throw error;
   }
+};
+
+// Estados en los que la entrega todavía se puede recibir (programas/services/kits.py: recibir_entrega
+// vale sobre EN_CAMINO y PREPARADA, y la recepción pasa a RECIBIDA* en la misma transacción).
+export const ESTADOS_PENDIENTES = ['EN_CAMINO', 'PREPARADA'];
+
+// Destraba un intento incierto preguntando a §11 qué pasó con la entrega. `resultado`:
+// - 'pendiente': sigue por recibir → el pedido no escribió nada; deja de ser incierta, con el MISMO uuid.
+// - 'registrada' (con `registrada` y `mensaje`) o 'cancelada': se cierra la recepción.
+// - 'no_encontrada' (404) se cierra; 'sin_modulo' (403); 'sin_confirmar': error o sin red, sigue incierta.
+export const verificarRecepcion = async (recepcion, entregaId) => {
+  const { owner } = recepcion;
+  const id = String(entregaId);
+  let entrega;
+  try {
+    entrega = normalizarEntrega(await getEntrega(entregaId));
+  } catch (error) {
+    const clasificacion = clasificarErrorRecepcion(error);
+    if (clasificacion.tipo === 'no_encontrada') {
+      await cerrarRecepcion(owner, id);
+      return { resultado: 'no_encontrada', mensaje: clasificacion.mensaje };
+    }
+    if (clasificacion.tipo === 'sin_modulo') return { resultado: 'sin_modulo', mensaje: clasificacion.mensaje };
+    return { resultado: 'sin_confirmar', mensaje: 'No se pudo consultar la entrega. Probá de nuevo cuando haya buena señal.' };
+  }
+  if (entrega && ESTADOS_PENDIENTES.includes(entrega.estado)) {
+    await modificar(owner, (todas) => {
+      if (todas[id]) todas[id].incierto = false;
+    });
+    return { resultado: 'pendiente', mensaje: 'La entrega sigue sin recibir: el envío anterior no llegó. Podés revisar los datos y volver a mandarla.' };
+  }
+  await cerrarRecepcion(owner, id);
+  if (entrega && ESTADOS_RECIBIDA.includes(entrega.estado)) {
+    return { resultado: 'registrada', registrada: entrega, mensaje: `${TEXTO_REGISTRADA}\n${textoDeRegistrada(entrega)}` };
+  }
+  return { resultado: 'cancelada', mensaje: 'La mesa canceló esta entrega: tu recepción no quedó registrada.' };
 };
 
 // 200 de §12 → { estado, diferencias: [{ item, nombre, unidad, enviada, recibida }] }, con el nombre

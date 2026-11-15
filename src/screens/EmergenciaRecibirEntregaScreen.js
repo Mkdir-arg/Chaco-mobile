@@ -11,7 +11,7 @@ import { forgetWebFile } from '../services/webAttachments';
 import {
   MAX_DIGITOS_CANTIDAD, MAX_OBSERVACION, TEXTO_SIN_RED, abrirRecepcion, clasificarErrorRecepcion, descartarIntento,
   diferenciasDe, enviarRecepcion, errorDeCantidad, escucharRed, guardarRecepcion, hayConexion, textoDeDiferencia,
-  textoDeDistinta, validarRecepcion,
+  textoDeDistinta, validarRecepcion, verificarRecepcion,
 } from '../services/emergenciaKits';
 import { aJpeg, liberarJpeg } from '../utils/jpeg';
 import { formatDate } from '../utils/dates';
@@ -23,7 +23,7 @@ import { fontSizes, radii } from '../theme';
 const AUTOGUARDADO_MS = 400;
 
 export const TEXTO_RECUPERADA = 'Recuperamos la recepción que habías empezado. Volvé a sacar la foto del remito.';
-export const TEXTO_INCIERTA = 'Ya mandaste esta recepción y no se pudo confirmar si llegó. Nada se puede cambiar: «Reintentar» manda la misma (no hace falta volver a sacar la foto) y no se duplica.';
+export const TEXTO_INCIERTA = 'Ya mandaste esta recepción y no se pudo confirmar si llegó. Nada se puede cambiar: «Reintentar» manda la misma (no hace falta volver a sacar la foto) y no se duplica. «Verificar si llegó» consulta la entrega: si sigue sin recibir, se puede corregir.';
 export const TEXTO_SIN_DIFERENCIAS = 'Coincide con lo enviado.';
 
 const sinVacios = (objeto) => Object.fromEntries(Object.entries(objeto || {}).filter(([, valor]) => valor != null));
@@ -47,6 +47,7 @@ export default function EmergenciaRecibirEntregaScreen({ entrega, dispositivoId 
   const [remito, setRemito] = useState(null);
   const [procesandoFoto, setProcesandoFoto] = useState(false);
   const [enviando, setEnviando] = useState(false);
+  const [verificando, setVerificando] = useState(false);
   const [intentado, setIntentado] = useState(false);
   const [erroresServidor, setErroresServidor] = useState({});
   const [falla, setFalla] = useState(null);
@@ -78,6 +79,8 @@ export default function EmergenciaRecibirEntregaScreen({ entrega, dispositivoId 
         setObservacion(abierta.observacion || '');
         if (abierta.recuperada && !abierta.incierto) showToast({ type: 'info', message: TEXTO_RECUPERADA });
         if (abierta.uuidEnUso) setFalla(clasificarErrorRecepcion({ status: 409, payload: { code: 'UUID_EN_USO' } }));
+        // Una incierta recuperada se verifica sola contra §11: si la entrega sigue pendiente, se destraba.
+        if (abierta.incierto) verificar(abierta, { silencioso: true });
       } catch (e) {
         if (montado.current) setErrorCarga(e?.message || 'No se pudo abrir la recepción.');
       }
@@ -280,6 +283,38 @@ export default function EmergenciaRecibirEntregaScreen({ entrega, dispositivoId 
     await enviar();
   };
 
+  // «Verificar»: pregunta a §11 qué pasó con la entrega para destrabar un intento incierto (un
+  // rechazo fijo del WAF o del back lo dejaría trabado para siempre).
+  const verificar = async (base = recepcion, { silencioso = false } = {}) => {
+    if (!base || enviandoRef.current) return;
+    setVerificando(true);
+    try {
+      const r = await verificarRecepcion(base, entrega.id);
+      if (r.resultado === 'pendiente') {
+        if (!montado.current) return;
+        setRecepcion((prev) => prev && { ...prev, incierto: false });
+        setFalla(null);
+        setEsperaHasta(0);
+        showToast({ type: 'info', message: r.mensaje });
+      } else if (r.resultado === 'registrada') {
+        showAlert('La recepción ya figura registrada', r.mensaje, [{ text: 'Entendido' }]);
+        onTerminar?.('conflicto', r);
+      } else if (r.resultado === 'cancelada') {
+        showAlert('La entrega ya no se puede recibir', r.mensaje, [{ text: 'Entendido' }]);
+        onTerminar?.('conflicto', r);
+      } else if (r.resultado === 'no_encontrada') {
+        showAlert('Entrega no disponible', r.mensaje, [{ text: 'Entendido' }]);
+        onTerminar?.('no_encontrada', r);
+      } else if (r.resultado === 'sin_modulo') {
+        onSinModulo?.(r.mensaje);
+      } else if (!silencioso) {
+        showToast({ type: 'warning', message: r.mensaje });
+      }
+    } finally {
+      if (montado.current) setVerificando(false);
+    }
+  };
+
   // Solo tras 409 UUID_EN_USO: ese uuid no escribió nada en esta entrega.
   const confirmarDescarteIntento = () => showAlert('Descartar este intento',
     'Se empieza un intento nuevo con lo cargado y otro identificador.', [
@@ -422,8 +457,12 @@ export default function EmergenciaRecibirEntregaScreen({ entrega, dispositivoId 
         <CustomButton title="Descartar este intento" size="L" variant="secondary" iconLeft="refresh" onPress={confirmarDescarteIntento} />
       ) : (
         <CustomButton title={tituloBoton} size="L" iconLeft={incierto ? 'refresh' : 'checkmark-done-outline'} loading={enviando}
-          disabled={enviando || procesandoFoto || esperando} onPress={recibir} />
+          disabled={enviando || procesandoFoto || esperando || verificando} onPress={recibir} />
       )}
+      {incierto ? (
+        <CustomButton title="Verificar si llegó" variant="secondary" iconLeft="search-outline" loading={verificando}
+          disabled={enviando || verificando} onPress={() => verificar()} />
+      ) : null}
     </ScrollView>
   );
 }

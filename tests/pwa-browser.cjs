@@ -272,9 +272,11 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
     assert.deepEqual(m3.ok.diferencias.map(d=>d.nombre),['Colchón','Kit alimentario']);
     assert.notEqual(m3.despues,abiertaM3,'cerrada: la próxima es otra recepción');
     assert.equal(recepciones.length,2);
-    for (const r of recepciones) assert.deepEqual(r,{uuid:abiertaM3,c12:'8',c14:'0',obs:'Faltan',remito:true});
+    // El primero lleva la foto; el reenvío del intento incierto va sin ella (§12 no la vuelve a validar).
+    assert.deepEqual(recepciones,[{uuid:abiertaM3,c12:'8',c14:'0',obs:'Faltan',remito:true},
+      {uuid:abiertaM3,c12:'8',c14:'0',obs:'Faltan',remito:false}]);
     assert.deepEqual(errors,[]);
-    console.log('PASS: Emergencia M3 without network blocked, uuid survives reload, 503 retry with same uuid, cantidades[id] with 0, JPEG remito.');
+    console.log('PASS: Emergencia M3 without network blocked, uuid survives reload, 503 retry with same uuid (without photo), cantidades[id] with 0, JPEG remito.');
   } finally {
     fs.writeFileSync(entry,original);
     await context?.close(); server?.kill(); fs.rmSync(profile,{recursive:true,force:true});

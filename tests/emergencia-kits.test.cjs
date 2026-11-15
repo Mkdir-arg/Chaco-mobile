@@ -526,3 +526,72 @@ test('no escribe si nada cambió (otra pestaña no pisa lo que escribió esta)',
   await k.guardarRecepcion(rec.owner, 31, {cantidades: {12: '9', 14: '3'}});
   assert.equal(propias(), 2);
 });
+
+// ---- Segunda revisión: destrabar por §11, 400 sin code, reenvío sin foto ----
+
+const conEstado = (estado) => () => response(200, {...ENTREGA, estado,
+  lineas: ENTREGA.lineas.map((l) => ({...l, recibida: estado.startsWith('RECIBIDA') ? l.enviada : null}))});
+
+const inciertaCon = async (r, k, entrega) => {
+  const recepcion = await k.abrirRecepcion(entrega, 7);
+  r.setFetch(fallaDeRed);
+  await enviar(k, entrega, recepcion).catch(() => {});
+  assert.equal((await k.abrirRecepcion(entrega, 7)).incierto, true);
+  return recepcion;
+};
+
+test('verificarRecepcion: EN_CAMINO o PREPARADA → el intento no escribió; deja de ser incierta con el MISMO uuid', async () => {
+  for (const estado of ['EN_CAMINO', 'PREPARADA']) {
+    const {r, k, entrega} = await preparar();
+    const recepcion = await inciertaCon(r, k, entrega);
+    const calls = router(r, conEstado(estado));
+    const res = await k.verificarRecepcion(recepcion, 31);
+    assert.equal(res.resultado, 'pendiente', estado);
+    igual(calls.map((c) => [c.method, c.url]), [['GET', '/api/emergencia/entregas/31/']]);
+    const abierta = await k.abrirRecepcion(entrega, 7);
+    assert.equal(abierta.incierto, false);
+    assert.equal(abierta.uuid_cliente, recepcion.uuid_cliente, 'no es un uuid nuevo');
+    assert.equal(await k.guardarRecepcion(abierta.owner, 31, {cantidades: {12: '7', 14: '0'}}), true, 'vuelve a ser editable');
+  }
+  igual((await preparar()).k.ESTADOS_PENDIENTES, ['EN_CAMINO', 'PREPARADA']);
+});
+
+test('verificarRecepcion: RECIBIDA* muestra lo registrado y cierra; CANCELADA y 404 cierran; sin red sigue incierta', async () => {
+  const casos = [
+    [conEstado('RECIBIDA_CON_DIFERENCIAS'), 'registrada', true],
+    [conEstado('CANCELADA'), 'cancelada', true],
+    [() => response(404, {detail: 'No encontrado.'}), 'no_encontrada', true],
+    [fallaDeRed, 'sin_confirmar', false],
+    [() => response(502, {detail: 'x'}, {'content-type': 'text/html'}), 'sin_confirmar', false],
+  ];
+  for (const [respuesta, esperado, cierra] of casos) {
+    const {r, k, entrega} = await preparar();
+    const recepcion = await inciertaCon(r, k, entrega);
+    router(r, respuesta);
+    const res = await k.verificarRecepcion(recepcion, 31);
+    assert.equal(res.resultado, esperado);
+    if (esperado === 'registrada') assert.match(res.mensaje, /ya figura registrada\.\nColchón: 10 de 10/);
+    const abierta = await k.abrirRecepcion(entrega, 7);
+    assert.equal(abierta.recuperada, !cierra, esperado);
+    if (!cierra) assert.equal(abierta.incierto, true);
+  }
+});
+
+test('400 sin code VALIDACION (ParseError de DRF) es un rechazo y no destraba un intento incierto', async () => {
+  const {r, k, entrega} = await preparar();
+  igual(k.clasificarErrorRecepcion({status: 400, payload: {detail: 'JSON parse error.'}}), {tipo: 'rechazo', mensaje: 'JSON parse error.'});
+  const recepcion = await inciertaCon(r, k, entrega);
+  router(r, () => response(400, {detail: 'Malformed multipart.'}));
+  const error = await enviar(k, entrega, recepcion).catch((e) => e);
+  assert.equal(error.clasificacion.tipo, 'rechazo');
+  assert.equal(error.recepcion.incierto, true);
+  assert.equal((await k.abrirRecepcion(entrega, 7)).incierto, true);
+});
+
+test('con un intento incierto el reenvío sale SIN remito aunque haya foto', async () => {
+  const {r, k, entrega} = await preparar();
+  const recepcion = await inciertaCon(r, k, entrega);
+  const calls = router(r, recibirOk);
+  await enviar(k, entrega, recepcion);
+  igual(campos(calls[0]).map(([n]) => n), ['uuid_cliente', 'cantidades[12]', 'cantidades[14]', 'observacion']);
+});

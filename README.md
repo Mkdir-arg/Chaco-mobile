@@ -267,8 +267,13 @@ salir) y admite una observación. Con diferencias, «Recibir» pide confirmació
   429, 401 o un rechazo desconocido: el pedido pudo haber llegado), nada se cambia
   (cantidades, observación ni foto) y «Reintentar» manda lo mismo con el mismo uuid, sin
   foto si ya no está (§12 no la pide en el reenvío); con `Retry-After` el botón espera. Un
-  413 o un 403 no lo destraban (no dicen nada del pedido anterior); un 400 sí. 200/201 la
-  cierran, y si el back registró otras cantidades que las mandadas, se avisa.
+  413, un 403 o un 400 sin `code: VALIDACION` no lo destraban (no dicen nada del pedido
+  anterior); un 400 `VALIDACION` sí. El reenvío de un intento incierto va sin foto.
+  «Verificar si llegó» (y, sola, al reabrir una incierta) consulta `GET entregas/{id}/`: si
+  sigue `EN_CAMINO`/`PREPARADA`, el pedido no escribió y se destraba con el mismo uuid; si
+  figura recibida, muestra lo registrado; cancelada o 404, se cierra; sin respuesta, sigue
+  incierta. 200/201 la cierran, y si el back registró otras cantidades que las mandadas, se
+  avisa.
 - Mientras se manda no se puede volver (el `Banner` esconde la flecha).
 - Errores: 409 con `estado_actual` muestra `detail` y vuelve a las entregas; si había un
   intento incierto o descartado y la entrega figura recibida, consulta `GET entregas/{id}/`
