@@ -564,7 +564,7 @@ test('Derivación sin red: no manda nada y lo avisa; 404 y 403 SIN_MODULO van al
 
 // ---- Integrantes ----
 
-async function montarIntegrantes(rutas, {online = true, caso = CASO} = {}) {
+async function montarIntegrantes(rutas, {online = true, caso = CASO, onCerrar = null} = {}) {
   const env = await entorno(rutas);
   env.runtime.setOnline(online);
   const eventos = [];
@@ -572,10 +572,21 @@ async function montarIntegrantes(rutas, {online = true, caso = CASO} = {}) {
   const Screen = loadScreen('src/screens/EmergenciaIntegrantesScreen.js', env.mocks);
   const ui = await render(Screen, {caso, onConflicto: c => eventos.push(['conflicto', plano(c)]),
     onNoEncontrado: () => eventos.push(['no_encontrado']), onSinModulo: m => eventos.push(['sin_modulo', m]),
-    onCerrar: (t, d) => eventos.push(['cerrar', t, d.confirmadas]), onEnviando: v => enviando.push(v),
+    onCerrar: onCerrar || ((t, d) => eventos.push(['cerrar', t, d.confirmadas])), onEnviando: v => enviando.push(v),
     onAbrirPersona: (i, c) => eventos.push(['persona', i.n, c?.estado])});
   return {...env, ...ui, eventos, enviando};
 }
+
+test('Integrantes (Cambio 477): el cierre se abre con la derivación vigente que trajo el GET; con el back viejo, sin ella', async () => {
+  for (const [payload, esperado] of [[{...INTEGRANTES, derivacion: {id: 55}}, 55], [INTEGRANTES, null]]) {
+    const abiertos = [];
+    const ui = await montarIntegrantes(() => response(200, payload), {onCerrar: (t, d) => abiertos.push([t, d.derivacion_id])});
+    try {
+      await ui.pressButton('Cerrar con diferencia');
+      assert.deepEqual(abiertos, [['diferencia', esperado]]);
+    } finally { await ui.close(); }
+  }
+});
 
 test('Integrantes: contador, filas (confirmada con cama y ficha incompleta, sin confirmar) y el cierre que corresponde', async () => {
   const ui = await montarIntegrantes(() => response(200, INTEGRANTES));

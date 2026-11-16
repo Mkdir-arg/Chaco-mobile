@@ -246,29 +246,49 @@ export const confirmarIntegrante = (casoId, n, { uuid_cliente, ficha, plaza_id }
 
 // ---- M2 parte 3: cerrar el ingreso (§13.9) y sin derivación (§13.10) ----
 
+// Cambio 477: los tres cierres aceptan `derivacion`, opcional: el `derivacion.id` que trajo integrantes
+// (§13.5). Con él, el back responde 409 (sin escribir) si el ingreso ya es otro. Solo viaja un entero ≥ 1
+// (otra cosa sería un 400 `derivacion`); sin él el cierre sale como antes (el back viejo lo ignora).
+export const idDeDerivacion = (valor) => {
+  if (valor === null || valor === undefined || valor === '' || typeof valor === 'boolean') return null;
+  const n = Number(valor);
+  return Number.isSafeInteger(n) && n >= 1 ? n : null;
+};
+const conDerivacion = (body, derivacion) => {
+  const id = idDeDerivacion(derivacion);
+  if (id !== null) body.derivacion = id;
+  return body;
+};
+
 // §13.9 «Familia alojada» (N de N). Los cinco campos son opcionales; `tarjeta_numero` va con la tarjeta
 // entregada. NO es idempotente: el reintento de un envío que llegó da 409 ALOJADO (o CERRADO).
-export const alojarFamilia = (casoId, { sector = null, aula = '', tarjeta_entregada = false, tarjeta_numero = '', encargado = '' } = {}, opciones = {}) => {
+export const alojarFamilia = (casoId, {
+  sector = null, aula = '', tarjeta_entregada = false, tarjeta_numero = '', encargado = '', derivacion = null,
+} = {}, opciones = {}) => {
   const body = { tarjeta_entregada: tarjeta_entregada === true };
   if (presente(sector)) body.sector = Number(sector);
   if (presente(aula)) body.aula = String(aula).trim();
   if (body.tarjeta_entregada && presente(tarjeta_numero)) body.tarjeta_numero = String(tarjeta_numero).trim();
   if (presente(encargado)) body.encargado = String(encargado).trim();
+  conDerivacion(body, derivacion);
   return conVerificacion(() => pedirJson(RUTAS.alojar(casoId), { ...opciones, method: 'POST', body }));
 };
 
 // §13.9 «Cerrar con diferencia» (RN-3.9): `motivo` del catálogo; `observacion` obligatoria con OTRO.
 // NO es idempotente.
-export const cerrarConDiferencia = (casoId, { motivo, observacion } = {}, opciones = {}) => {
+export const cerrarConDiferencia = (casoId, { motivo, observacion, derivacion = null } = {}, opciones = {}) => {
   const body = { motivo };
   if (presente(observacion)) body.observacion = String(observacion).trim();
+  conDerivacion(body, derivacion);
   return conVerificacion(() => pedirJson(RUTAS.cerrarDiferencia(casoId), { ...opciones, method: 'POST', body }));
 };
 
 // §13.9 «Cancelar el ingreso»: `motivo` texto obligatorio. NO es idempotente: el reintento de uno que
 // llegó da 409 con el caso de vuelta en la mesa (EN_GESTION o NUEVO).
-export const cancelarIngreso = (casoId, { motivo } = {}, opciones = {}) => conVerificacion(
-  () => pedirJson(RUTAS.cancelarIngreso(casoId), { ...opciones, method: 'POST', body: { motivo: String(motivo ?? '').trim() } }));
+export const cancelarIngreso = (casoId, { motivo, derivacion = null } = {}, opciones = {}) => conVerificacion(
+  () => pedirJson(RUTAS.cancelarIngreso(casoId), {
+    ...opciones, method: 'POST', body: conDerivacion({ motivo: String(motivo ?? '').trim() }, derivacion),
+  }));
 
 // §13.10: el Formulario 1 de §6 en la puerta, sin `relevado_en` (vale la hora del servidor) y sin fotos ni
 // GPS. Va como JSON (la vista acepta JSON además de multipart: sin archivos no hace falta). Lo vacío no

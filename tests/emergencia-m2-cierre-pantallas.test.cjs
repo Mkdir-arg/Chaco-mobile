@@ -134,13 +134,14 @@ const fondoDe = (tree, contenido) => {
 
 // ---- Cerrar el ingreso ----
 
-async function montarCierre(rutas, {cierre = 'alojar', confirmadas = 3, total = 3, integrantes = CONFIRMADAS, online = true, env: previo} = {}) {
+async function montarCierre(rutas, {cierre = 'alojar', confirmadas = 3, total = 3, integrantes = CONFIRMADAS, online = true, env: previo, derivacion} = {}) {
   const env = previo || await entorno(rutas);
   env.runtime.setOnline(online);
   const eventos = [];
   const enviando = [];
   const Screen = loadScreen('src/screens/EmergenciaCierreScreen.js', env.mocks);
   const ui = await render(Screen, {caso: CASO, cierre, confirmadas, total, integrantes, dispositivo: {id: 9, nombre: 'Escuela 12'},
+    ...(derivacion !== undefined ? {derivacion} : {}),
     onCerrado: r => eventos.push(['cerrado', plano(r)]), onConflicto: c => eventos.push(['conflicto', plano(c)]),
     onNoEncontrado: () => eventos.push(['no_encontrado']), onSinModulo: m => eventos.push(['sin_modulo', m]),
     onEnviando: v => enviando.push(v)});
@@ -553,6 +554,95 @@ test('Cancelar (m3): tras un corte, si el ingreso sigue en curso sin confirmados
   } finally { await ui.close(); }
 });
 
+// ---- La derivación vista (Cambio 477) ----
+const CAMBIO_409 = {detail: 'El ingreso del caso 2026-000184 cambió: la derivación que viste ya no es la vigente. Recargá la pantalla.', estado_actual: 'INGRESO_EN_CURSO'};
+
+test('477: alojar y diferencia mandan la derivación que vio la guardia al abrir, también en el reintento (aunque cambie la prop)', async () => {
+  let intento = 0;
+  const ui = await montarCierre(rutasCierre(() => { intento += 1; return intento === 1 ? fallaDeRed() : response(409, ALOJADA_409); }), {derivacion: 55});
+  try {
+    await ui.pressButton('Alojar a la familia');
+    await ui.aceptarAlerta('Alojar');
+    await ui.rerender({derivacion: 77});
+    await ui.pressButton('Reintentar: alojar a la familia');
+    assert.deepEqual(posts(ui.calls).map(c => c.body.derivacion), [55, 55]);
+    assert.deepEqual(ui.eventos.map(e => [e[0], e[1].resultado]), [['cerrado', 'ya_hecho']]);
+  } finally { await ui.close(); }
+  const dif = await montarCierre(() => response(409, CAMBIO_409), {cierre: 'diferencia', confirmadas: 1, derivacion: 55});
+  try {
+    await dif.press('Motivo: No llegó al centro');
+    await dif.pressButton('Cerrar con diferencia');
+    await dif.aceptarAlerta('Cerrar con diferencia');
+    assert.deepEqual(posts(dif.calls).map(c => c.body), [{motivo: 'NO_LLEGO', derivacion: 55}]);
+    assert.deepEqual(dif.eventos.map(e => [e[0], e[1].destino, e[1].mensaje]), [['conflicto', 'integrantes', CAMBIO_409.detail]],
+      'la derivación vieja: el detail y al router');
+  } finally { await dif.close(); }
+});
+
+test('477: cancelar con la derivación, tras un corte el reintento sale directo (sin releer ni volver a preguntar); 409 en la mesa = «se hizo»', async () => {
+  let intento = 0;
+  const ui = await montarCierre(() => { intento += 1; return intento === 1 ? fallaDeRed() : response(409, {detail: 'La derivación ya fue rechazada o el ingreso se canceló. Buscá a la familia de nuevo.', estado_actual: 'EN_GESTION'}); },
+    {cierre: 'cancelar', confirmadas: 0, derivacion: 55});
+  try {
+    await ui.escribir('Motivo de la cancelación', 'Se fueron');
+    await ui.pressButton('Cancelar el ingreso');
+    await ui.aceptarAlerta('Cancelar el ingreso');
+    const alertas = ui.alerts.length;
+    await ui.pressButton('Reintentar: cancelar el ingreso');
+    assert.equal(ui.alerts.length, alertas, 'no vuelve a preguntar');
+    assert.deepEqual(ui.calls.map(c => [c.method, c.body]), [['POST', {motivo: 'Se fueron', derivacion: 55}], ['POST', {motivo: 'Se fueron', derivacion: 55}]]);
+    assert.deepEqual(ui.eventos.map(e => [e[0], e[1].cierre, e[1].resultado, e[1].estado]), [['cerrado', 'cancelar', 'ya_hecho', 'EN_GESTION']]);
+    assert.deepEqual(plano(ui.toasts.at(-1)), {type: 'info', message: 'El ingreso ya figura cancelado: el caso está de vuelta en la mesa.'});
+  } finally { await ui.close(); }
+});
+
+test('477: cancelar con la derivación y 400 `non_field_errors` (alguien se confirmó) no queda trabado: avisa y va a integrantes', async () => {
+  const NFE = 'Hay personas confirmadas: no se puede cancelar. Cerrá con diferencia.';
+  const ui = await montarCierre(() => response(400, {code: 'VALIDACION', detail: NFE, non_field_errors: [NFE]}), {cierre: 'cancelar', confirmadas: 0, derivacion: 55});
+  try {
+    await ui.escribir('Motivo de la cancelación', 'Se fueron');
+    await ui.pressButton('Cancelar el ingreso');
+    await ui.aceptarAlerta('Cancelar el ingreso');
+    assert.deepEqual(ui.eventos.map(e => [e[0], e[1].destino, e[1].mensaje]), [['conflicto', 'integrantes', NFE]]);
+  } finally { await ui.close(); }
+});
+
+test('477: cancelar con la derivación, tras un corte el 409 «cambió»: el reintento no hizo nada, el ingreso anterior ya terminó; avisa y va a integrantes', async () => {
+  let intento = 0;
+  const ui = await montarCierre(() => { intento += 1; return intento === 1 ? fallaDeRed() : response(409, CAMBIO_409); },
+    {cierre: 'cancelar', confirmadas: 0, derivacion: 55});
+  try {
+    await ui.escribir('Motivo de la cancelación', 'Se fueron');
+    await ui.pressButton('Cancelar el ingreso');
+    await ui.aceptarAlerta('Cancelar el ingreso');
+    const alertas = ui.alerts.length;
+    await ui.pressButton('Reintentar: cancelar el ingreso');
+    assert.equal(ui.alerts.length, alertas);
+    assert.deepEqual(ui.calls.map(c => c.method), ['POST', 'POST']);
+    assert.deepEqual(ui.eventos.map(e => [e[0], e[1].destino, e[1].estadoActual, e[1].mensaje]),
+      [['conflicto', 'integrantes', 'INGRESO_EN_CURSO', `Este reintento no hizo nada: el ingreso anterior ya terminó y ahora hay otro. ${CAMBIO_409.detail}`]]);
+    assert.ok(!ui.eventos.some(e => e[0] === 'cerrado'), 'no dice que se canceló');
+  } finally { await ui.close(); }
+});
+
+test('477: sin la derivación (back viejo) el cancelar incierto relee y vuelve a preguntar, y no manda el campo', async () => {
+  let posteos = 0;
+  const ui = await montarCierre((call) => {
+    if (call.method === 'GET') return response(200, {caso: CASO, integrantes: [FILA(1)], confirmadas: 0, total_declarado: 3, declaradas_al_relevar: 3, con_ficha_incompleta: 0});
+    posteos += 1;
+    return posteos === 1 ? fallaDeRed() : response(200, {estado: 'EN_GESTION', total_alojado: null, liberadas: 3});
+  }, {cierre: 'cancelar', confirmadas: 0, derivacion: null});
+  try {
+    await ui.escribir('Motivo de la cancelación', 'Se fueron');
+    await ui.pressButton('Cancelar el ingreso');
+    await ui.aceptarAlerta('Cancelar el ingreso');
+    await ui.pressButton('Reintentar: cancelar el ingreso');
+    assert.equal(ui.alerts.at(-1)[1], 'No sabemos si la cancelación llegó. El ingreso figura en curso, sin nadie confirmado. ¿Cancelarlo?');
+    await ui.aceptarAlerta('Cancelar el ingreso');
+    assert.deepEqual(ui.calls.map(c => [c.method, c.body ?? null]), [['POST', {motivo: 'Se fueron'}], ['GET', null], ['POST', {motivo: 'Se fueron'}]]);
+  } finally { await ui.close(); }
+});
+
 test('Puerta (M1, m5): el DNI es el buscado y no se edita; con un envío pendiente la fecha queda fija también', async () => {
   const env = await entorno(fallaDeRed);
   const ui = await montarPuerta(null, {env});
@@ -667,7 +757,8 @@ test('EmergenciaApp M2-5: integrantes -> cerrar (con contador, integrantes y dis
     assert.equal(ui.vista(), 'cierre');
     assert.equal(ui.titulo(), 'Familia alojada');
     const p = ui.pantallas.cierre;
-    assert.deepEqual([p.cierre, p.caso.id, p.confirmadas, p.total, p.integrantes.length, p.dispositivo.id], ['alojar', 184, 3, 3, 3, 9]);
+    assert.deepEqual([p.cierre, p.caso.id, p.confirmadas, p.total, p.integrantes.length, p.dispositivo.id, p.derivacion], ['alojar', 184, 3, 3, 3, 9, null],
+      'el back viejo no trae la derivación');
     await ui.hacer(() => p.onEnviando(true));
     assert.equal(ui.banner().props.showBackButton, false);
     await ui.atras();
@@ -676,8 +767,9 @@ test('EmergenciaApp M2-5: integrantes -> cerrar (con contador, integrantes y dis
     assert.equal(ui.vista(), 'integrantes');
     assert.equal(ui.banner().props.showBackButton, true);
     assert.equal(ui.pantallas.integrantes.caso.estado, 'ALOJADO');
-    await ui.hacer(() => ui.pantallas.integrantes.onCerrar('cancelar', {caso: CASO, confirmadas: 0, total_declarado: 3, integrantes: []}));
+    await ui.hacer(() => ui.pantallas.integrantes.onCerrar('cancelar', {caso: CASO, confirmadas: 0, total_declarado: 3, integrantes: [], derivacion_id: 55}));
     assert.equal(ui.titulo(), 'Cancelar ingreso');
+    assert.equal(ui.pantallas.cierre.derivacion, 55, 'la derivación de integrantes llega al cierre');
     await ui.atras();
     assert.equal(ui.vista(), 'integrantes', 'volver desde el cierre va a los integrantes');
     await ui.hacer(() => ui.pantallas.integrantes.onCerrar('cancelar', {caso: CASO, confirmadas: 0, total_declarado: 3, integrantes: []}));
