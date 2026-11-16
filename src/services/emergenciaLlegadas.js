@@ -761,7 +761,12 @@ export const borrarBorradorFicha = async (sesion, casoId, n) => {
 // La derivación vista (Cambio 477): los tres mandan `derivacion`, el id que trajo integrantes al abrir la
 // pantalla (el mismo en el primer envío y en cada reintento). Si ya no es la vigente, el back responde 409
 // sin escribir, con el `detail` «El ingreso del caso … cambió…» y el estado de hoy; ese chequeo va antes
-// que el de estado. El 409 no trae `code`: se reconoce por `estado_actual` (ver `cerrarIngreso`).
+// que el de estado. El 409 no trae `code` y la app no compara el `detail`: sale como cualquier conflicto y
+// el router decide por `destino` (el de `estado_actual`, §13.1).
+// Supuesto (back actual): en alojar y diferencia ese 409 no puede venir con ALOJADO/CERRADO —no hay reabrir
+// un ingreso alojado ni desconfirmar personas—, así que tras un incierto ALOJADO sigue siendo «se hizo».
+// Ventana de rollback: si la app recibió un id (back nuevo) y el back vuelve a la versión vieja, el campo se
+// ignora y el reintento de cancelar sale sin la relectura (como cualquier cierre sin uuid de antes).
 
 export const MAX_AULA = 80;
 export const MAX_TARJETA = 40;
@@ -788,7 +793,8 @@ export const TEXTO_YA_ALOJADA = 'La familia ya figura alojada: se muestra en lec
 export const NOTA_REVISAR_ALOJAMIENTO = 'Revisá los datos de alojamiento en la ficha: si lo cerró otra guardia, lo que cargaste acá no se guardó.';
 export const TEXTO_CONFIRMAR_REENVIO_CANCELAR = 'No sabemos si la cancelación llegó. El ingreso figura en curso, sin nadie confirmado. ¿Cancelarlo?';
 export const TEXTO_INGRESO_CAMBIO = 'El ingreso cambió mientras tanto (el caso volvió a entrar o ya hay personas confirmadas): no se vuelve a cancelar. Revisá los integrantes.';
-export const TEXTO_DERIVACION_CAMBIO = 'El ingreso cambió: la derivación que viste ya no es la vigente. No se hizo nada. Recargá la pantalla.';
+export const TEXTO_DERIVACION_CAMBIO = 'El ingreso cambió: la derivación que viste ya no es la vigente. Recargá la pantalla.';
+export const TEXTO_REINTENTO_OTRO_INGRESO = 'Este reintento no hizo nada: el ingreso anterior ya terminó y ahora hay otro.';
 export const TEXTO_YA_CANCELADO = 'El ingreso ya figura cancelado: el caso está de vuelta en la mesa.';
 
 const texto = (valor) => String(valor ?? '').trim();
@@ -860,6 +866,7 @@ export const sectorDeLaFamilia = (mapa, integrantes = []) => {
 
 const ESTADOS_ALOJADA = ['ALOJADO', 'CERRADO'];
 const ESTADOS_EN_LA_MESA = ['EN_GESTION', 'NUEVO'];
+const ESTADOS_OTRA_DERIVACION = ['INGRESO_EN_CURSO', 'DERIVADO'];
 
 const crearErrorLocal = (errores) => crearError('VALIDACION_LOCAL', 'Hay datos para corregir.', {
   clasificacion: { tipo: 'validacion', mensaje: 'Corregí lo marcado.', errores },
@@ -868,20 +875,18 @@ const crearErrorLocal = (errores) => crearError('VALIDACION_LOCAL', 'Hay datos p
 // Lo común a los tres cierres. `produce`: los `estado_actual` que deja esa acción (su 409 tras un intento
 // incierto es «se hizo»). Devuelve { resultado: 'hecho' | 'ya_hecho', estado, total_alojado, liberadas,
 // detalle? }; los errores salen con `clasificacion` y `incierto`.
-// Con `derivacion`, un 409 INGRESO_EN_CURSO solo puede ser el de la derivación vieja: los tres cierres
-// necesitan el ingreso en curso, así que con la misma derivación y el caso en curso el back no da 409 de
-// estado. Sale como conflicto con `ingresoCambio: true` (el router lleva a integrantes); un 409 con otro
-// estado que la acción no produce (DERIVADO, la mesa volvió a derivar y nadie aceptó) también es conflicto
-// y el router recarga por `estado_actual`. Nunca es «se hizo».
+// Con `derivacion`, un 409 INGRESO_EN_CURSO o DERIVADO solo puede ser el de la derivación vieja: los tres
+// cierres necesitan el ingreso en curso con la derivación ya aceptada, así que con la misma derivación el
+// back no da 409 con esos estados. Ninguno de los dos está en `produce`: salen como conflicto y el router
+// decide por `destino` (integrantes o volver a buscar). Sin `detail`, el texto propio.
 const cerrarIngreso = async (sesion, pedido, { incierto, campos, produce, textoIncierto, textoYaHecho, nota = null, derivacion = null }) => {
   try {
     const payload = await conSesion(sesion, pedido, { timeoutMs: LIMITES.accionMs, campos });
     return { resultado: 'hecho', ...normalizarCierre(payload) };
   } catch (error) {
     const c = error.clasificacion;
-    if (derivacion !== null && c?.tipo === 'conflicto' && c.estadoActual === 'INGRESO_EN_CURSO') {
-      c.ingresoCambio = true;
-      if (!detalleDe(error)) c.mensaje = TEXTO_DERIVACION_CAMBIO;
+    if (derivacion !== null && c?.tipo === 'conflicto' && ESTADOS_OTRA_DERIVACION.includes(c.estadoActual) && !detalleDe(error)) {
+      c.mensaje = TEXTO_DERIVACION_CAMBIO;
     }
     if (incierto && c?.tipo === 'conflicto' && produce.includes(c.estadoActual)) {
       return { resultado: 'ya_hecho', estado: c.estadoActual, total_alojado: null, liberadas: 0, mensaje: textoYaHecho, detalle: c.mensaje, destino: c.destino, nota };
@@ -918,10 +923,16 @@ export const cerrarDiferencia = async (sesion, casoId, { motivo, observacion } =
 // «Cancelar el ingreso»: sin nadie confirmado; libera todas las camas y el caso vuelve a la mesa.
 // El reintento de un cancelar incierto podría cancelar OTRO ingreso del mismo caso (el primero llegó, la
 // mesa volvió a derivar acá y otra guardia aceptó).
-// - Con `derivacion` (back con el Cambio 477): el reintento sale directo con ese id. Si el primero llegó,
-//   409 EN_GESTION/NUEVO → «se hizo»; si el ingreso ya es otro, el 409 de la derivación (INGRESO_EN_CURSO o
-//   DERIVADO) → conflicto: no se canceló nada y el router recarga (`cerrarIngreso`). No hace falta releer ni
-//   volver a preguntar: el back no cancela un ingreso que la guardia no vio.
+// - Con `derivacion` (back con el Cambio 477): el reintento sale directo con ese id. No hace falta releer
+//   ni volver a preguntar: el back no cancela un ingreso que la guardia no vio.
+//   · 409 EN_GESTION/NUEVO → «se hizo». Se muestra `textoYaHecho`, no el `detail`: con la derivación
+//     cambiada el detail es el de «cambió… Recargá la pantalla», que contradice el resultado.
+//   · 409 INGRESO_EN_CURSO/DERIVADO → hay otra derivación, y eso prueba que el ingreso que vio la guardia
+//     ya terminó (lo canceló este teléfono, otra guardia o la mesa): no se sabe si fue este cancelar, solo
+//     que el reintento no hizo nada. Conflicto con TEXTO_REINTENTO_OTRO_INGRESO + el detail; el router
+//     decide por `destino`.
+//   · 400 `non_field_errors` (ya hay alguien confirmado): no hay nada que reintentar acá; sale como
+//     conflicto a integrantes con el mensaje del servidor.
 // - Sin `derivacion` (back viejo, que no la expone): antes de reenviar se relee: con el caso ya en la mesa
 //   es «se hizo» sin reenviar; si cambió (otro estado o personas confirmadas), no se reenvía. Si sigue en
 //   curso sin nadie confirmado no se puede distinguir de un ingreso nuevo: NO se reenvía solo; sale un
@@ -955,10 +966,23 @@ export const cancelar = async (sesion, casoId, { motivo } = {}, { incierto = fal
       clasificacion: { tipo: 'confirmar_reenvio', mensaje: TEXTO_CONFIRMAR_REENVIO_CANCELAR },
     });
   }
-  return cerrarIngreso(sesion, (op) => cancelarIngreso(casoId, { motivo, derivacion: id }, op), {
-    incierto, derivacion: id, campos: ['motivo'], produce: ESTADOS_EN_LA_MESA,
-    textoIncierto: TEXTO_CANCELAR_INCIERTO, textoYaHecho: TEXTO_YA_CANCELADO,
-  });
+  try {
+    const r = await cerrarIngreso(sesion, (op) => cancelarIngreso(casoId, { motivo, derivacion: id }, op), {
+      incierto, derivacion: id, campos: ['motivo'], produce: ESTADOS_EN_LA_MESA,
+      textoIncierto: TEXTO_CANCELAR_INCIERTO, textoYaHecho: TEXTO_YA_CANCELADO,
+    });
+    return r.resultado === 'ya_hecho' && id !== null ? { ...r, detalle: null } : r;
+  } catch (error) {
+    const c = error.clasificacion;
+    if (id === null || !c) throw error;
+    if (incierto && c.tipo === 'conflicto' && ESTADOS_OTRA_DERIVACION.includes(c.estadoActual)) {
+      c.mensaje = [TEXTO_REINTENTO_OTRO_INGRESO, detalleDe(error)].filter(Boolean).join(' ');
+    } else if (c.tipo === 'validacion' && c.errores?.generales?.length) {
+      error.clasificacion = { tipo: 'conflicto', mensaje: c.errores.generales.join('\n'), estadoActual: 'INGRESO_EN_CURSO', destino: 'integrantes' };
+      error.incierto = false;
+    }
+    throw error;
+  }
 };
 
 // ---- Parte 3: sin derivación (§13.10, M2-6) ----

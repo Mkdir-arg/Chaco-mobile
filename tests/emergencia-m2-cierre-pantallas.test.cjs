@@ -574,7 +574,7 @@ test('477: alojar y diferencia mandan la derivación que vio la guardia al abrir
     await dif.pressButton('Cerrar con diferencia');
     await dif.aceptarAlerta('Cerrar con diferencia');
     assert.deepEqual(posts(dif.calls).map(c => c.body), [{motivo: 'NO_LLEGO', derivacion: 55}]);
-    assert.deepEqual(dif.eventos.map(e => [e[0], e[1].destino, e[1].mensaje, e[1].ingresoCambio]), [['conflicto', 'integrantes', CAMBIO_409.detail, true]],
+    assert.deepEqual(dif.eventos.map(e => [e[0], e[1].destino, e[1].mensaje]), [['conflicto', 'integrantes', CAMBIO_409.detail]],
       'la derivación vieja: el detail y al router');
   } finally { await dif.close(); }
 });
@@ -592,10 +592,22 @@ test('477: cancelar con la derivación, tras un corte el reintento sale directo 
     assert.equal(ui.alerts.length, alertas, 'no vuelve a preguntar');
     assert.deepEqual(ui.calls.map(c => [c.method, c.body]), [['POST', {motivo: 'Se fueron', derivacion: 55}], ['POST', {motivo: 'Se fueron', derivacion: 55}]]);
     assert.deepEqual(ui.eventos.map(e => [e[0], e[1].cierre, e[1].resultado, e[1].estado]), [['cerrado', 'cancelar', 'ya_hecho', 'EN_GESTION']]);
+    assert.deepEqual(plano(ui.toasts.at(-1)), {type: 'info', message: 'El ingreso ya figura cancelado: el caso está de vuelta en la mesa.'});
   } finally { await ui.close(); }
 });
 
-test('477: cancelar con la derivación, tras un corte el 409 «cambió» es otro ingreso: no se hizo, avisa con el detail y va a integrantes', async () => {
+test('477: cancelar con la derivación y 400 `non_field_errors` (alguien se confirmó) no queda trabado: avisa y va a integrantes', async () => {
+  const NFE = 'Hay personas confirmadas: no se puede cancelar. Cerrá con diferencia.';
+  const ui = await montarCierre(() => response(400, {code: 'VALIDACION', detail: NFE, non_field_errors: [NFE]}), {cierre: 'cancelar', confirmadas: 0, derivacion: 55});
+  try {
+    await ui.escribir('Motivo de la cancelación', 'Se fueron');
+    await ui.pressButton('Cancelar el ingreso');
+    await ui.aceptarAlerta('Cancelar el ingreso');
+    assert.deepEqual(ui.eventos.map(e => [e[0], e[1].destino, e[1].mensaje]), [['conflicto', 'integrantes', NFE]]);
+  } finally { await ui.close(); }
+});
+
+test('477: cancelar con la derivación, tras un corte el 409 «cambió»: el reintento no hizo nada, el ingreso anterior ya terminó; avisa y va a integrantes', async () => {
   let intento = 0;
   const ui = await montarCierre(() => { intento += 1; return intento === 1 ? fallaDeRed() : response(409, CAMBIO_409); },
     {cierre: 'cancelar', confirmadas: 0, derivacion: 55});
@@ -607,7 +619,8 @@ test('477: cancelar con la derivación, tras un corte el 409 «cambió» es otro
     await ui.pressButton('Reintentar: cancelar el ingreso');
     assert.equal(ui.alerts.length, alertas);
     assert.deepEqual(ui.calls.map(c => c.method), ['POST', 'POST']);
-    assert.deepEqual(ui.eventos.map(e => [e[0], e[1].destino, e[1].estadoActual, e[1].mensaje]), [['conflicto', 'integrantes', 'INGRESO_EN_CURSO', CAMBIO_409.detail]]);
+    assert.deepEqual(ui.eventos.map(e => [e[0], e[1].destino, e[1].estadoActual, e[1].mensaje]),
+      [['conflicto', 'integrantes', 'INGRESO_EN_CURSO', `Este reintento no hizo nada: el ingreso anterior ya terminó y ahora hay otro. ${CAMBIO_409.detail}`]]);
     assert.ok(!ui.eventos.some(e => e[0] === 'cerrado'), 'no dice que se canceló');
   } finally { await ui.close(); }
 });

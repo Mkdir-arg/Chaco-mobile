@@ -443,15 +443,27 @@ Reglas (`src/services/emergenciaLlegadas.js`):
   (la mesa volvió a derivar al mismo dispositivo), el back responde 409 sin escribir nada, con el
   `detail` «El ingreso del caso … cambió: la derivación que viste ya no es la vigente. Recargá la
   pantalla.» y el estado de hoy: la app lo muestra y va al router de §13.1 (con `INGRESO_EN_CURSO`, a los
-  integrantes, que se recargan con la derivación nueva). Ese 409 no trae `code`; con la derivación
-  mandada, un 409 `INGRESO_EN_CURSO` solo puede ser ese (los tres cierres necesitan el ingreso en curso:
-  con la misma derivación el back cerraría), y nunca cuenta como «se hizo».
+  integrantes, que se recargan con la derivación nueva). Ese 409 no trae `code` y la app no compara el
+  `detail`: el router decide por el destino de `estado_actual`. Con la derivación mandada, un 409
+  `INGRESO_EN_CURSO` o `DERIVADO` solo puede ser ese (los tres cierres necesitan el ingreso en curso con
+  la derivación aceptada: con la misma derivación el back cerraría), y nunca cuenta como «se hizo».
+  - Supuesto: en alojar y diferencia, un 409 «cambió» con `ALOJADO`/`CERRADO` no es alcanzable con el back
+    actual (no hay reabrir un ingreso alojado ni desconfirmar personas), así que tras un envío incierto
+    `ALOJADO` sigue siendo «se hizo». Si el back sumara alguna de esas acciones, hay que revisarlo.
+  - Ventana de rollback del back: si la app ya recibió un id y el back vuelve a una versión sin el
+    Cambio 477, el campo se ignora y el reintento de un cancelar incierto sale sin la relectura ni la
+    reconfirmación (en esa ventana vuelve el riesgo de cancelar un ingreso nuevo).
 - **Reintento de un cancelar incierto**:
   - Con la derivación (back con el Cambio 477): el reintento sale directo con ese id, sin releer ni
     volver a preguntar, porque el back no cancela un ingreso que la guardia no vio. 409
-    `EN_GESTION`/`NUEVO` → «se hizo» (el primero llegó). 409 «cambió» (`INGRESO_EN_CURSO`, o `DERIVADO`
-    si la mesa volvió a derivar y todavía nadie aceptó) → esta cancelación no se hizo y el ingreso es
-    otro: se avisa con el `detail` y se recarga por el estado.
+    `EN_GESTION`/`NUEVO` → «se hizo»: se muestra «El ingreso ya figura cancelado…» y no el `detail` (con la
+    derivación cambiada diría «Recargá la pantalla», que contradice el resultado). 409 «cambió»
+    (`INGRESO_EN_CURSO`, o `DERIVADO` si la mesa volvió a derivar y todavía nadie aceptó) → que haya otra
+    derivación prueba que el ingreso que vio la guardia ya terminó (por este teléfono, otra guardia o la
+    mesa); lo único seguro es que el reintento no hizo nada: «Este reintento no hizo nada: el ingreso
+    anterior ya terminó y ahora hay otro.» + el `detail`, y se recarga por el estado. Un 400
+    `non_field_errors` (alguien se confirmó mientras tanto) no deja la pantalla trabada en un botón que
+    vuelve a fallar: se avisa con el mensaje y se va a los integrantes.
   - Sin la derivación (el back viejo, todavía en ECOM, no la trae en integrantes ni mira el campo):
     sigue la relectura y la reconfirmación. Antes de reenviar se releen los integrantes: con el caso ya
     en la mesa es «se hizo» sin reenviar; con el ingreso en otro estado o con personas confirmadas, no se

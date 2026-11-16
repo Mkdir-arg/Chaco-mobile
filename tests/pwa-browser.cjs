@@ -123,7 +123,11 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
           if(m2.alojar.length===1) {await route.abort('connectionreset');return;}
           status=409;body={detail:'La familia del caso 2026-000184 ya figura alojada. Recargá la pantalla.',estado_actual:'ALOJADO'};
         }
-        else if(req.method()==='GET' && /\/api\/emergencia\/casos\/18[56]\/integrantes\/$/.test(url)) {m2.relecturas++;status=500;body={};}
+        else if(req.method()==='GET' && /\/api\/emergencia\/casos\/18[5-7]\/integrantes\/$/.test(url)) {m2.relecturas++;status=500;body={};}
+        else if(req.method()==='POST' && url.endsWith('/api/emergencia/casos/187/cancelar-ingreso/')) {
+          m2.cancelar.push({caso:187,...JSON.parse(req.postData()||'{}')});
+          body={estado:'EN_GESTION',total_alojado:null,liberadas:3};
+        }
         else if(req.method()==='POST' && /\/api\/emergencia\/casos\/18[56]\/cancelar-ingreso\/$/.test(url)) {
           // Cambio 477: el primero de cada caso se corta. En el 185 había llegado (el reintento ve el caso en
           // la mesa); en el 186 la mesa volvió a derivar y otra guardia aceptó (la derivación ya no es la vista).
@@ -473,18 +477,20 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
         let corte=null;
         try { await l.cancelar(sesion,caso,{motivo:' La familia se fue '},{derivacion:caso}); } catch(e){ corte=e.incierto; }
         try { const r=await l.cancelar(sesion,caso,{motivo:' La familia se fue '},{incierto:corte,derivacion:caso}); return {corte,resultado:r.resultado,estado:r.estado}; }
-        catch(e){ return {corte,tipo:e.clasificacion.tipo,ingresoCambio:e.clasificacion.ingresoCambio,destino:e.clasificacion.destino,incierto:e.incierto}; }
+        catch(e){ return {corte,tipo:e.clasificacion.tipo,mensaje:e.clasificacion.mensaje.split(':')[0],destino:e.clasificacion.destino,incierto:e.incierto}; }
       };
       const cancelado=await cancelarIncierto(185);
       const otroIngreso=await cancelarIncierto(186);
+      const directo=await l.cancelar(sesion,187,{motivo:' La familia se fue '},{derivacion:187});
       let ingreso=null;
       try { await l.enviarPuerta(sesion,9,'ingresar',{traslado:'POLICIA',dni:'30222333',nombre:'Ana',adultos_f:1}); } catch(e){ ingreso={tipo:e.clasificacion.tipo,incierto:e.incierto}; }
-      return {derivacion,primero,segundo:{resultado:segundo.resultado,estado:segundo.estado,destino:segundo.destino},cancelado,otroIngreso,ingreso,
+      return {derivacion,primero,segundo:{resultado:segundo.resultado,estado:segundo.estado,destino:segundo.destino},cancelado,otroIngreso,directo,ingreso,
         pendiente:await l.puertaPendiente(sesion,9,'30222333')};
     });
     assert.deepEqual({...cierres,pendiente:cierres.pendiente&&cierres.pendiente.accion},{derivacion:55,primero:{tipo:'reintentable',incierto:true},
       segundo:{resultado:'ya_hecho',estado:'ALOJADO',destino:'integrantes'},cancelado:{corte:true,resultado:'ya_hecho',estado:'EN_GESTION'},
-      otroIngreso:{corte:true,tipo:'conflicto',ingresoCambio:true,destino:'integrantes',incierto:false},
+      otroIngreso:{corte:true,tipo:'conflicto',mensaje:'Este reintento no hizo nada',destino:'integrantes',incierto:false},
+      directo:{resultado:'hecho',estado:'EN_GESTION',total_alojado:null,liberadas:3},
       ingreso:{tipo:'reintentable',incierto:true},pendiente:'ingresar'});
     await page.reload(); await page.waitForFunction(()=>window.__pwaTest);
     const puerta=await page.evaluate(async()=>{
@@ -502,7 +508,7 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
     assert.equal(m2.alojar.length,2);
     assert.deepEqual(m2.alojar,[{tarjeta_entregada:false,sector:3,aula:'Aula 3',derivacion:55},{tarjeta_entregada:false,sector:3,aula:'Aula 3',derivacion:55}],
       'la derivación vista viaja en el primer envío y en el reintento');
-    assert.deepEqual(m2.cancelar,[185,185,186,186].map(caso=>({caso,motivo:'La familia se fue',derivacion:caso})));
+    assert.deepEqual(m2.cancelar,[185,185,186,186,187].map(caso=>({caso,motivo:'La familia se fue',derivacion:caso})));
     assert.equal(m2.relecturas,0,'con la derivación, el reintento de cancelar no relee');
     assert.equal(m2.ingreso.length,2);
     assert.match(m2.ingreso[0].uuid_cliente,/^[0-9a-f-]{36}$/);
@@ -529,7 +535,7 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
     assert.equal(avisos.length,2);
     assert.deepEqual(avisos[1],{uuid_cliente:avisos[0].uuid_cliente,dni:'30777888'});
     assert.deepEqual(errors,[]);
-    console.log('PASS: Emergencia M2 parte 3: offline blocked, lost alojar response + 409 ALOJADO treated as done (with derivacion), lost cancel retried directly with derivacion (409 EN_GESTION done, 409 derivacion changed = other ingreso), lost ingreso directo retried with same uuid after reload, other action blocked while pending, avisar a la mesa, uuid without personal data survives logout.');
+    console.log('PASS: Emergencia M2 parte 3: offline blocked, lost alojar response + 409 ALOJADO treated as done (with derivacion), cancel with derivacion (200 first send; lost one retried directly: 409 EN_GESTION done, 409 derivacion changed = retry did nothing), lost ingreso directo retried with same uuid after reload, other action blocked while pending, avisar a la mesa, uuid without personal data survives logout.');
   } finally {
     fs.writeFileSync(entry,original);
     await context?.close(); server?.kill(); fs.rmSync(profile,{recursive:true,force:true});
