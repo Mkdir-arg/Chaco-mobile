@@ -98,6 +98,7 @@ async function mountLista(items) {
   const {mocks} = await baseMocks();
   Object.assign(mocks, {
     '@react-native-community/netinfo': {__esModule: true, default: {fetch: async () => ({isConnected: true, isInternetReachable: true})}},
+    '../services/conectividad': {hayRed: async () => true, hayRedEn: () => true, escucharReconexion: () => () => {}},
     '../services/dispositivosService': {getInspecciones: async () => items},
   });
   const Screen = loadScreen('src/screens/DispositivosListaScreen.js', mocks);
@@ -132,6 +133,7 @@ async function mountListaLenta(respuestas) {
   const pedidos = [];
   Object.assign(mocks, {
     '@react-native-community/netinfo': {__esModule: true, default: {fetch: async () => ({isConnected: true, isInternetReachable: true})}},
+    '../services/conectividad': {hayRed: async () => true, hayRedEn: () => true, escucharReconexion: () => () => {}},
     '../services/dispositivosService': {getInspecciones: (opciones) => { pedidos.push(opciones); return respuestas[pedidos.length - 1](); }},
   });
   const Screen = loadScreen('src/screens/DispositivosListaScreen.js', mocks);

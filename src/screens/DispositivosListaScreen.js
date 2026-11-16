@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, RefreshControl } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import NetInfo from '@react-native-community/netinfo';
+import { hayRed } from '../services/conectividad';
 import { useTheme } from '../context/ThemeContext';
 import { statusTones } from '../theme/statusBadges';
 import { getInspecciones } from '../services/dispositivosService';
@@ -25,12 +25,7 @@ export default function DispositivosListaScreen({ onAbrir, syncTick = 0 }) {
   const cargar = useCallback(async ({ remoto = true, silencioso = false } = {}) => {
     enCurso.current += 1;
     if (silencioso) setRefreshing(true);
-    try {
-      const red = await NetInfo.fetch();
-      setSinRed(!(red?.isConnected && red?.isInternetReachable !== false));
-    } catch {
-      setSinRed(true);
-    }
+    setSinRed(!(await hayRed()));
     try {
       setItems(await getInspecciones({ refreshFromRemote: remoto }));
       setError('');

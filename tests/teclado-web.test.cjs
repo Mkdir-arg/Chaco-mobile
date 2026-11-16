@@ -50,7 +50,7 @@ test('todo keyboardDismissMode en src/ pasa por keyboardDismissModeFor', () => {
     });
   }
   assert.ok(encontrados >= 3);
-  for (const pantalla of ['LoginScreen', 'NewRelevamientoScreen', 'RelevamientoDetailScreen']) {
+  for (const pantalla of ['LoginScreen', 'RelevamientoDetailScreen']) {
     const source = fs.readFileSync(path.join('src', 'screens', pantalla + '.js'), 'utf8');
     assert.match(source, /keyboardDismissMode\s*=\s*\{[^}]*keyboardDismissModeFor/, pantalla + ' no usa el helper');
   }

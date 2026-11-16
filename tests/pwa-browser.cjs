@@ -223,7 +223,12 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
     await context.setOffline(true); await page.goto('http://localhost:4174');
     await page.waitForFunction(()=>window.__pwaTest);
     assert.equal(await page.evaluate(()=>window.__pwaTest.service.getPendingCount()),1);
+    // La prueba de red de NetInfo web (HEAD a `/`) falla siempre, como la hecha sin señal que
+    // queda guardada: la cola de Becas tiene que mirar la red del navegador y salir igual.
+    const sondeoNetInfoBecas=route=>route.request().method()==='HEAD'?route.abort():route.fallback();
+    await context.route('http://localhost:4174/',sondeoNetInfoBecas);
     await context.setOffline(false);
+    await page.waitForFunction(()=>navigator.onLine===true);
     await page.evaluate(()=>window.__pwaTest.service.syncPendingOperations());
     assert.equal(await page.evaluate(()=>window.__pwaTest.api.getBecasToken()),null,'401 invalidates session');
     rejectUpload=false;
@@ -235,6 +240,7 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
     assert.equal(await page.evaluate(()=>window.__pwaTest.service.getPendingCount()),0);
     assert.equal(posts,1,'Accepted capture is not recreated after attachment 401');
     assert.equal(uploads,2);
+    await context.unroute('http://localhost:4174/',sondeoNetInfoBecas);
     assert.deepEqual(errors,[]);
     console.log('PASS: offline capture + attachment, reload, browser restart, multipart, 401 recovery, no duplicate capture.');
     // Emergencia M1: localidades guardadas y una familia relevada sin señal, que sobrevive a

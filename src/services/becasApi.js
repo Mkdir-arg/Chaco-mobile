@@ -284,7 +284,8 @@ const errorPorTiempo = () => Object.assign(
 
 // Hace el pedido y lee la respuesta; con `timeoutMs`, aborta el fetch a ese tiempo y sale con un
 // error `network` + `timeout`. La carrera libera al que espera aunque el fetch no respete la
-// señal. Sin `timeoutMs` no hay límite (lo de siempre).
+// señal. Sin `timeoutMs` no hay límite. Si el que llama trae su propia `signal`, abortarla
+// también corta el pedido (y sale su error, no el de tiempo).
 const pedirYLeer = async (url, init, timeoutMs) => {
   const leer = async (signal) => {
     const response = await fetchConRedMarcada(url, signal ? { ...init, signal } : init);
@@ -293,16 +294,25 @@ const pedirYLeer = async (url, init, timeoutMs) => {
   };
   if (!(Number(timeoutMs) > 0)) return leer(init.signal);
   const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const externa = init.signal;
+  let porTiempo = false;
   let timer;
   const limite = new Promise((_, reject) => {
     timer = setTimeout(() => {
+      porTiempo = true;
       controller?.abort();
       reject(errorPorTiempo());
     }, Number(timeoutMs));
   });
-  const pedido = leer(controller?.signal ?? init.signal)
-    .catch((error) => { throw controller?.signal.aborted ? errorPorTiempo() : error; });
-  return Promise.race([pedido, limite]).finally(() => clearTimeout(timer));
+  const abortarPorFuera = () => controller?.abort();
+  if (externa?.aborted) abortarPorFuera();
+  else externa?.addEventListener?.('abort', abortarPorFuera);
+  const pedido = leer(controller?.signal ?? externa)
+    .catch((error) => { throw porTiempo ? errorPorTiempo() : error; });
+  return Promise.race([pedido, limite]).finally(() => {
+    clearTimeout(timer);
+    externa?.removeEventListener?.('abort', abortarPorFuera);
+  });
 };
 
 const responderOFallar = async ({ response, payload }, token) => {
@@ -368,7 +378,11 @@ export const becasUploadFile = async (path, { fileUri, fileField = 'archivo', fi
 
 // `options.token`, si viene, es el de la sesión con la que se armó el pedido (como en
 // uploadMultipart): se usa ese y no se relee, así un 401 invalida solo si sigue vigente. No va a fetch.
-export const becasRequest = async (path, { token: tokenDelPedido = null, ...options } = {}) => {
+// Límite por defecto de un pedido JSON: sin él, un pedido colgado con mala señal no termina nunca y
+// deja trabada la cola que lo espera. `timeoutMs` lo cambia; `null` o 0 lo quita.
+export const TIMEOUT_JSON_MS = 30 * 1000;
+
+export const becasRequest = async (path, { token: tokenDelPedido = null, timeoutMs = TIMEOUT_JSON_MS, ...options } = {}) => {
   const token = tokenDelPedido ?? await getBecasToken();
   const headers = {
     Accept: 'application/json',
@@ -377,14 +391,13 @@ export const becasRequest = async (path, { token: tokenDelPedido = null, ...opti
     ...(options.headers || {}),
   };
 
-  const response = await fetchConRedMarcada(buildUrl(path), {
+  const leido = await pedirYLeer(buildUrl(path), {
     ...options,
     credentials: CREDENCIALES,
     headers,
     body: options.body && typeof options.body !== 'string'
       ? JSON.stringify(options.body)
       : options.body,
-  });
-  registrarHoraServidor(response.headers?.get?.('Date'));
-  return responderOFallar({ response, payload: await parseResponse(response) }, token);
+  }, timeoutMs);
+  return responderOFallar(leido, token);
 };

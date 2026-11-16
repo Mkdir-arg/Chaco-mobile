@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, StyleSheet } from 'react-native';
-import NetInfo from '@react-native-community/netinfo';
+import { escucharReconexion } from '../services/conectividad';
+import { repetirMientrasActiva } from '../services/sincronizacionPeriodica';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
@@ -12,7 +13,6 @@ import DispositivoDetalleScreen from '../screens/DispositivoDetalleScreen';
 import DispositivoCompletarScreen from '../screens/DispositivoCompletarScreen';
 import { getPendingCount, syncPendientes, reintentarFallidas } from '../services/dispositivosService';
 
-const SYNC_INTERVAL_MS = 8000;
 const RECONNECT_DELAY_MS = 1800;
 
 // Módulo Dispositivos: lista -> detalle -> completar. No importa nada de Becas: comparte solo
@@ -29,7 +29,6 @@ export default function DispositivosApp({ onCambiarModulo }) {
   const [syncPendingCount, setSyncPendingCount] = useState(0);
   const [syncTick, setSyncTick] = useState(0);
   const enCurso = useRef(false);
-  const conectado = useRef(null);
   const reconexion = useRef(null);
   const montado = useRef(true);
 
@@ -61,19 +60,14 @@ export default function DispositivosApp({ onCambiarModulo }) {
   useEffect(() => {
     montado.current = true;
     sincronizarDeFondo();
-    const timer = setInterval(sincronizarDeFondo, SYNC_INTERVAL_MS);
-    const desuscribir = NetInfo.addEventListener((state) => {
-      const hayRed = !!state?.isConnected && state?.isInternetReachable !== false;
-      const antes = conectado.current;
-      conectado.current = hayRed;
-      if (!antes && hayRed) {
-        if (reconexion.current) clearTimeout(reconexion.current);
-        reconexion.current = setTimeout(sincronizarDeFondo, RECONNECT_DELAY_MS);
-      }
+    const dejarDeRepetir = repetirMientrasActiva(sincronizarDeFondo);
+    const desuscribir = escucharReconexion(() => {
+      if (reconexion.current) clearTimeout(reconexion.current);
+      reconexion.current = setTimeout(sincronizarDeFondo, RECONNECT_DELAY_MS);
     });
     return () => {
       montado.current = false;
-      clearInterval(timer);
+      dejarDeRepetir();
       desuscribir?.();
       if (reconexion.current) clearTimeout(reconexion.current);
     };

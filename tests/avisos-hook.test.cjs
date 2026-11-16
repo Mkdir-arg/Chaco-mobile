@@ -36,6 +36,7 @@ async function montar({rechazos, sesion = async () => true}) {
   const mocks = {
     react: React,
     '@react-native-community/netinfo': {__esModule: true, default: {fetch: async () => ({isConnected: true, isInternetReachable: true})}},
+    '../services/conectividad': {hayRed: async () => true, hayRedEn: () => true, escucharReconexion: () => () => {}},
     '../services/relevamientoService': {__esModule: true, default: {
       getAvisosDb: async () => db, getOwnerIdActual: async () => '7', getOperacionesParaAvisos: async () => []}},
     '../services/becasApi': {becasRequest: async () => ({}), getBecasToken: async () => 'token'},
