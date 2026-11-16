@@ -4,7 +4,7 @@ import { getBecasToken, getStoredBecasUser } from './becasApi';
 import {
   aceptarDerivacion, agregarIntegrante, alojarFamilia, avisarALaMesa, buscarFamilia, cancelarIngreso, cerrarConDiferencia,
   completarFichaIntegrante, confirmarIntegrante, errorObsoleto, esConflictoDeEstado, esUuidEnUso, getIntegrante, getIntegrantes,
-  getPlazas, ingresoDirecto, rechazarDerivacion,
+  getPlazas, idDeDerivacion, ingresoDirecto, rechazarDerivacion,
 } from './emergenciaApi';
 import { esSinModulo } from './sinModulo';
 import { CANTIDADES, datosDelCaso, datosIniciales, erroresDelServidor, validarCaso } from '../utils/emergencia';
@@ -195,7 +195,8 @@ const normalizarIntegrante = (fila) => {
   };
 };
 
-// §13.5 (también el cuerpo de aceptar, §13.3, que trae `integrantes`).
+// §13.5 (también el cuerpo de aceptar, §13.3, que trae `integrantes`). `derivacion_id`: la derivación
+// vigente del ingreso (Cambio 477), que se manda en los cierres; null con el back viejo, que no la trae.
 export const normalizarIntegrantes = (payload) => {
   const datos = payload && typeof payload === 'object' ? payload : {};
   const integrantes = (Array.isArray(datos.integrantes) ? datos.integrantes : []).map(normalizarIntegrante).filter(Boolean)
@@ -209,6 +210,7 @@ export const normalizarIntegrantes = (payload) => {
     total_declarado: total,
     declaradas_al_relevar: datos.declaradas_al_relevar != null ? entero(datos.declaradas_al_relevar) : total,
     con_ficha_incompleta: entero(datos.con_ficha_incompleta),
+    derivacion_id: idDeDerivacion(datos.derivacion && typeof datos.derivacion === 'object' ? datos.derivacion.id : null),
   };
 };
 
@@ -755,6 +757,11 @@ export const borrarBorradorFicha = async (sesion, casoId, n) => {
 // - Alojar y diferencia producen ALOJADO (o CERRADO si ya no quedaba nadie con estadía abierta).
 // - Cancelar produce EN_GESTION (o NUEVO si era un ingreso directo).
 // Sin intento incierto, un 409 es un conflicto común: el router recarga por `estado_actual`.
+//
+// La derivación vista (Cambio 477): los tres mandan `derivacion`, el id que trajo integrantes al abrir la
+// pantalla (el mismo en el primer envío y en cada reintento). Si ya no es la vigente, el back responde 409
+// sin escribir, con el `detail` «El ingreso del caso … cambió…» y el estado de hoy; ese chequeo va antes
+// que el de estado. El 409 no trae `code`: se reconoce por `estado_actual` (ver `cerrarIngreso`).
 
 export const MAX_AULA = 80;
 export const MAX_TARJETA = 40;
@@ -781,6 +788,7 @@ export const TEXTO_YA_ALOJADA = 'La familia ya figura alojada: se muestra en lec
 export const NOTA_REVISAR_ALOJAMIENTO = 'Revisá los datos de alojamiento en la ficha: si lo cerró otra guardia, lo que cargaste acá no se guardó.';
 export const TEXTO_CONFIRMAR_REENVIO_CANCELAR = 'No sabemos si la cancelación llegó. El ingreso figura en curso, sin nadie confirmado. ¿Cancelarlo?';
 export const TEXTO_INGRESO_CAMBIO = 'El ingreso cambió mientras tanto (el caso volvió a entrar o ya hay personas confirmadas): no se vuelve a cancelar. Revisá los integrantes.';
+export const TEXTO_DERIVACION_CAMBIO = 'El ingreso cambió: la derivación que viste ya no es la vigente. No se hizo nada. Recargá la pantalla.';
 export const TEXTO_YA_CANCELADO = 'El ingreso ya figura cancelado: el caso está de vuelta en la mesa.';
 
 const texto = (valor) => String(valor ?? '').trim();
@@ -860,12 +868,21 @@ const crearErrorLocal = (errores) => crearError('VALIDACION_LOCAL', 'Hay datos p
 // Lo común a los tres cierres. `produce`: los `estado_actual` que deja esa acción (su 409 tras un intento
 // incierto es «se hizo»). Devuelve { resultado: 'hecho' | 'ya_hecho', estado, total_alojado, liberadas,
 // detalle? }; los errores salen con `clasificacion` y `incierto`.
-const cerrarIngreso = async (sesion, pedido, { incierto, campos, produce, textoIncierto, textoYaHecho, nota = null }) => {
+// Con `derivacion`, un 409 INGRESO_EN_CURSO solo puede ser el de la derivación vieja: los tres cierres
+// necesitan el ingreso en curso, así que con la misma derivación y el caso en curso el back no da 409 de
+// estado. Sale como conflicto con `ingresoCambio: true` (el router lleva a integrantes); un 409 con otro
+// estado que la acción no produce (DERIVADO, la mesa volvió a derivar y nadie aceptó) también es conflicto
+// y el router recarga por `estado_actual`. Nunca es «se hizo».
+const cerrarIngreso = async (sesion, pedido, { incierto, campos, produce, textoIncierto, textoYaHecho, nota = null, derivacion = null }) => {
   try {
     const payload = await conSesion(sesion, pedido, { timeoutMs: LIMITES.accionMs, campos });
     return { resultado: 'hecho', ...normalizarCierre(payload) };
   } catch (error) {
     const c = error.clasificacion;
+    if (derivacion !== null && c?.tipo === 'conflicto' && c.estadoActual === 'INGRESO_EN_CURSO') {
+      c.ingresoCambio = true;
+      if (!detalleDe(error)) c.mensaje = TEXTO_DERIVACION_CAMBIO;
+    }
     if (incierto && c?.tipo === 'conflicto' && produce.includes(c.estadoActual)) {
       return { resultado: 'ya_hecho', estado: c.estadoActual, total_alojado: null, liberadas: 0, mensaje: textoYaHecho, detalle: c.mensaje, destino: c.destino, nota };
     }
@@ -876,36 +893,45 @@ const cerrarIngreso = async (sesion, pedido, { incierto, campos, produce, textoI
 };
 
 // «Familia alojada» (M2-5): con N de N confirmadas. 400 `non_field_errors` si falta confirmar a alguien.
-export const alojar = async (sesion, casoId, datos = {}, { incierto = false } = {}) => {
+// `derivacion` (opciones, en los tres): el `derivacion_id` de integrantes, o null con el back viejo.
+export const alojar = async (sesion, casoId, datos = {}, { incierto = false, derivacion = null } = {}) => {
   const errores = validarAlojar(datos);
   if (Object.keys(errores).length) throw crearErrorLocal(errores);
-  return cerrarIngreso(sesion, (op) => alojarFamilia(casoId, datos, op), {
-    incierto, campos: ['sector', 'aula', 'tarjeta_numero', 'encargado'], produce: ESTADOS_ALOJADA,
+  const id = idDeDerivacion(derivacion);
+  return cerrarIngreso(sesion, (op) => alojarFamilia(casoId, { ...datos, derivacion: id }, op), {
+    incierto, derivacion: id, campos: ['sector', 'aula', 'tarjeta_numero', 'encargado'], produce: ESTADOS_ALOJADA,
     textoIncierto: TEXTO_ALOJAR_INCIERTO, textoYaHecho: TEXTO_YA_ALOJADA, nota: NOTA_REVISAR_ALOJAMIENTO,
   });
 };
 
 // «Cerrar con diferencia» (RN-3.9): al menos una confirmada y falta alguien.
-export const cerrarDiferencia = async (sesion, casoId, { motivo, observacion } = {}, { incierto = false } = {}) => {
+export const cerrarDiferencia = async (sesion, casoId, { motivo, observacion } = {}, { incierto = false, derivacion = null } = {}) => {
   const errores = validarDiferencia({ motivo, observacion });
   if (Object.keys(errores).length) throw crearErrorLocal(errores);
-  return cerrarIngreso(sesion, (op) => cerrarConDiferencia(casoId, { motivo, observacion }, op), {
-    incierto, campos: ['motivo', 'observacion'], produce: ESTADOS_ALOJADA,
+  const id = idDeDerivacion(derivacion);
+  return cerrarIngreso(sesion, (op) => cerrarConDiferencia(casoId, { motivo, observacion, derivacion: id }, op), {
+    incierto, derivacion: id, campos: ['motivo', 'observacion'], produce: ESTADOS_ALOJADA,
     textoIncierto: TEXTO_DIFERENCIA_INCIERTA, textoYaHecho: TEXTO_YA_ALOJADA,
   });
 };
 
 // «Cancelar el ingreso»: sin nadie confirmado; libera todas las camas y el caso vuelve a la mesa.
 // El reintento de un cancelar incierto podría cancelar OTRO ingreso del mismo caso (el primero llegó, la
-// mesa volvió a derivar acá y otra guardia aceptó). El GET de integrantes no expone la derivación, así
-// que antes de reenviar se relee: con el caso ya en la mesa es «se hizo» sin reenviar; si cambió (otro
-// estado o personas confirmadas), no se reenvía. Si sigue en curso sin nadie confirmado no se puede
-// distinguir de un ingreso nuevo: NO se reenvía solo; sale un error `confirmar_reenvio` para que la
-// guardia vuelva a confirmar con el estado real, y recién con `reconfirmado: true` se manda.
-export const cancelar = async (sesion, casoId, { motivo } = {}, { incierto = false, reconfirmado = false } = {}) => {
+// mesa volvió a derivar acá y otra guardia aceptó).
+// - Con `derivacion` (back con el Cambio 477): el reintento sale directo con ese id. Si el primero llegó,
+//   409 EN_GESTION/NUEVO → «se hizo»; si el ingreso ya es otro, el 409 de la derivación (INGRESO_EN_CURSO o
+//   DERIVADO) → conflicto: no se canceló nada y el router recarga (`cerrarIngreso`). No hace falta releer ni
+//   volver a preguntar: el back no cancela un ingreso que la guardia no vio.
+// - Sin `derivacion` (back viejo, que no la expone): antes de reenviar se relee: con el caso ya en la mesa
+//   es «se hizo» sin reenviar; si cambió (otro estado o personas confirmadas), no se reenvía. Si sigue en
+//   curso sin nadie confirmado no se puede distinguir de un ingreso nuevo: NO se reenvía solo; sale un
+//   error `confirmar_reenvio` para que la guardia vuelva a confirmar con el estado real, y recién con
+//   `reconfirmado: true` se manda.
+export const cancelar = async (sesion, casoId, { motivo } = {}, { incierto = false, reconfirmado = false, derivacion = null } = {}) => {
   const errores = validarCancelar({ motivo });
   if (Object.keys(errores).length) throw crearErrorLocal(errores);
-  if (incierto && !reconfirmado) {
+  const id = idDeDerivacion(derivacion);
+  if (incierto && !reconfirmado && id === null) {
     let actual;
     try {
       actual = await cargarIntegrantes(sesion, casoId);
@@ -929,8 +955,8 @@ export const cancelar = async (sesion, casoId, { motivo } = {}, { incierto = fal
       clasificacion: { tipo: 'confirmar_reenvio', mensaje: TEXTO_CONFIRMAR_REENVIO_CANCELAR },
     });
   }
-  return cerrarIngreso(sesion, (op) => cancelarIngreso(casoId, { motivo }, op), {
-    incierto, campos: ['motivo'], produce: ESTADOS_EN_LA_MESA,
+  return cerrarIngreso(sesion, (op) => cancelarIngreso(casoId, { motivo, derivacion: id }, op), {
+    incierto, derivacion: id, campos: ['motivo'], produce: ESTADOS_EN_LA_MESA,
     textoIncierto: TEXTO_CANCELAR_INCIERTO, textoYaHecho: TEXTO_YA_CANCELADO,
   });
 };

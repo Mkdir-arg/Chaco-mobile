@@ -52,14 +52,18 @@ export const CIERRES = {
 // ingreso» (motivo). Con conexión: sin red no se manda nada. El token se fija al abrir.
 // Ninguno de los tres es idempotente: si el envío queda incierto (red, timeout, 5xx, WAF), «Reintentar»
 // manda lo mismo sin volver a preguntar, y el 409 con el estado que esa acción produce es «se hizo»
-// (muestra el `detail` del servidor: puede haberlo hecho otra guardia). Antes de reenviar un cancelar
-// incierto se releen los integrantes: si el ingreso cambió, no se reenvía (`cancelar` del servicio).
+// (muestra el `detail` del servidor: puede haberlo hecho otra guardia).
+// - `derivacion`: el `derivacion_id` que trajo integrantes (Cambio 477). Se fija al abrir y viaja en el
+//   primer envío y en cada reintento: si el ingreso ya es otro, el back responde 409 sin escribir y el
+//   router recarga. Con él, el reintento de un cancelar incierto sale directo. Sin él (back viejo), antes
+//   de reenviar un cancelar incierto se releen los integrantes y, si sigue en curso sin confirmados, se
+//   vuelve a preguntar (`cancelar` del servicio).
 // - `onCerrado(resultado)`: 200, o el «se hizo» tras un intento incierto. `resultado.cierre` dice cuál.
 // - `onConflicto(clasificacion)`: 409 de estado → el padre recarga por `estado_actual` (§13.1).
 // - `onNoEncontrado()`: 404. `onSinModulo(mensaje)`: 403. `onEnviando(bool)`: hay un envío en curso.
 // El resultado llega al padre aunque la pantalla ya no esté.
 export default function EmergenciaCierreScreen({
-  caso, cierre, confirmadas = 0, total = 0, integrantes = [], dispositivo,
+  caso, cierre, confirmadas = 0, total = 0, integrantes = [], dispositivo, derivacion = null,
   onCerrado, onConflicto, onNoEncontrado, onSinModulo, onEnviando,
 }) {
   const { theme, typography } = useTheme();
@@ -89,6 +93,8 @@ export default function EmergenciaCierreScreen({
   const [observacion, setObservacion] = useState('');
   const montado = useRef(true);
   const enviandoRef = useRef(false);
+  // La derivación que vio la guardia al abrir: la misma en todos los envíos de esta pantalla.
+  const derivacionVista = useRef(derivacion);
 
   const avisarEnviando = (valor) => {
     try {
@@ -198,7 +204,7 @@ export default function EmergenciaCierreScreen({
     }
     avisarEnviando(true);
     try {
-      const opciones = { incierto, reconfirmado };
+      const opciones = { incierto, reconfirmado, derivacion: derivacionVista.current };
       let r;
       if (cierre === 'alojar') r = await alojar(sesion, caso.id, datosDelCierre(), opciones);
       else if (cierre === 'diferencia') r = await cerrarDiferencia(sesion, caso.id, datosDelCierre(), opciones);

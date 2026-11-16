@@ -31,7 +31,7 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
       fecha_hasta:'2099-12-31T23:59:59-03:00',definicion_formulario:{version:3,globales:[],requisitos:[]}};
     let posts=0, uploads=0, rejectUpload=true, casos=0, localidades=0;
     const recepciones=[];
-    const m2={buscar:0,aceptar:[],integrantes:0,persona:0,plazas:0,confirmar:[],patch:[],alojar:[],cancelar:[],ingreso:[],aviso:[]};
+    const m2={buscar:0,aceptar:[],integrantes:0,persona:0,plazas:0,confirmar:[],patch:[],alojar:[],cancelar:[],ingreso:[],aviso:[],relecturas:0};
     const launch = async () => {
       const ctx = await chromium.launchPersistentContext(profile, {headless:true,
         ...(process.env.CHROME_PATH ? {executablePath:process.env.CHROME_PATH} : {})});
@@ -83,7 +83,7 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
         }
         else if(req.method()==='GET' && url.endsWith('/api/emergencia/casos/184/integrantes/')) {
           m2.integrantes++;
-          body={caso:{id:184,numero:'2026-000184',estado:'INGRESO_EN_CURSO',prioridad:'ALTA',total_declarado:2},
+          body={caso:{id:184,numero:'2026-000184',estado:'INGRESO_EN_CURSO',prioridad:'ALTA',total_declarado:2},derivacion:{id:55},
             integrantes:[{n:1,estado:'SIN_CONFIRMAR',ficha_completa:false,persona:null,plaza:null,parentesco:'',confirmada_en:null,egresado_en:null},
               {n:2,estado:'SIN_CONFIRMAR',ficha_completa:false,persona:null,plaza:null,parentesco:'',confirmada_en:null,egresado_en:null}],
             confirmadas:0,total_declarado:2,declaradas_al_relevar:2,con_ficha_incompleta:0};
@@ -123,9 +123,16 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
           if(m2.alojar.length===1) {await route.abort('connectionreset');return;}
           status=409;body={detail:'La familia del caso 2026-000184 ya figura alojada. Recargá la pantalla.',estado_actual:'ALOJADO'};
         }
-        else if(req.method()==='POST' && url.endsWith('/api/emergencia/casos/185/cancelar-ingreso/')) {
-          m2.cancelar.push(JSON.parse(req.postData()||'{}'));
-          body={estado:'EN_GESTION',total_alojado:null,liberadas:3};
+        else if(req.method()==='GET' && /\/api\/emergencia\/casos\/18[56]\/integrantes\/$/.test(url)) {m2.relecturas++;status=500;body={};}
+        else if(req.method()==='POST' && /\/api\/emergencia\/casos\/18[56]\/cancelar-ingreso\/$/.test(url)) {
+          // Cambio 477: el primero de cada caso se corta. En el 185 había llegado (el reintento ve el caso en
+          // la mesa); en el 186 la mesa volvió a derivar y otra guardia aceptó (la derivación ya no es la vista).
+          const caso=url.includes('/185/')?185:186;
+          m2.cancelar.push({caso,...JSON.parse(req.postData()||'{}')});
+          if(m2.cancelar.filter(c=>c.caso===caso).length===1) {await route.abort('connectionreset');return;}
+          status=409;
+          body=caso===185?{detail:'La derivación ya fue rechazada o el ingreso se canceló. Buscá a la familia de nuevo.',estado_actual:'EN_GESTION'}
+            :{detail:'El ingreso del caso 2026-000186 cambió: la derivación que viste ya no es la vigente. Recargá la pantalla.',estado_actual:'INGRESO_EN_CURSO'};
         }
         else if(req.method()==='POST' && url.endsWith('/api/emergencia/dispositivos/9/ingreso-directo/')) {
           assert.match(req.headers()['content-type'],/application\/json/);
@@ -457,17 +464,27 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
     const cierres=await page.evaluate(async()=>{
       const l=window.__pwaTest.llegadas;
       const sesion=await l.abrirSesion();
+      const {derivacion_id:derivacion}=await l.cargarIntegrantes(sesion,184);
       let primero=null;
-      try { await l.alojar(sesion,184,{sector:3,aula:'Aula 3'}); } catch(e){ primero={tipo:e.clasificacion.tipo,incierto:e.incierto}; }
-      const segundo=await l.alojar(sesion,184,{sector:3,aula:'Aula 3'},{incierto:primero.incierto});
-      const cancelado=await l.cancelar(sesion,185,{motivo:' La familia se fue '});
+      try { await l.alojar(sesion,184,{sector:3,aula:'Aula 3'},{derivacion}); } catch(e){ primero={tipo:e.clasificacion.tipo,incierto:e.incierto}; }
+      const segundo=await l.alojar(sesion,184,{sector:3,aula:'Aula 3'},{incierto:primero.incierto,derivacion});
+      // Cancelar con la derivación vista: tras el corte, el reintento sale directo (sin releer ni preguntar).
+      const cancelarIncierto=async(caso)=>{
+        let corte=null;
+        try { await l.cancelar(sesion,caso,{motivo:' La familia se fue '},{derivacion:caso}); } catch(e){ corte=e.incierto; }
+        try { const r=await l.cancelar(sesion,caso,{motivo:' La familia se fue '},{incierto:corte,derivacion:caso}); return {corte,resultado:r.resultado,estado:r.estado}; }
+        catch(e){ return {corte,tipo:e.clasificacion.tipo,ingresoCambio:e.clasificacion.ingresoCambio,destino:e.clasificacion.destino,incierto:e.incierto}; }
+      };
+      const cancelado=await cancelarIncierto(185);
+      const otroIngreso=await cancelarIncierto(186);
       let ingreso=null;
       try { await l.enviarPuerta(sesion,9,'ingresar',{traslado:'POLICIA',dni:'30222333',nombre:'Ana',adultos_f:1}); } catch(e){ ingreso={tipo:e.clasificacion.tipo,incierto:e.incierto}; }
-      return {primero,segundo:{resultado:segundo.resultado,estado:segundo.estado,destino:segundo.destino},cancelado,ingreso,
+      return {derivacion,primero,segundo:{resultado:segundo.resultado,estado:segundo.estado,destino:segundo.destino},cancelado,otroIngreso,ingreso,
         pendiente:await l.puertaPendiente(sesion,9,'30222333')};
     });
-    assert.deepEqual({...cierres,pendiente:cierres.pendiente&&cierres.pendiente.accion},{primero:{tipo:'reintentable',incierto:true},
-      segundo:{resultado:'ya_hecho',estado:'ALOJADO',destino:'integrantes'},cancelado:{resultado:'hecho',estado:'EN_GESTION',total_alojado:null,liberadas:3},
+    assert.deepEqual({...cierres,pendiente:cierres.pendiente&&cierres.pendiente.accion},{derivacion:55,primero:{tipo:'reintentable',incierto:true},
+      segundo:{resultado:'ya_hecho',estado:'ALOJADO',destino:'integrantes'},cancelado:{corte:true,resultado:'ya_hecho',estado:'EN_GESTION'},
+      otroIngreso:{corte:true,tipo:'conflicto',ingresoCambio:true,destino:'integrantes',incierto:false},
       ingreso:{tipo:'reintentable',incierto:true},pendiente:'ingresar'});
     await page.reload(); await page.waitForFunction(()=>window.__pwaTest);
     const puerta=await page.evaluate(async()=>{
@@ -483,8 +500,10 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
     });
     assert.deepEqual(puerta,{datos:'Ana',otra:'rechazo',ok:{caso:190,reservadas:1,integrantes:1},aviso:'2026-000191',despues:null});
     assert.equal(m2.alojar.length,2);
-    assert.deepEqual(m2.alojar[0],{tarjeta_entregada:false,sector:3,aula:'Aula 3'});
-    assert.deepEqual(m2.cancelar,[{motivo:'La familia se fue'}]);
+    assert.deepEqual(m2.alojar,[{tarjeta_entregada:false,sector:3,aula:'Aula 3',derivacion:55},{tarjeta_entregada:false,sector:3,aula:'Aula 3',derivacion:55}],
+      'la derivación vista viaja en el primer envío y en el reintento');
+    assert.deepEqual(m2.cancelar,[185,185,186,186].map(caso=>({caso,motivo:'La familia se fue',derivacion:caso})));
+    assert.equal(m2.relecturas,0,'con la derivación, el reintento de cancelar no relee');
     assert.equal(m2.ingreso.length,2);
     assert.match(m2.ingreso[0].uuid_cliente,/^[0-9a-f-]{36}$/);
     assert.equal(m2.ingreso[1].uuid_cliente,m2.ingreso[0].uuid_cliente,'el reenvío lleva el MISMO uuid, también después de recargar');
@@ -510,7 +529,7 @@ const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'chaco-pwa-browser-'));
     assert.equal(avisos.length,2);
     assert.deepEqual(avisos[1],{uuid_cliente:avisos[0].uuid_cliente,dni:'30777888'});
     assert.deepEqual(errors,[]);
-    console.log('PASS: Emergencia M2 parte 3: offline blocked, lost alojar response + 409 ALOJADO treated as done, cancel, lost ingreso directo retried with same uuid after reload, other action blocked while pending, avisar a la mesa, uuid without personal data survives logout.');
+    console.log('PASS: Emergencia M2 parte 3: offline blocked, lost alojar response + 409 ALOJADO treated as done (with derivacion), lost cancel retried directly with derivacion (409 EN_GESTION done, 409 derivacion changed = other ingreso), lost ingreso directo retried with same uuid after reload, other action blocked while pending, avisar a la mesa, uuid without personal data survives logout.');
   } finally {
     fs.writeFileSync(entry,original);
     await context?.close(); server?.kill(); fs.rmSync(profile,{recursive:true,force:true});

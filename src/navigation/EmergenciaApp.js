@@ -304,10 +304,12 @@ export default function EmergenciaApp({ onCambiarModulo }) {
     showToast({ type: 'warning', message: TEXTO_PERSONA_NO_ENCONTRADA });
     setPantalla((actual) => ({ ...actual, vista: 'llegadas_integrantes', n: (actual.n || 0) + 1 }));
   };
-  // Cerrar el ingreso (§13.9). `datos`: lo último que mostró integrantes (contador e integrantes).
+  // Cerrar el ingreso (§13.9). `datos`: lo último que mostró integrantes (contador, integrantes y la
+  // derivación vigente, que viaja en el cierre: Cambio 477).
   const verCierre = (cierre, datos) => setPantalla((actual) => ({
     ...actual, vista: 'llegadas_cierre', cierre, caso: datos?.caso || actual.caso, n: (actual.n || 0) + 1,
-    cierreDatos: { confirmadas: datos?.confirmadas ?? 0, total: datos?.total_declarado ?? 0, integrantes: datos?.integrantes || [] },
+    cierreDatos: { confirmadas: datos?.confirmadas ?? 0, total: datos?.total_declarado ?? 0, integrantes: datos?.integrantes || [],
+      derivacion: datos?.derivacion_id ?? null },
   }));
   // Alojada o cerrada con diferencia: a los integrantes, que se recargan en lectura. Cancelado: el caso
   // volvió a la mesa → a buscar con el DNI, sin buscar sola.
@@ -437,7 +439,8 @@ export default function EmergenciaApp({ onCambiarModulo }) {
         {vista === 'llegadas_cierre' ? (
           <EmergenciaCierreScreen key={`cierre-${pantalla.caso?.id}-${pantalla.cierre}-${pantalla.n}`} caso={pantalla.caso} cierre={pantalla.cierre}
             confirmadas={pantalla.cierreDatos?.confirmadas ?? 0} total={pantalla.cierreDatos?.total ?? 0}
-            integrantes={pantalla.cierreDatos?.integrantes || []} dispositivo={pantalla.dispositivo} onCerrado={terminarCierre}
+            integrantes={pantalla.cierreDatos?.integrantes || []} derivacion={pantalla.cierreDatos?.derivacion ?? null}
+            dispositivo={pantalla.dispositivo} onCerrado={terminarCierre}
             onConflicto={recargarPorEstado} onNoEncontrado={llegadaNoEncontrada} onSinModulo={sinModulo} onEnviando={setEnviando} />
         ) : null}
         {vista === 'llegadas_puerta' ? (

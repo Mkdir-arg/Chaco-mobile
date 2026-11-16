@@ -26,7 +26,8 @@ const CIERRES = {
 // con su cama (solo con el ingreso en curso); confirmada, para ver y completar las secciones 4 a 8
 // (también con la familia alojada; con el caso cerrado, en lectura). El cierre que corresponde al
 // contador (§13.9) abre su pantalla: `onCerrar(cierre, datos)`, con `cierre` 'alojar', 'diferencia' o
-// 'cancelar' y `datos` lo último cargado (caso, contador e integrantes).
+// 'cancelar' y `datos` lo último cargado (caso, contador, integrantes y `derivacion_id`, la derivación
+// vigente que el cierre manda: Cambio 477).
 // - `onConflicto(clasificacion)`: 409 de estado → el padre recarga por `estado_actual` (§13.1).
 // - `onNoEncontrado()`: 404. `onSinModulo(mensaje)`: 403. `onEnviando(bool)`: «Agregar persona» en curso.
 // `recarga` cambia cuando se pide volver a consultar (botón de sincronizar del Banner).

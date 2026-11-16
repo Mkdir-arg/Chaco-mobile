@@ -518,3 +518,109 @@ test('m4: el «se hizo» de alojar trae la nota de revisar el alojamiento; los o
   assert.equal((await l.alojar(sesion, 184, {}, {incierto: true})).nota, l.NOTA_REVISAR_ALOJAMIENTO);
   assert.equal((await l.cerrarDiferencia(sesion, 184, {motivo: 'NO_LLEGO'}, {incierto: true})).nota, null);
 });
+
+// ---- La derivación vista (Cambio 477, contrato §13.5 y §13.9) ----
+
+const CAMBIO_409 = (estado = 'INGRESO_EN_CURSO') => ({
+  detail: 'El ingreso del caso 2026-000184 cambió: la derivación que viste ya no es la vigente. Recargá la pantalla.', estado_actual: estado});
+
+test('477: integrantes expone la derivación vigente; sin ella (back viejo) o con un id raro, null', async () => {
+  const {r, l, sesion} = await preparar();
+  const base = {caso: CASO, integrantes: [FILA(1)], confirmadas: 0, total_declarado: 1, declaradas_al_relevar: 1};
+  assert.equal(l.normalizarIntegrantes({...base, derivacion: {id: 55}}).derivacion_id, 55);
+  for (const derivacion of [undefined, null, {}, {id: null}, {id: 0}, {id: -3}, {id: 1.5}, {id: 'x'}, {id: true}, 55]) {
+    assert.equal(l.normalizarIntegrantes({...base, derivacion}).derivacion_id, null, JSON.stringify(derivacion));
+  }
+  router(r, () => response(200, {...base, derivacion: {id: 77}}));
+  assert.equal((await l.cargarIntegrantes(sesion, 184)).derivacion_id, 77);
+});
+
+test('477: los tres cierres mandan `derivacion` (entero) en el primer envío y en el reintento; sin id no viaja', async () => {
+  const {r, l, sesion} = await preparar();
+  let calls = router(r, () => response(200, {estado: 'ALOJADO', total_alojado: 3, liberadas: 0}));
+  await l.alojar(sesion, 184, {aula: 'A'}, {derivacion: 55});
+  await l.alojar(sesion, 184, {aula: 'A'}, {incierto: true, derivacion: 55});
+  await l.cerrarDiferencia(sesion, 184, {motivo: 'NO_LLEGO'}, {derivacion: '55'});
+  await l.cerrarDiferencia(sesion, 184, {motivo: 'NO_LLEGO'}, {incierto: true, derivacion: 55});
+  igual(calls.map(c => c.body), [
+    {tarjeta_entregada: false, aula: 'A', derivacion: 55}, {tarjeta_entregada: false, aula: 'A', derivacion: 55},
+    {motivo: 'NO_LLEGO', derivacion: 55}, {motivo: 'NO_LLEGO', derivacion: 55}]);
+  calls = router(r, () => response(200, {estado: 'EN_GESTION', total_alojado: null, liberadas: 1}));
+  await l.cancelar(sesion, 184, {motivo: ' x '}, {derivacion: 55});
+  await l.cancelar(sesion, 184, {motivo: ' x '}, {incierto: true, derivacion: 55});
+  igual(calls.map(c => [c.method, c.body]), [['POST', {motivo: 'x', derivacion: 55}], ['POST', {motivo: 'x', derivacion: 55}]]);
+  calls = router(r, () => response(200, {estado: 'ALOJADO', total_alojado: 3, liberadas: 0}));
+  for (const derivacion of [null, undefined, 0, -1, 2.5, 'abc', true]) {
+    await l.alojar(sesion, 184, {}, {derivacion});
+    await l.cerrarDiferencia(sesion, 184, {motivo: 'NO_LLEGO'}, {derivacion});
+  }
+  await l.cancelar(sesion, 184, {motivo: 'x'});
+  assert.ok(calls.every(c => !('derivacion' in c.body)), 'sin un id válido el campo no viaja (el back viejo sigue igual)');
+});
+
+test('477: cancelar incierto con la derivación sale directo, sin releer ni volver a preguntar; 409 en la mesa = «se hizo»', async () => {
+  const {r, l, sesion} = await preparar();
+  for (const estado of ['EN_GESTION', 'NUEVO']) {
+    const calls = router(r, () => response(409, {...CANCELADO_409, estado_actual: estado}));
+    const hecho = await l.cancelar(sesion, 184, {motivo: 'x'}, {incierto: true, derivacion: 55});
+    igual([hecho.resultado, hecho.estado, hecho.mensaje, hecho.detalle, hecho.destino], ['ya_hecho', estado, l.TEXTO_YA_CANCELADO, CANCELADO_409.detail, 'buscar']);
+    igual(calls.map(c => [c.method, c.body]), [['POST', {motivo: 'x', derivacion: 55}]], 'ningún GET antes');
+  }
+  const calls = router(r, () => response(200, {estado: 'EN_GESTION', total_alojado: null, liberadas: 2}));
+  igual(await l.cancelar(sesion, 184, {motivo: 'x'}, {incierto: true, derivacion: 55}),
+    {resultado: 'hecho', estado: 'EN_GESTION', total_alojado: null, liberadas: 2}, 'el primero no había llegado: este cancela');
+  igual(calls.map(c => c.method), ['POST']);
+  router(r, fallaDeRed);
+  igual(await clasificacion(l.cancelar(sesion, 184, {motivo: 'x'}, {incierto: true, derivacion: 55})).then(c => [c.tipo, c.incierto, c.mensaje]),
+    ['reintentable', true, l.TEXTO_CANCELAR_INCIERTO]);
+});
+
+test('477: cancelar incierto, 409 «cambió» (INGRESO_EN_CURSO) = otro ingreso: no se hizo, conflicto a integrantes con el detail', async () => {
+  const {r, l, sesion} = await preparar();
+  router(r, () => response(409, CAMBIO_409()));
+  const c = await clasificacion(l.cancelar(sesion, 184, {motivo: 'x'}, {incierto: true, derivacion: 55}));
+  igual([c.tipo, c.ingresoCambio, c.destino, c.estadoActual, c.mensaje, c.incierto],
+    ['conflicto', true, 'integrantes', 'INGRESO_EN_CURSO', CAMBIO_409().detail, false]);
+  router(r, () => response(409, CAMBIO_409('DERIVADO')));
+  const d = await clasificacion(l.cancelar(sesion, 184, {motivo: 'x'}, {incierto: true, derivacion: 55}));
+  igual([d.tipo, d.destino, d.mensaje, d.incierto], ['conflicto', 'derivacion', CAMBIO_409().detail, false],
+    'derivado de nuevo y sin aceptar: tampoco es «se hizo»; el router vuelve a buscar');
+  router(r, () => response(409, {estado_actual: 'INGRESO_EN_CURSO'}));
+  igual(await clasificacion(l.cancelar(sesion, 184, {motivo: 'x'}, {derivacion: 55})).then(x => [x.ingresoCambio, x.mensaje]),
+    [true, l.TEXTO_DERIVACION_CAMBIO], 'sin detail, el texto propio');
+  router(r, () => response(409, {detail: 'La derivación sigue pendiente.', estado_actual: 'INGRESO_EN_CURSO'}));
+  igual(await clasificacion(l.alojar(sesion, 184, {})).then(x => [x.tipo, x.ingresoCambio ?? null, x.mensaje]),
+    ['conflicto', null, 'La derivación sigue pendiente.'], 'sin derivación no se marca nada (no se mandó)');
+});
+
+test('477: con el back viejo (sin derivación) el cancelar incierto conserva la relectura y la reconfirmación', async () => {
+  const {r, l, sesion} = await preparar();
+  const calls = router(r, (call) => (call.method === 'GET'
+    ? response(200, {caso: CASO, integrantes: [FILA(1)], confirmadas: 0, total_declarado: 1, declaradas_al_relevar: 1})
+    : response(200, {estado: 'EN_GESTION', total_alojado: null, liberadas: 1})));
+  for (const derivacion of [null, undefined, 0]) {
+    const pregunta = await clasificacion(l.cancelar(sesion, 184, {motivo: 'x'}, {incierto: true, derivacion}));
+    assert.equal(pregunta.tipo, 'confirmar_reenvio');
+  }
+  igual(calls.map(c => c.method), ['GET', 'GET', 'GET']);
+  await l.cancelar(sesion, 184, {motivo: 'x'}, {incierto: true, reconfirmado: true, derivacion: null});
+  igual(calls.at(-1).body, {motivo: 'x'});
+});
+
+test('477: alojar y diferencia inciertos con la derivación: el 409 «cambió» va al router con el detail; ALOJADO sigue siendo «se hizo»', async () => {
+  const {r, l, sesion} = await preparar();
+  router(r, () => response(409, CAMBIO_409()));
+  for (const accion of [
+    () => l.alojar(sesion, 184, {}, {incierto: true, derivacion: 55}),
+    () => l.cerrarDiferencia(sesion, 184, {motivo: 'NO_LLEGO'}, {incierto: true, derivacion: 55}),
+    () => l.alojar(sesion, 184, {}, {derivacion: 55}),
+  ]) {
+    const c = await clasificacion(accion());
+    igual([c.tipo, c.ingresoCambio, c.destino, c.mensaje, c.incierto], ['conflicto', true, 'integrantes', CAMBIO_409().detail, false]);
+  }
+  router(r, () => response(409, CAMBIO_409('DERIVADO')));
+  igual(await clasificacion(l.alojar(sesion, 184, {}, {incierto: true, derivacion: 55})).then(c => [c.tipo, c.destino]), ['conflicto', 'derivacion']);
+  router(r, () => response(409, ALOJADA_409));
+  igual(await l.alojar(sesion, 184, {}, {incierto: true, derivacion: 55}).then(x => [x.resultado, x.estado]), ['ya_hecho', 'ALOJADO']);
+  igual(await l.cerrarDiferencia(sesion, 184, {motivo: 'NO_LLEGO'}, {incierto: true, derivacion: 55}).then(x => [x.resultado, x.estado]), ['ya_hecho', 'ALOJADO']);
+});
