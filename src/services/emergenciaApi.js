@@ -38,8 +38,8 @@ export const RUTAS = {
   avisarMesa: (id) => `${BASE}dispositivos/${encodeURIComponent(id)}/avisar-mesa/`,
 };
 
-// §4: Emergencia no tiene padrones; consulta solo Base de Personas.
-export const ORIGENES_IDENTIDAD = ['personas'];
+// §4: Emergencia no tiene padrones; consulta Base de Personas y, si no la encuentra, los legajos de DATAÑACH.
+export const ORIGENES_IDENTIDAD = ['personas', 'legajo'];
 
 // §6, en el orden de la tabla. Cualquier otra clave se ignora en el back (`total` y `prioridad`
 // los calcula el servidor): acá no se mandan.

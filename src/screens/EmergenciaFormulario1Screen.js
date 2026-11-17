@@ -169,7 +169,7 @@ export default function EmergenciaFormulario1Screen({ uuid = null, onTerminar })
         const { nombre: _n, apellido: _a, fecha_nacimiento: _f, ...resto } = prev;
         return resto;
       });
-      setAvisoConsulta({ tono: 'success', texto: `Encontramos a ${[persona.nombre, persona.apellido].filter(Boolean).join(' ')} en la Base de Personas.` });
+      setAvisoConsulta({ tono: 'success', texto: `Encontramos a ${[persona.nombre, persona.apellido].filter(Boolean).join(' ')} ${respuesta?.origen === 'legajo' ? 'en los legajos de DATAÑACH' : 'en la Base de Personas'}.` });
     } catch (e) {
       if (!vigente()) return;
       let estado = 'error';

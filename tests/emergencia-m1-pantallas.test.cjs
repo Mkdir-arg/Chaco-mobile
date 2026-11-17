@@ -263,6 +263,18 @@ test('Formulario 1: persona que no figura o sin red pide nombre y apellido; camb
   } finally { await ui.close(); }
 });
 
+test('Formulario 1: con origen legajo el aviso nombra los legajos de DATAÑACH', async () => {
+  const ui = await montarFormulario({consultar: () => ({success: true, origen: 'legajo', data: {nombre: 'Rosa', apellido: 'Benitez'}})});
+  try {
+    await ui.press('Traslado: Bomberos');
+    await ui.escribir('DNI del responsable', '30111222');
+    await ui.press('Sexo: Femenino');
+    await ui.pressButton('Buscar persona');
+    assert.ok(ui.labels().includes('Encontramos a Rosa Benitez en los legajos de DATAÑACH.'));
+    assert.ok(!ui.labels().some(l => l.includes('Base de Personas')));
+  } finally { await ui.close(); }
+});
+
 test('Formulario 1: el escaneo del DNI completa la identidad', async () => {
   const ui = await montarFormulario();
   try {
