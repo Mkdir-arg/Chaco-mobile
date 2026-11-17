@@ -247,7 +247,7 @@ test('Formulario 1: persona que no figura o sin red pide nombre y apellido; camb
     await ui.escribir('DNI del responsable', '30111222');
     await ui.press('Sexo: Masculino');
     await ui.pressButton('Buscar persona');
-    assert.ok(ui.labels().includes('No figura en la Base de Personas: cargá nombre y apellido para darla de alta.'));
+    assert.ok(ui.labels().includes('No figura en la Base de Personas ni en los legajos de DATAÑACH: cargá nombre y apellido para darla de alta.'));
     assert.ok(ui.labels().includes('Nombre *'));
     respuesta = () => { throw Object.assign(new Error('Network request failed'), {network: true}); };
     await ui.pressButton('Buscar persona');
@@ -675,7 +675,7 @@ test('Formulario 1: una consulta lenta no confirma a otra persona si cambió el 
     await disparar(ui, 'Buscar persona');
     await ui.escribir('DNI del responsable', '30111224');
     await renderer.act(async () => { pedidos[2].rechazar(Object.assign(new Error('No'), {status: 404, payload: {}})); await esperar(); });
-    assert.ok(!ui.labels().includes('No figura en la Base de Personas: cargá nombre y apellido para darla de alta.'));
+    assert.ok(!ui.labels().includes('No figura en la Base de Personas ni en los legajos de DATAÑACH: cargá nombre y apellido para darla de alta.'));
 
     // Dos pedidos seguidos del mismo DNI: vale el último.
     await disparar(ui, 'Buscar persona');

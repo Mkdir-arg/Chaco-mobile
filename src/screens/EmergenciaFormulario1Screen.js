@@ -33,7 +33,7 @@ const CAMPOS_IDENTIDAD = ['dni', 'sexo'];
 
 export const TEXTO_ENCOLADO = 'Guardado en el teléfono: se envía solo apenas haya señal.';
 export const TEXTO_SIN_RED_CONSULTA = 'Sin conexión: no se pudo buscar a la persona. Cargá nombre y apellido; el envío se manda cuando haya señal.';
-export const TEXTO_NO_ENCONTRADA = 'No figura en la Base de Personas: cargá nombre y apellido para darla de alta.';
+export const TEXTO_NO_ENCONTRADA = 'No figura en la Base de Personas ni en los legajos de DATAÑACH: cargá nombre y apellido para darla de alta.';
 
 // Formulario 1 de Emergencia (M1 · Ingreso de familias, contrato §6), en los cuatro bloques del
 // manual. Todo se guarda en el borrador del teléfono (sobrevive a cerrar la app) y «Enviar» lo
