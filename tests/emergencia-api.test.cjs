@@ -135,6 +135,16 @@ test('consultarPersona: ruta de Emergencia, solo dni y sexo, y solo origen perso
   await assert.rejects(e.consultarPersona({dni: '30111222', sexo: 'F'}), /fuente de identidad/);
 });
 
+test('consultarPersona: acepta origen legajo y sigue rechazando uno desconocido', async () => {
+  const {r, e} = await preparar();
+  router(r, async () => response(200, {success: true, origen: 'legajo', data: {nombre: 'Rosa', apellido: 'Benitez', dni: '30111222'}, datos_api: {}}));
+  const res = await e.consultarPersona({dni: '30111222', sexo: 'F'});
+  assert.equal(res.origen, 'legajo');
+  assert.equal(res.data.apellido, 'Benitez');
+  router(r, async () => response(200, {success: true, origen: 'otro', data: {}}));
+  await assert.rejects(e.consultarPersona({dni: '30111222', sexo: 'F'}), /fuente de identidad/);
+});
+
 test('consultarPersona: 404, fallecido y 429 se clasifican con identityFailure como en Becas', async () => {
   const {r, e} = await preparar();
   const identity = r.load('./identityLookup');
