@@ -5,6 +5,7 @@ import TextInput from '../FormInput';
 import { useTheme } from '../../context/ThemeContext';
 import { fontSizes, radii } from '../../theme';
 import { errorDelCampo, esCampoEmail, esCampoDniApoderado } from '../../services/definicionFormulario';
+import CampoFirma from './CampoFirma';
 
 export const parseOpciones = (options) => {
   if (Array.isArray(options)) return options;
@@ -30,6 +31,7 @@ export default function CampoFormulario({
   onAbrirArchivo,
   onQuitarArchivo,
   onVerArchivo,
+  onFirmar,
 }) {
   const { theme, typography } = useTheme();
   const options = parseOpciones(field.opciones).filter(option => !busqueda
@@ -131,6 +133,15 @@ export default function CampoFormulario({
           required: field.requerido,
         })}
       </View>
+    );
+  }
+
+  // `onFirmar(field, item)` deja a la pantalla guardar el PNG donde guarda sus archivos.
+  if (tipo === 'FIRMA') {
+    return (
+      <CampoFirma field={field} value={value && typeof value === 'object' ? value : null}
+        onFirmar={item => (onFirmar ? onFirmar(field, item) : onChange(item))}
+        onQuitar={onQuitarArchivo} onVer={onVerArchivo} />
     );
   }
 

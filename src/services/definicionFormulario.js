@@ -116,10 +116,33 @@ export const esCampoEmail = field => ['email', 'email_contacto'].includes(field.
 export const esCampoDniApoderado = field => field.origen === 'persona_vinculada' && field.vinculo === 'dni';
 export const soloDigitos = value => String(value ?? '').replace(/\D/g, '');
 
+// FIRMA: una imagen (se guarda, encola y sube igual que un ARCHIVO) más los datos de quien
+// firmó, en `firmante`. Al servidor el valor del campo viaja como { nombre, dni }.
+export const esCampoFirma = field => String(field?.tipo || '').toUpperCase() === 'FIRMA';
+export const llevaArchivo = field => ['ARCHIVO', 'FIRMA'].includes(String(field?.tipo || '').toUpperCase());
+export const DNI_FIRMANTE = /^\d{7,8}$/;
+export const firmanteDe = value => ({
+  nombre: String(value?.firmante?.nombre ?? '').trim(),
+  dni: soloDigitos(value?.firmante?.dni),
+});
+const tieneImagen = value => Boolean(value?.uri || value?.dataUri || value?.archivo_adjunto);
+
+// Obligatoria: imagen + nombre + DNI de 7 u 8 dígitos. Opcional: vacía vale, a medias no.
+export const errorFirma = (value, requerido = false) => {
+  const nombre = String(value?.firmante?.nombre ?? '').trim();
+  const dni = String(value?.firmante?.dni ?? '').trim();
+  if (!tieneImagen(value) && !nombre && !dni) return requerido ? 'Falta la firma con el nombre y el DNI de quien firma.' : '';
+  if (!tieneImagen(value)) return 'Falta la firma.';
+  if (!nombre) return 'Falta el nombre y apellido de quien firma.';
+  if (!DNI_FIRMANTE.test(dni)) return 'Ingresá un DNI válido de 7 u 8 dígitos para quien firma.';
+  return '';
+};
+
 export const errorDelCampo = (field, value) => {
   const tipo = String(field.tipo || '').toUpperCase();
   if (tipo === 'ARCHIVO') return field.requerido && !value?.uri && !value?.dataUri && !value?.archivo_adjunto
     ? 'Adjuntá un archivo.' : '';
+  if (tipo === 'FIRMA') return errorFirma(value, field.requerido);
   if (estaVacio(value)) return field.requerido ? 'Este campo es obligatorio.' : '';
   if (esCampoEmail(field) && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value).trim())) {
     return 'Ingresá un correo electrónico válido, por ejemplo nombre@dominio.com.';

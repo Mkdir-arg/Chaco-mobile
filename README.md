@@ -723,6 +723,15 @@ La definición se guarda localmente en el dispositivo: al servidor se envía
 agente estaba sin conexión, el servidor puede aceptar el caso y dejarlo observado
 por diferencia de versión; no reconstruye el diseño anterior.
 
+Un campo `tipo: "FIRMA"` se dibuja como un recuadro para firmar con el dedo o el
+mouse, con «Limpiar», «Nombre y apellido» y «DNI» (7 u 8 dígitos) obligatorios. Al
+confirmar se genera un PNG de 600x200 (fondo blanco) llamado `firma-<clave>.png` que
+se guarda, encola y sube igual que el archivo de un campo ARCHIVO; en la PWA queda como
+`data:` URI, así sobrevive a recargar en el borrador y en SQLite. El valor del campo
+viaja como `{ nombre, dni }` (Becas: en `data`/`respuestas`; Dispositivos: en
+`respuestas[clave]`, con la imagen en `archivos[clave]`). La fecha la pone el servidor.
+Obligatoria exige imagen, nombre y DNI; opcional vale vacía, pero no a medias.
+
 Prueba en HML: guardar un cambio de orden en el constructor, iniciar una captura
 nueva con señal y verificar los grupos y preguntas; cambiar una respuesta que
 oculta otra obligatoria; repetir una captura offline y sincronizar tras cambiar

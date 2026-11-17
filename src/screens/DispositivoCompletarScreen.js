@@ -11,7 +11,7 @@ import CampoFormulario from '../components/formulario/CampoFormulario';
 import GrupoFormulario from '../components/formulario/GrupoFormulario';
 import * as ImagePicker from '../services/imagePicker';
 import * as DocumentPicker from '../services/documentPicker';
-import { evaluarDiseno, problemasDelDiseno, camposDelDiseno } from '../services/definicionFormulario';
+import { evaluarDiseno, problemasDelDiseno, camposDelDiseno, esCampoFirma, firmanteDe, llevaArchivo } from '../services/definicionFormulario';
 import { getInspeccion, enviarResultado, getCargaRechazada } from '../services/dispositivosService';
 import {
   leerBorrador, guardarBorrador, borrarBorrador, copiarParaBorrador, borrarArchivoDelBorrador,
@@ -86,15 +86,17 @@ export default function DispositivoCompletarScreen({ inspeccionId, onTerminar })
     return () => { activo = false; };
   }, [inspeccionId]);
 
-  // En web la URL blob: no sobrevive a recargar: esos archivos no van al borrador.
+  // En web la URL blob: no sobrevive a recargar: esos archivos no van al borrador. Una data: URI
+  // (la firma) sí sobrevive y queda.
   const instantanea = () => {
     const web = Platform.OS === 'web';
-    const archivosValores = Object.entries(valores).filter(([, valor]) => valor?.uri);
+    const guardable = (valor) => !valor?.uri || String(valor.uri).startsWith('data:');
+    const archivosValores = Object.entries(valores).filter(([, valor]) => !guardable(valor));
     const sinArchivos = web && (fotos.length > 0 || archivosValores.length > 0);
     return {
       criticidad,
       observaciones,
-      valores: web ? Object.fromEntries(Object.entries(valores).filter(([, valor]) => !valor?.uri)) : valores,
+      valores: web ? Object.fromEntries(Object.entries(valores).filter(([, valor]) => guardable(valor))) : valores,
       fotos: web ? [] : fotos,
       sinArchivos,
     };
@@ -209,6 +211,13 @@ export default function DispositivoCompletarScreen({ inspeccionId, onTerminar })
       { text: 'Cancelar', style: 'cancel' },
     ]);
   };
+  // ---- Firma de un campo FIRMA: el PNG se guarda como el archivo de un ARCHIVO ----
+  const guardarFirma = async (field, item) => {
+    const copia = await copiarParaBorrador(item);
+    const anterior = valores[field.clave];
+    if (anterior?.uri) borrarArchivoDelBorrador(anterior);
+    ponerValor(field.clave, copia);
+  };
   const quitarArchivo = (field) => {
     borrarArchivoDelBorrador(valores[field.clave]);
     setValores((prev) => { const next = { ...prev }; delete next[field.clave]; return next; });
@@ -230,8 +239,10 @@ export default function DispositivoCompletarScreen({ inspeccionId, onTerminar })
     const archivos = {};
     for (const campo of diseno?.campos || []) {
       const valor = diseno.efectivas[campo.clave];
-      if (campo.tipo === 'ARCHIVO') {
+      if (llevaArchivo(campo)) {
         if (valor?.uri) archivos[campo.clave] = valor;
+        // FIRMA: respuestas[clave] = { nombre, dni } y la imagen en archivos[clave].
+        if (esCampoFirma(campo) && valor?.firmante) respuestas[campo.clave] = firmanteDe(valor);
       } else if (!vacio(valor)) {
         respuestas[campo.clave] = campo.tipo === 'INT' && /^-?\d+$/.test(String(valor).trim()) ? Number(valor) : valor;
       }
@@ -290,7 +301,7 @@ export default function DispositivoCompletarScreen({ inspeccionId, onTerminar })
       busqueda={busqueda[field.clave] || ''}
       onBuscar={(texto) => setBusqueda((prev) => ({ ...prev, [field.clave]: texto }))}
       renderFecha={(props) => <FechaInput {...props} />}
-      onAbrirArchivo={abrirArchivo} onQuitarArchivo={quitarArchivo} onVerArchivo={verArchivo} />
+      onAbrirArchivo={abrirArchivo} onQuitarArchivo={quitarArchivo} onVerArchivo={verArchivo} onFirmar={guardarFirma} />
   );
 
   return (

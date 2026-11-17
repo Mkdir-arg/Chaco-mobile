@@ -8,6 +8,7 @@ import { validateAttachmentMetadata } from './formularioSync';
 import { openSqliteSerialized, serializeSqliteAccess } from './sqliteAccess';
 import { esSinModulo, notificarSinModulo as avisarSinModulo, subscribeSinModulo } from './sinModulo';
 import { persistWebAttachment } from './webAttachments';
+import { firmanteDe } from './definicionFormulario';
 
 // Módulo Relevamiento de Dispositivos: caché de inspecciones y cola de envíos offline.
 // Va aparte del de Becas: base, carpeta de archivos y rutas propias.
@@ -452,7 +453,8 @@ export const getCargaRechazada = async (inspeccionId) => {
   const respuestas = Object.fromEntries(Object.entries(payload.respuestas || {})
     .filter(([, valor]) => !valor?.archivo_adjunto));
   const archivos = Object.fromEntries((payload.archivos || []).filter((item) => item.clave)
-    .map((item) => [item.clave, { uri: item.uri, fileName: item.fileName, mimeType: item.mimeType, size: item.size }]));
+    .map((item) => [item.clave, { uri: item.uri, fileName: item.fileName, mimeType: item.mimeType, size: item.size,
+      ...(item.firmante ? { firmante: item.firmante } : {}) }]));
   const fotos = (payload.fotos || []).map((item) => ({
     id: item.id, uri: item.uri, fileName: item.fileName, mimeType: item.mimeType, size: item.size,
     descripcion: item.descripcion || '',
@@ -572,10 +574,13 @@ export const enviarResultado = async (inspeccionId, {
   if (!sinFormulario) {
     for (const [clave, archivo] of Object.entries(archivos || {})) {
       if (!archivo?.uri) continue;
-      const item = await prepararArchivo(archivo, { id: `a${adjuntos.length}`, clave });
+      // Una FIRMA sube su PNG como cualquier adjunto y en la respuesta lleva { nombre, dni }.
+      const firmante = archivo.firmante ? firmanteDe(archivo) : null;
+      const item = await prepararArchivo(archivo, { id: `a${adjuntos.length}`, clave, ...(firmante ? { firmante } : {}) });
       adjuntos.push(item);
       // Igual que Becas: el archivo viaja aparte y en la respuesta va el marcador.
-      respuestasEnviar = { ...respuestasEnviar, [clave]: { archivo_adjunto: true, nombre: item.fileName } };
+      respuestasEnviar = { ...respuestasEnviar,
+        [clave]: firmante || { archivo_adjunto: true, nombre: item.fileName } };
     }
   }
   const fotosFinal = [];
