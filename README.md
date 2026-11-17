@@ -230,7 +230,7 @@ Dispositivos no cambian.
 El acceso «Ingreso de familias» (perfil con `relevar`) abre «Mis envíos» y, desde ahí,
 el Formulario 1 (`EmergenciaFormulario1Screen`) en cuatro bloques: traslado y
 responsable (DNI escaneado o consultado en `personas/consultar/`, alta mínima si no
-figura), personas que ingresan juntas, quiénes necesitan asistencia, y ubicación y
+figura; si Base de Personas no la encuentra, el back busca en los legajos de DATAÑACH y el aviso lo dice), personas que ingresan juntas, quiénes necesitan asistencia, y ubicación y
 fotos (dirección, localidad, GPS opcional y hasta dos fotos JPEG). Funciona sin señal:
 
 - `src/services/emergenciaCola.js` usa su propia base `emergencia_offline.db` (no
