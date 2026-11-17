@@ -14,7 +14,8 @@ global.IS_REACT_ACT_ENVIRONMENT = true;
 const root = path.join(__dirname, '..');
 const native = Object.fromEntries(['View', 'Text', 'ScrollView', 'TouchableOpacity', 'ActivityIndicator', 'Image', 'Pressable',
   'Modal', 'TextInput', 'KeyboardAvoidingView', 'FlatList', 'RefreshControl'].map(name => [name, name]));
-Object.assign(native, {Platform: {OS: 'web'}, StyleSheet: {create: value => value, absoluteFillObject: {}}, Linking: {openURL: async () => {}}});
+Object.assign(native, {Platform: {OS: 'web'}, StyleSheet: {create: value => value, absoluteFillObject: {}}, Linking: {openURL: async () => {}},
+  PanResponder: {create: () => ({panHandlers: {}})}});
 const theme = {colors: new Proxy({}, {get: () => '#5059BC'})};
 const typography = {bold: 'Manrope', medium: 'Manrope', semibold: 'Manrope', regular: 'Manrope'};
 const text = node => node.children.map(value => typeof value === 'string' ? value : typeof value === 'number' ? String(value) : text(value)).join('');
@@ -245,19 +246,21 @@ test('Detalle: con envío pendiente no se ofrece completar; con coordenadas hay 
 
 async function mountCompletar(detalle, options = {}) {
   const {mocks, toasts, runtime} = await baseMocks();
-  const calls = {enviados: [], borrados: 0, guardados: 0, terminados: 0};
+  const calls = {enviados: [], borrados: 0, guardados: 0, terminados: 0, copiados: []};
   Object.assign(mocks, {
     '../components/FormInput': {__esModule: true, default: native.TextInput, FormInputContainer: native.View},
     '../components/FechaInput': {__esModule: true, default: 'FechaInput'},
     '../services/definicionFormulario': runtime.definition,
     '../services/imagePicker': {}, '../services/documentPicker': {},
     'expo-web-browser': {openBrowserAsync: async () => {}},
+    'react-native-svg': {__esModule: true, default: 'Svg', Path: 'Path', Rect: 'Rect'},
+    'expo-file-system/legacy': {documentDirectory: 'file:///test/', cacheDirectory: 'file:///cache/'},
     '../utils/teclado': {keyboardDismissModeFor: () => 'on-drag'},
     '../services/dispositivosBorrador': {
       leerBorrador: async () => options.borrador || null,
-      guardarBorrador: async () => { calls.guardados += 1; },
+      guardarBorrador: async (owner, id, datos) => { calls.guardados += 1; calls.borrador = datos; },
       borrarBorrador: async () => { calls.borrados += 1; },
-      copiarParaBorrador: async item => item,
+      copiarParaBorrador: async item => { calls.copiados.push(item); return {...item, uri: item.uri.startsWith('data:') ? item.uri : 'file:///borrador/' + item.fileName}; },
       borrarArchivoDelBorrador: async () => {},
     },
     '../services/dispositivosService': {
@@ -459,4 +462,91 @@ test('Completar: un campo que vuelve a quedar vacío vuelve a figurar como falta
     await ui.escribir('Cantidad de baños', '');
     assert.ok(ui.labels().includes('• Cantidad de baños: Este campo es obligatorio.'));
   } finally {await ui.close();}
+});
+
+// ---- FIRMA ----
+
+const FORMULARIO_FIRMA = {version: 11, definicion: {version: 11, items: [{tipo: 'grupo', clave: 'g1', titulo: 'Cierre', canal: 'ambos', items: [
+  {tipo_item: 'campo', clave: 'cp-techo', texto: 'Estado del techo', tipo: 'SELECTOR', opciones: ['Bueno', 'Malo'], obligatorio: true},
+  {tipo_item: 'campo', clave: 'cp-firma', texto: 'Firma del director', tipo: 'FIRMA', opciones: [], obligatorio: true},
+]}]}};
+const pngFirma = (extra = {}) => ({uri: 'data:image/png;base64,iVBORw0KGgo=', fileName: 'firma-cp-firma.png', mimeType: 'image/png',
+  size: 8, source: 'firma', firmante: {nombre: 'Ana Pérez', dni: '30123456'}, ...extra});
+const campoFirma = (ui) => ui.tree.root.findAll(node => node.props && node.props.onFirmar && node.props.field
+  && node.props.field.clave === 'cp-firma' && node.props.onQuitar)[0];
+
+test('FIRMA: obligatoria sin firmar figura en «Falta completar» y no se envía', async () => {
+  const ui = await mountCompletar(inspeccion(1, 'Escuela A', {formulario: FORMULARIO_FIRMA}));
+  try {
+    assert.ok(ui.labels().includes('Tocar para firmar'), 'no se dibuja como caja de texto');
+    assert.equal(ui.tree.root.findAllByType('TextInput').some(n => n.props.accessibilityLabel === 'Firma del director'), false);
+    await ui.press('Alta');
+    await ui.press('Bueno');
+    await ui.pressButton('Confirmar y enviar');
+    assert.equal(ui.calls.enviados.length, 0);
+    assert.ok(ui.labels().includes('• Firma del director: Falta la firma con el nombre y el DNI de quien firma.'), ui.labels().join('|'));
+  } finally {await ui.close();}
+});
+
+test('FIRMA: el pad pide nombre y DNI válidos antes de confirmar', async () => {
+  const ui = await mountCompletar(inspeccion(1, 'Escuela A', {formulario: FORMULARIO_FIRMA}));
+  try {
+    await ui.press('Tocar para firmar', 'TouchableOpacity');
+    assert.ok(ui.labels().includes('Limpiar'));
+    assert.ok(ui.labels().includes('Nombre y apellido *'));
+    await ui.press('Confirmar firma', 'TouchableOpacity');
+    assert.ok(ui.labels().includes('Firmá en el recuadro.'));
+    const dni = ui.tree.root.findAllByType('TextInput').find(n => n.props.accessibilityLabel === 'DNI de quien firma');
+    await renderer.act(async () => {dni.props.onChangeText('30.123.456x9');});
+    assert.equal(dni.props.value, '30123456', 'solo dígitos y hasta 8');
+    await ui.press('Cancelar', 'TouchableOpacity');
+    assert.equal(ui.labels().includes('Limpiar'), false);
+  } finally {await ui.close();}
+});
+
+test('FIRMA: la firma se guarda como archivo y el envío lleva respuestas {nombre, dni} y el PNG en archivos', async () => {
+  const ui = await mountCompletar(inspeccion(1, 'Escuela A', {formulario: FORMULARIO_FIRMA}));
+  try {
+    await ui.press('Media');
+    await ui.press('Bueno');
+    await renderer.act(async () => {await campoFirma(ui).props.onFirmar(pngFirma());});
+    assert.equal(ui.calls.copiados.length, 1, 'pasa por copiarParaBorrador como un archivo elegido');
+    assert.ok(ui.labels().includes('Firmó: Ana Pérez · DNI 30123456'));
+    assert.ok(ui.tree.root.findAllByType('Image').some(n => n.props.source.uri.startsWith('data:image/png')));
+    await ui.pressButton('Confirmar y enviar');
+    assert.equal(ui.calls.enviados.length, 1);
+    const [, datos] = JSON.parse(JSON.stringify(ui.calls.enviados[0]));
+    assert.deepEqual(datos.respuestas, {'cp-techo': 'Bueno', 'cp-firma': {nombre: 'Ana Pérez', dni: '30123456'}});
+    assert.equal(datos.archivos['cp-firma'].fileName, 'firma-cp-firma.png');
+    assert.equal(datos.archivos['cp-firma'].mimeType, 'image/png');
+    assert.equal(datos.archivos['cp-firma'].uri, 'data:image/png;base64,iVBORw0KGgo=');
+  } finally {await ui.close();}
+});
+
+test('FIRMA: una firma opcional a medias es un faltante', async () => {
+  const formulario = JSON.parse(JSON.stringify(FORMULARIO_FIRMA));
+  formulario.definicion.items[0].items[1].obligatorio = false;
+  const borrador = {criticidad: 'BAJA', observaciones: '', fotos: [],
+    valores: {'cp-techo': 'Bueno', 'cp-firma': pngFirma({firmante: {nombre: 'Ana', dni: '123'}})}};
+  const ui = await mountCompletar(inspeccion(1, 'Escuela A', {formulario}), {borrador});
+  try {
+    await ui.pressButton('Confirmar y enviar');
+    assert.equal(ui.calls.enviados.length, 0);
+    assert.ok(ui.labels().includes('• Firma del director: Ingresá un DNI válido de 7 u 8 dígitos para quien firma.'), ui.labels().join('|'));
+  } finally {await ui.close();}
+});
+
+test('FIRMA: en la PWA la firma (data: URI) queda en el borrador; un archivo blob: no', async () => {
+  const formulario = JSON.parse(JSON.stringify(FORMULARIO_FIRMA));
+  formulario.definicion.items[0].items.push({tipo_item: 'campo', clave: 'cp-plano', texto: 'Plano', tipo: 'ARCHIVO', opciones: []});
+  const borrador = {criticidad: 'BAJA', observaciones: '', fotos: [],
+    valores: {'cp-plano': {uri: 'blob:http://x/1', fileName: 'plano.pdf', mimeType: 'application/pdf'}}};
+  const ui = await mountCompletar(inspeccion(1, 'Escuela A', {formulario}), {borrador});
+  await renderer.act(async () => {await campoFirma(ui).props.onFirmar(pngFirma());});
+  await ui.close();
+  const guardado = JSON.parse(JSON.stringify(ui.calls.borrador));
+  assert.equal(guardado.valores['cp-firma'].uri, 'data:image/png;base64,iVBORw0KGgo=');
+  assert.deepEqual(guardado.valores['cp-firma'].firmante, {nombre: 'Ana Pérez', dni: '30123456'});
+  assert.equal(Object.hasOwn(guardado.valores, 'cp-plano'), false);
+  assert.equal(guardado.sinArchivos, true);
 });

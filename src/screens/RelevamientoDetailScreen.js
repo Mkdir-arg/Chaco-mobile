@@ -23,6 +23,7 @@ import { useToast } from '../context/ToastContext';
 import Banner from '../components/Banner';
 import WebDateInput from '../components/WebDateInput';
 import CampoFormulario from '../components/formulario/CampoFormulario';
+import { ResumenFirma } from '../components/formulario/CampoFirma';
 import GrupoFormulario from '../components/formulario/GrupoFormulario';
 import CameraModal from '../components/CameraModal';
 import CustomButton from '../components/CustomButton';
@@ -550,6 +551,13 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
         capturedAt: new Date().toISOString(),
       },
     }));
+  };
+
+  // La firma llega como PNG (data: URI en web, archivo en caché en nativo): se guarda en la
+  // misma carpeta que las fotos del formulario y conserva su nombre firma-<clave>.png.
+  const saveDynamicSignature = async (field, item) => {
+    const persisted = await persistDynamicImage(item, field);
+    setDynamicValues((prev) => ({ ...prev, [field.id]: { ...item, uri: persisted.uri, fileName: item.fileName } }));
   };
 
   const closePhotoCamera = () => {
@@ -1197,7 +1205,8 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
       if (field.scope === 'propios') return;
       const bucket = field.scope === 'requisitos' ? 'requisitos' : 'globales';
       const tipo = String(field.tipo || '').toUpperCase();
-      data[bucket][String(field.original_id || field.id)] = tipo === 'ARCHIVO'
+      // FIRMA viaja como un ARCHIVO hasta la cola: ahí la imagen pasa a adjunto y el valor a { nombre, dni }.
+      data[bucket][String(field.original_id || field.id)] = ['ARCHIVO', 'FIRMA'].includes(tipo)
         ? ((usesConstructor ? design.efectivas[field.clave] : dynamicValues[field.id]) || null)
         : (usesConstructor ? design.efectivas[field.clave] ?? '' : dynamicValues[field.id] ?? '');
     });
@@ -1553,6 +1562,7 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
         onAbrirArchivo={openDynamicImageActions}
         onQuitarArchivo={removeDynamicImage}
         onVerArchivo={previewDynamicImage}
+        onFirmar={saveDynamicSignature}
       />
     );
   };
@@ -1957,6 +1967,11 @@ export default function RelevamientoDetailScreen({ relevamientoId, onClose, sync
               <Text style={[styles.formSectionTitle, { color: theme.colors.text, fontFamily: typography.semibold }]}>{item.titulo}</Text>
               {item.items.filter(field => field.tipo !== 'texto').map(field => {
                 const value = design.efectivas[field.clave];
+                if (String(field.tipo || '').toUpperCase() === 'FIRMA') return <View key={field.clave} style={styles.formGroup}>
+                  <Text style={[styles.k, { color: theme.colors.text, fontFamily: typography.semibold }]}>{field.etiqueta}</Text>
+                  {value?.uri || value?.dataUri || value?.firmante ? <ResumenFirma value={value} /> : (
+                    <Text style={[styles.v, { color: theme.colors.textSoft, fontFamily: typography.medium }]}>-</Text>)}
+                </View>;
                 const label = field.tipo === 'ARCHIVO' ? value?.fileName || value?.nombre || '-'
                   : Array.isArray(value) ? value.join(', ') : String(value ?? '-');
                 return <View key={field.clave} style={styles.kvRow}>

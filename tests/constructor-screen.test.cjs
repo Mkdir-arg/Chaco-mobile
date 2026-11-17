@@ -348,3 +348,37 @@ test('screen renders every field type and sends their answers', async () => {
     assert.equal(respuestas['cp-txa'], 'Edificio de dos plantas');
   } finally {await ui.close();}
 });
+
+test('FIRMA se dibuja como recuadro de firma, se exige y viaja con la imagen y el firmante', async () => {
+  const ui = await mount([group('g-cierre', 'Cierre', [
+    field('pg-5', 'Firma del titular', {tipo: 'FIRMA', obligatorio: true, id: 5}),
+  ])]);
+  try {
+    await ui.press('AGREGAR PERSONA'); await ui.identify();
+    assert.ok(ui.labels().includes('Firma del titular *'));
+    assert.ok(ui.labels().includes('Tocar para firmar'));
+    assert.equal(ui.tree.root.findAllByType('TextInput').some(node => node.props.accessibilityLabel === 'Firma del titular'), false,
+      'no se dibuja como caja de texto');
+    await ui.press('SIGUIENTE');
+    assert.ok(ui.alerts.some(args => Array.isArray(args) && String(args[1]).includes(
+      'Firma del titular: Falta la firma con el nombre y el DNI de quien firma.')), 'el faltante se avisa como los demás');
+    assert.equal(ui.labels().includes('CONFIRMAR CASO'), false, 'no avanza sin firma');
+    const campo = () => ui.tree.root.findAll(node => node.props && node.props.onFirmar && node.props.onQuitar
+      && node.props.field && node.props.field.clave === 'pg-5')[0];
+    assert.ok(campo(), 'no se encontró el campo de firma');
+    const png = {uri: 'data:image/png;base64,iVBORw0KGgo=', fileName: 'firma-pg-5.png', mimeType: 'image/png', size: 8,
+      firmante: {nombre: 'Ana Pérez', dni: '30123456'}};
+    await renderer.act(async () => {await campo().props.onFirmar(png);});
+    assert.ok(ui.labels().includes('Firmó: Ana Pérez · DNI 30123456'));
+    await ui.press('SIGUIENTE');
+    assert.ok(ui.labels().includes('Firmó: Ana Pérez · DNI 30123456'), 'el resumen muestra quién firmó');
+    await ui.press('CONFIRMAR CASO');
+    const payload = ui.submitted();
+    assert.ok(payload, 'se guardó');
+    // La pantalla entrega el valor local completo; la cola (relevamientoService) lo parte en
+    // adjunto + { nombre, dni } — cubierto en tests/firma.test.cjs.
+    assert.equal(payload.respuestas['pg-5'].fileName, 'firma-pg-5.png');
+    assert.deepEqual({...payload.respuestas['pg-5'].firmante}, {nombre: 'Ana Pérez', dni: '30123456'});
+    assert.equal(payload.data.globales['5'].uri, png.uri);
+  } finally {await ui.close();}
+});

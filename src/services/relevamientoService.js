@@ -6,7 +6,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as SQLite from 'expo-sqlite';
 import { openSqliteSerialized, serializeSqliteAccess } from './sqliteAccess';
 import { persistWebAttachment, readWebBlob } from './webAttachments';
-import { usaConstructor, camposDelDiseno, cupoDisponibleConfiable } from './definicionFormulario';
+import { usaConstructor, camposDelDiseno, cupoDisponibleConfiable, esCampoFirma, firmanteDe, llevaArchivo } from './definicionFormulario';
 import { Platform } from 'react-native';
 import { becasRequest, becasUploadFile, getBecasToken, getStoredBecasUser } from './becasApi';
 import { ahoraCorregido } from './reloj';
@@ -714,7 +714,9 @@ const persistFormularioAttachments = async (payload = {}) => {
   const respuestas = payload.respuestas ? { ...payload.respuestas } : null;
 
   for (const field of payload.campos_definicion || []) {
-    if (String(field?.tipo || '').toUpperCase() !== 'ARCHIVO') continue;
+    // FIRMA: la imagen sube como el ARCHIVO del campo y el valor pasa a { nombre, dni }.
+    if (!llevaArchivo(field)) continue;
+    const firma = esCampoFirma(field);
     const scope = field?.scope || 'globales';
     const fieldId = String(field?.original_id || field?.id || '');
     const attachmentKey = field.clave || `${scope}:${fieldId}`;
@@ -724,6 +726,7 @@ const persistFormularioAttachments = async (payload = {}) => {
       : data?.[scope]?.[fieldId]?.uri ? data[scope][fieldId] : storedAttachment;
     const rawUri = value?.uri || '';
     if (!fieldId || !rawUri) continue;
+    const firmante = firma ? firmanteDe(value) : null;
 
     const fileName = value?.fileName || value?.nombre || rawUri.split('/').pop() || `adjunto_${fieldId}`;
     await validateFormularioAttachment({ ...value, uri: rawUri, fileName });
@@ -743,8 +746,10 @@ const persistFormularioAttachments = async (payload = {}) => {
       mimeType: persisted.mimeType,
       size: persisted.size,
       label: field?.etiqueta || field?.texto || '',
+      ...(firmante ? { firmante } : {}),
     });
-    const placeholder = { archivo_adjunto: true, nombre: sanitizeFileName(fileName) };
+    const placeholder = firmante ? { nombre: firmante.nombre, dni: firmante.dni }
+      : { archivo_adjunto: true, nombre: sanitizeFileName(fileName) };
     if (scope !== 'propios') data[scope][fieldId] = placeholder;
     if (respuestas && field.clave) respuestas[field.clave] = placeholder;
   }
