@@ -94,7 +94,7 @@ export default function EmergenciaPuertaScreen({
         if (!montado.current || !previo) return;
         setPendiente(previo.accion);
         setAccion(previo.accion);
-        if (previo.datos) setDatos({ ...datosDeLaPuerta(dni), ...previo.datos, dni: cleanDigits(dni) });
+        if (previo.datos) setDatos({ ...datosDeLaPuerta(dni), responsable_aparte: false, ...previo.datos, dni: cleanDigits(dni) });
         else setSinDatos(true);
       } catch (e) {
         if (montado.current) setErrorSesion(e?.message || 'No hay sesión iniciada.');
@@ -395,9 +395,11 @@ export default function EmergenciaPuertaScreen({
 
       <View style={tarjeta}>
         <Text accessibilityRole="header" style={tituloSeccion}>2. Personas que ingresan juntas</Text>
-        <Text style={ayuda}>El responsable también cuenta.</Text>
+        <Text style={ayuda}>{datos.responsable_aparte === true
+          ? 'Quiénes vienen con el responsable. A él no lo cargues acá: ya suma al total.'
+          : 'El responsable también cuenta.'}</Text>
         {CANTIDADES.map((c) => contador({ clave: c.clave, titulo: `${c.grupo} · ${c.titulo}` }))}
-        <Text accessibilityLiveRegion="polite" style={[etiqueta, styles.separado]}>{`Total: ${total} persona${total === 1 ? '' : 's'}`}</Text>
+        <Text accessibilityLiveRegion="polite" style={[etiqueta, styles.separado]}>{`Total: ${total} persona${total === 1 ? '' : 's'}${datos.responsable_aparte === true ? ' (con el responsable)' : ''}`}</Text>
         {errorCampo(['total', ...CANTIDADES.map((c) => c.clave)])}
       </View>
 

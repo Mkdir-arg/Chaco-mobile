@@ -75,6 +75,10 @@ test('búsqueda: normaliza las ocho claves de §13.2 y decide el paso por result
   igual(b.derivacion.caso, CASO);
   assert.equal(l.nombreDelResponsable(b.derivacion.responsable), 'Rosa Benítez · DNI 30111222');
   assert.equal(l.resumenDelGrupo(b.derivacion.grupo), 'Menores (F): 2 · Menores (M): 3 · Adultos (F): 1 · Adultos (M): 1');
+  // Con el responsable aparte de las franjas, se lo nombra; solo él ya no es «sin detalle».
+  assert.equal(l.resumenDelGrupo({...b.derivacion.grupo, responsable_aparte: true}),
+    'Menores (F): 2 · Menores (M): 3 · Adultos (F): 1 · Adultos (M): 1 · Responsable: 1');
+  assert.equal(l.resumenDelGrupo({responsable_aparte: true}), 'Responsable: 1');
   assert.equal(l.resumenDeAsistencia(b.derivacion.grupo), 'Lactantes: 1');
   assert.equal(l.tituloDeNecesidad('medicacion_critica'), 'Medicación crítica');
   assert.equal(l.pasoDeBusqueda(l.normalizarBusqueda({...BUSQUEDA, derivacion: {...DERIVACION, estado: 'ACEPTADA'}})), 'integrantes');

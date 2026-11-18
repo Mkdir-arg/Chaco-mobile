@@ -218,7 +218,8 @@ test('cierres sin red no salen; con otra sesión abierta tampoco (ni con su prop
 
 test('puerta: validación sin dirección ni nombre obligatorios; el resto como M1', async () => {
   const {l} = await preparar();
-  igual(Object.keys(l.validarPuerta(l.datosDeLaPuerta('30111222'))).sort(), ['total', 'traslado']);
+  // Sin acompañantes la familia es el responsable: el total ya es 1.
+  igual(Object.keys(l.validarPuerta(l.datosDeLaPuerta('30111222'))).sort(), ['traslado']);
   igual(l.validarPuerta({...l.datosDeLaPuerta('30111222'), traslado: 'POLICIA', adultos_m: 1}), {});
   igual(Object.keys(l.validarPuerta({...l.datosDeLaPuerta('30111222'), traslado: 'POLICIA', adultos_m: 1, direccion: 'x'.repeat(241), lactantes: 1})).sort(),
     ['direccion', 'lactantes']);
@@ -233,7 +234,7 @@ test('ingresar igual: POST JSON con el Formulario 1 sin hora, con uuid; 201 trae
   const body = calls[0].body;
   assert.match(body.uuid_cliente, UUID);
   igual({...body, uuid_cliente: 'u'}, {uuid_cliente: 'u', traslado: 'BOMBEROS', dni: '30111222', nombre: 'Rosa', apellido: 'Benítez',
-    fecha_nacimiento: '1984-03-02', documento_extraviado: false, menores_f: 0, menores_m: 2, adultos_f: 1, adultos_m: 0, mayores_f: 0, mayores_m: 0,
+    fecha_nacimiento: '1984-03-02', documento_extraviado: false, responsable_aparte: false, menores_f: 0, menores_m: 2, adultos_f: 1, adultos_m: 0, mayores_f: 0, mayores_m: 0,
     dependientes: 0, mayores_dependientes: 0, lactantes: 0, embarazo: true, electrodependiente: false, medicacion_critica: false, mascotas: false,
     observaciones: 'Llegaron solos'});
   assert.ok(!('relevado_en' in body) && !('direccion' in body) && !('localidad' in body), 'sin hora; dirección y localidad vacías no viajan');

@@ -80,6 +80,29 @@ test('contadores ≥ 0 con suma ≥ 1 (en `total`) y los topes de asistencia', a
   assert.ok(r.validarCaso({...familia, lactantes: 2}).lactantes);
 });
 
+test('el responsable suma aparte: los contadores son los acompañantes', async () => {
+  const r = await cargar();
+  const nuevo = {...r.datosIniciales(), ...VALIDO};
+  assert.equal(nuevo.responsable_aparte, true, 'un formulario nuevo nace con la marca');
+  assert.equal(r.totalDeclarado(nuevo), 2, 'un acompañante más el responsable');
+  assert.equal(r.totalDeclarado({...nuevo, adultos_f: 0}), 1);
+  assert.equal(r.validarCaso({...nuevo, adultos_f: 0}).total, undefined, 'solo el responsable es una familia');
+  assert.equal(r.validarCaso({...nuevo, dependientes: 2}).dependientes, undefined, 'el responsable también puede ser dependiente');
+  assert.ok(r.validarCaso({...nuevo, dependientes: 3}).dependientes);
+  assert.equal(r.validarCaso({...nuevo, adultos_f: 0, mayores_dependientes: 1}).mayores_dependientes, undefined,
+    'el responsable solo puede ser el mayor dependiente');
+  assert.ok(r.validarCaso({...nuevo, adultos_f: 0, mayores_dependientes: 2}).mayores_dependientes);
+  assert.ok(r.validarCaso(r.conDatosGuardados({...VALIDO, mayores_dependientes: 1})).mayores_dependientes,
+    'sin la marca el tope es el de siempre');
+  assert.equal(r.datosDelCaso(nuevo).responsable_aparte, true);
+  // Lo guardado antes de la marca (borrador, cola o puerta) contó al responsable adentro: no se le suma otra vez.
+  const viejo = r.conDatosGuardados({...VALIDO, adultos_f: 2});
+  assert.equal(viejo.responsable_aparte, false);
+  assert.equal(r.totalDeclarado(viejo), 2);
+  assert.equal(r.datosDelCaso(viejo).responsable_aparte, false);
+  assert.equal(r.conDatosGuardados({...nuevo}).responsable_aparte, true);
+});
+
 test('dirección obligatoria hasta 240 y GPS en rango', async () => {
   const r = await cargar();
   assert.ok(r.validarCaso({...VALIDO, direccion: '  '}).direccion);

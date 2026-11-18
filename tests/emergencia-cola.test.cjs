@@ -107,8 +107,8 @@ test('sin red encola; al volver la red manda el multipart exacto del §6 y queda
   assert.equal(posts(calls).length, 1);
   const [post] = posts(calls);
   assert.deepEqual(nombres(post), ['uuid_cliente', 'relevado_en', 'traslado', 'dni', 'nombre', 'apellido',
-    'fecha_nacimiento', 'documento_extraviado', 'menores_f', 'menores_m', 'adultos_f', 'adultos_m', 'mayores_f',
-    'mayores_m', 'dependientes', 'mayores_dependientes', 'lactantes', 'embarazo', 'electrodependiente',
+    'fecha_nacimiento', 'documento_extraviado', 'responsable_aparte', 'menores_f', 'menores_m', 'adultos_f', 'adultos_m',
+    'mayores_f', 'mayores_m', 'dependientes', 'mayores_dependientes', 'lactantes', 'embarazo', 'electrodependiente',
     'medicacion_critica', 'mascotas', 'direccion', 'localidad', 'foto_vivienda', 'foto_acceso']);
   const f = campos(post);
   assert.equal(f.uuid_cliente, uuid);
@@ -117,6 +117,8 @@ test('sin red encola; al volver la red manda el multipart exacto del §6 y queda
   assert.equal(f.dni, '30111222'); assert.equal(f.fecha_nacimiento, '1984-03-02');
   assert.equal(f.menores_m, '2'); assert.equal(f.adultos_m, '0'); assert.equal(f.embarazo, 'true');
   assert.equal(f.mascotas, 'false'); assert.equal(f.localidad, '12');
+  // Las cantidades son los acompañantes: el back suma al responsable.
+  assert.equal(f.responsable_aparte, 'true');
   assert.equal(f.foto_vivienda.type, 'image/jpeg'); assert.match(f.foto_vivienda.name, /\.jpg$/);
   assert.ok(f.foto_vivienda.uri.startsWith('file:///test/attachments/emergencia/'));
   assert.ok(!('sexo' in f) && !('localidad_nombre' in f) && !('total' in f) && !('prioridad' in f));
@@ -372,7 +374,7 @@ test('valida en el cliente antes de encolar y no deja encolar dos veces el mismo
   const {cola, r} = await preparar();
   const b = await cola.abrirBorrador();
   await assert.rejects(cola.encolarCaso(b.uuid_cliente, {datos: {traslado: 'OTRA', dni: '12'}}, {sincronizar: false}),
-    (e) => e.code === 'VALIDACION_LOCAL' && ['traslado_otro', 'dni', 'nombre', 'apellido', 'total', 'direccion']
+    (e) => e.code === 'VALIDACION_LOCAL' && ['traslado_otro', 'dni', 'nombre', 'apellido', 'direccion']
       .every((k) => k in e.errores));
   assert.equal(r.sql.prepare('SELECT COUNT(*) AS n FROM outbox_casos').get().n, 0);
   r.setOnline(false);
@@ -633,7 +635,8 @@ test('borrador en curso: vacío no cuenta; con datos o fotos sí, con su resumen
   await cola.guardarBorrador(b.uuid_cliente, {...b.datos, apellido: 'Benitez', dni: '30111222'});
   const enCurso = await cola.getBorradorEnCurso();
   assert.equal(enCurso.uuid_cliente, b.uuid_cliente);
-  assert.equal(enCurso.resumen, 'Benitez · DNI 30111222');
+  // El responsable ya es una persona, aunque no se haya cargado ningún acompañante.
+  assert.equal(enCurso.resumen, 'Benitez · DNI 30111222 · 1 persona');
   assert.deepEqual({...await cola.getResumenPendientes()}, {enCola: 0, paraRevisar: 0, sinTerminar: 1});
   await cola.guardarBorrador(b.uuid_cliente, b.datos);
   await cola.ponerFoto(b.uuid_cliente, 'foto_acceso', jpeg('a.jpg'));

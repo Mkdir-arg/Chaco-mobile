@@ -159,10 +159,12 @@ test('Formulario 1: sin datos no encola y muestra qué corregir, campo por campo
     assert.ok(labels.includes('Para corregir'));
     for (const esperado of ['• Traslado: Elegí cómo llegó la familia.', '• DNI: El DNI del responsable tiene que tener 7 u 8 números.',
       '• Nombre: Escribí el nombre del responsable.', '• Apellido: Escribí el apellido del responsable.',
-      '• Personas: Cargá al menos una persona: el responsable también cuenta.',
       '• Dirección: Escribí la dirección o una referencia: es el mínimo para ubicar a la familia.']) {
       assert.ok(labels.includes(esperado), esperado);
     }
+    assert.ok(!labels.some((l) => l.startsWith('• Personas:')), 'sin acompañantes la familia es el responsable');
+    assert.ok(labels.includes('Total: 1 persona (con el responsable)'));
+    assert.ok(labels.includes('Quiénes vienen con el responsable. A él no lo cargues acá: ya suma al total.'));
     assert.ok(labels.includes('Elegí cómo llegó la familia.'), 'el error también va junto al campo');
     assert.equal(ui.input('Dirección o referencia').props.style.find(s => s && s.borderColor).borderColor, '#D00000');
     assert.equal(ui.toasts.at(-1).type, 'warning');
@@ -198,7 +200,7 @@ test('Formulario 1: consulta, contadores, localidad, GPS, foto y envío con la h
     await ui.press('Sumar Menores · Varones');
     await ui.press('Sumar Menores · Varones');
     await ui.press('Restar Menores · Varones');
-    assert.ok(ui.labels().includes('Total: 2 personas'));
+    assert.ok(ui.labels().includes('Total: 3 personas (con el responsable)'));
     await ui.press('Sumar Lactantes');
     await ui.press('Embarazo');
     assert.equal(ui.porLabel('Embarazo')[0].props.accessibilityState.checked, true);

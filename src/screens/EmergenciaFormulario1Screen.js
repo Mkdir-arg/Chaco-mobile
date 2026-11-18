@@ -520,7 +520,9 @@ export default function EmergenciaFormulario1Screen({ uuid = null, onTerminar })
 
       <View style={tarjeta}>
         <Text accessibilityRole="header" style={tituloSeccion}>2. Personas que ingresan juntas</Text>
-        <Text style={ayuda}>El responsable también cuenta.</Text>
+        <Text style={ayuda}>{datos.responsable_aparte === true
+          ? 'Quiénes vienen con el responsable. A él no lo cargues acá: ya suma al total.'
+          : 'El responsable también cuenta.'}</Text>
         {['Menores', 'Adultos', 'Mayores'].map((grupo) => (
           <View key={grupo}>
             <Text style={[etiqueta, styles.separado]}>{grupo}</Text>
@@ -529,7 +531,7 @@ export default function EmergenciaFormulario1Screen({ uuid = null, onTerminar })
             ))}
           </View>
         ))}
-        <Text accessibilityLiveRegion="polite" style={[etiqueta, styles.separado]}>{`Total: ${total} persona${total === 1 ? '' : 's'}`}</Text>
+        <Text accessibilityLiveRegion="polite" style={[etiqueta, styles.separado]}>{`Total: ${total} persona${total === 1 ? '' : 's'}${datos.responsable_aparte === true ? ' (con el responsable)' : ''}`}</Text>
         {errorCampo(['total', ...CANTIDADES.map((c) => c.clave)])}
       </View>
 

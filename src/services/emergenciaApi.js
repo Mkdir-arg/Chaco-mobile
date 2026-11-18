@@ -45,7 +45,7 @@ export const ORIGENES_IDENTIDAD = ['personas', 'legajo'];
 // los calcula el servidor): acá no se mandan.
 export const CAMPOS_CASO = [
   'uuid_cliente', 'relevado_en', 'traslado', 'traslado_otro', 'dni', 'nombre', 'apellido',
-  'fecha_nacimiento', 'telefono', 'documento_extraviado',
+  'fecha_nacimiento', 'telefono', 'documento_extraviado', 'responsable_aparte',
   'menores_f', 'menores_m', 'adultos_f', 'adultos_m', 'mayores_f', 'mayores_m',
   'dependientes', 'mayores_dependientes', 'lactantes',
   'embarazo', 'electrodependiente', 'medicacion_critica', 'mascotas',

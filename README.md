@@ -233,6 +233,11 @@ responsable (DNI escaneado o consultado en `personas/consultar/`, alta mínima s
 figura; si Base de Personas no la encuentra, el back busca en los legajos de DATAÑACH y el aviso lo dice), personas que ingresan juntas, quiénes necesitan asistencia, y ubicación y
 fotos (dirección, localidad, GPS opcional y hasta dos fotos JPEG). Funciona sin señal:
 
+- Desde 1.2.23 «Personas que ingresan juntas» son **los acompañantes**: el responsable
+  suma uno al total y el envío lleva `responsable_aparte: true`. Lo guardado antes en el
+  teléfono (borrador, cola o puerta) no tiene la marca y se lee como entonces, con el
+  responsable adentro (`conDatosGuardados`), así no se cuenta dos veces.
+
 - `src/services/emergenciaCola.js` usa su propia base `emergencia_offline.db` (no
   toca las de Becas ni Dispositivos). El borrador vive ahí y sobrevive a cerrar la
   app; su `uuid_cliente` nace con él y no cambia nunca. Las fotos pasan por `aJpeg`

@@ -364,12 +364,13 @@ test('Puerta: arranca con el DNI buscado; sin traslado ni personas no manda y lo
     await ui.llenar();
     await ui.escribir('Nombre', 'Rosa');
     await ui.pressButton('Ingresar igual');
-    assert.deepEqual(ui.alerts.at(-1).slice(0, 2), ['Ingresar igual', 'Se crea el caso de 1 persona con el ingreso en curso y se reservan las camas libres que alcancen. No se puede deshacer desde la app.']);
+    assert.deepEqual(ui.alerts.at(-1).slice(0, 2), ['Ingresar igual', 'Se crea el caso de 2 personas con el ingreso en curso y se reservan las camas libres que alcancen. No se puede deshacer desde la app.']);
     await ui.aceptarAlerta('Ingresar igual');
     const [post] = posts(ui.calls);
     assert.equal(post.url, '/api/emergencia/dispositivos/9/ingreso-directo/');
-    assert.deepEqual([post.body.traslado, post.body.dni, post.body.nombre, post.body.adultos_f, 'direccion' in post.body, 'relevado_en' in post.body],
-      ['POLICIA', '30111222', 'Rosa', 1, false, false]);
+    assert.deepEqual([post.body.traslado, post.body.dni, post.body.nombre, post.body.adultos_f, post.body.responsable_aparte,
+      'direccion' in post.body, 'relevado_en' in post.body],
+    ['POLICIA', '30111222', 'Rosa', 1, true, false, false]);
     assert.deepEqual(ui.eventos, [['ingresado', 190, 1]]);
     assert.deepEqual(plano(ui.toasts.at(-1)), {type: 'success', message: 'Caso 2026-000190 · ingreso en curso · 1 cama reservada.'});
     assert.deepEqual(ui.enviando, [true, false]);
@@ -383,7 +384,7 @@ test('Puerta: sin camas solo ofrece «Avisar a la mesa»; avisar confirma, manda
     assert.ok(ui.labels().includes('No hay camas libres para ingresar a la familia: avisale a la mesa para que la derive a otro lado.'));
     await ui.llenar();
     await ui.pressButton('Avisar a la mesa');
-    assert.equal(ui.alerts.at(-1)[1], 'Se crea el caso de 1 persona en la mesa con la marca «En la puerta de Escuela 12». No se puede deshacer desde la app.');
+    assert.equal(ui.alerts.at(-1)[1], 'Se crea el caso de 2 personas en la mesa con la marca «En la puerta de Escuela 12». No se puede deshacer desde la app.');
     await ui.aceptarAlerta('Avisar a la mesa');
     assert.deepEqual(posts(ui.calls).map(c => c.url), ['/api/emergencia/dispositivos/9/avisar-mesa/']);
     assert.deepEqual(ui.eventos, [['avisado', '2026-000191']]);
