@@ -10,7 +10,7 @@ import { esSinModulo } from './sinModulo';
 import { persistWebAttachment } from './webAttachments';
 import { liberarJpeg } from '../utils/jpeg';
 import {
-  datosDelCaso, datosIniciales, erroresDelServidor, FOTOS, hayErrores, resumenDeFamilia, validarCaso,
+  conDatosGuardados, datosDelCaso, datosIniciales, erroresDelServidor, FOTOS, hayErrores, resumenDeFamilia, validarCaso,
 } from '../utils/emergencia';
 
 // M1 · Ingreso de familias: borradores, cola de envíos sin señal y cachés (localidades y «Mis
@@ -323,7 +323,7 @@ const fotosQueFaltan = async (fotos = {}) => {
 const mapBorrador = (row) => row && ({
   tipo: 'borrador',
   uuid_cliente: row.uuid_cliente,
-  datos: { ...datosIniciales(), ...safeParse(row.datos_json, {}) },
+  datos: conDatosGuardados(safeParse(row.datos_json, {})),
   fotos: resolverFotos(safeParse(row.fotos_json, {}) || {}),
   errores: safeParse(row.errores_json, null),
   code: row.error_code || null,
@@ -341,7 +341,7 @@ const leerBorrador = async (ownerId, uuid) => {
 // formulario y se volvió) se reusa sin preguntar.
 const datosCargados = (datos = {}) => {
   const iniciales = datosIniciales();
-  return Object.keys(iniciales).some((clave) => clave !== 'consulta'
+  return Object.keys(iniciales).some((clave) => !['consulta', 'responsable_aparte'].includes(clave)
     && JSON.stringify(datos?.[clave] ?? iniciales[clave]) !== JSON.stringify(iniciales[clave]));
 };
 const SELECT_BORRADOR_LIVIANO = `uuid_cliente, owner_user_id, datos_json, errores_json, error_code, created_at, updated_at,
@@ -357,7 +357,7 @@ export const getBorradorEnCurso = async () => {
     `SELECT ${SELECT_BORRADOR_LIVIANO} FROM ${TABLA_BORRADORES} WHERE owner_user_id = ? AND errores_json IS NULL
      ORDER BY updated_at DESC, rowid DESC LIMIT 1`, ownerId);
   if (!row) return null;
-  const datos = { ...datosIniciales(), ...safeParse(row.datos_json, {}) };
+  const datos = conDatosGuardados(safeParse(row.datos_json, {}));
   if (!datosCargados(datos) && !Number(row.con_fotos)) return null;
   return { uuid_cliente: row.uuid_cliente, resumen: resumenDeFamilia(datos), actualizado_en: row.updated_at };
 };

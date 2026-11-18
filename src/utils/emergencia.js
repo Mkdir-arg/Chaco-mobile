@@ -22,7 +22,8 @@ export const SEXOS = [
   { valor: 'M', titulo: 'Masculino' },
 ];
 
-// Las seis cantidades del §6: la suma es el total declarado y el responsable está incluido.
+// Las seis cantidades del §6: son quienes vienen con el responsable. Él no va acá: suma uno al total
+// (`responsable_aparte`). Un borrador o envío anterior sin la marca las lee como antes, con él adentro.
 export const CANTIDADES = [
   { clave: 'menores_f', grupo: 'Menores', titulo: 'Mujeres' },
   { clave: 'menores_m', grupo: 'Menores', titulo: 'Varones' },
@@ -90,6 +91,7 @@ export const datosIniciales = () => ({
   fecha_nacimiento: '',
   telefono: '',
   documento_extraviado: false,
+  responsable_aparte: true,
   ...Object.fromEntries(CANTIDADES.map(({ clave }) => [clave, 0])),
   ...Object.fromEntries(ASISTENCIA.map(({ clave }) => [clave, 0])),
   ...Object.fromEntries(AVISOS.map(({ clave }) => [clave, false])),
@@ -103,6 +105,10 @@ export const datosIniciales = () => ({
   consulta: null,
 });
 
+// Lo guardado en el teléfono sobre los datos iniciales. Lo guardado antes de `responsable_aparte`
+// contó al responsable en las cantidades: sin la marca no se le suma otra vez.
+export const conDatosGuardados = (guardados = {}) => ({ ...datosIniciales(), responsable_aparte: false, ...guardados });
+
 // Un contador como entero ≥ 0; lo que no se entiende vale 0.
 export const aCantidad = (valor) => {
   const numero = typeof valor === 'number' ? valor : Number(String(valor ?? '').replace(/\D/g, '') || 0);
@@ -110,7 +116,8 @@ export const aCantidad = (valor) => {
 };
 
 const suma = (datos, claves) => claves.reduce((total, clave) => total + aCantidad(datos?.[clave]), 0);
-export const totalDeclarado = (datos) => suma(datos, CANTIDADES.map(({ clave }) => clave));
+export const totalDeclarado = (datos) => suma(datos, CANTIDADES.map(({ clave }) => clave))
+  + (datos?.responsable_aparte === true ? 1 : 0);
 export const totalMenores = (datos) => suma(datos, ['menores_f', 'menores_m']);
 export const totalMayores = (datos) => suma(datos, ['mayores_f', 'mayores_m']);
 
@@ -204,6 +211,7 @@ export const datosDelCaso = (datos = {}) => {
     fecha_nacimiento: texto(datos.fecha_nacimiento),
     telefono: texto(datos.telefono),
     documento_extraviado: datos.documento_extraviado === true,
+    responsable_aparte: datos.responsable_aparte === true,
     direccion: texto(datos.direccion),
     localidad: datos.localidad ?? null,
     observaciones: texto(datos.observaciones),
