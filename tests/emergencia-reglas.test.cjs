@@ -89,6 +89,11 @@ test('el responsable suma aparte: los contadores son los acompañantes', async (
   assert.equal(r.validarCaso({...nuevo, adultos_f: 0}).total, undefined, 'solo el responsable es una familia');
   assert.equal(r.validarCaso({...nuevo, dependientes: 2}).dependientes, undefined, 'el responsable también puede ser dependiente');
   assert.ok(r.validarCaso({...nuevo, dependientes: 3}).dependientes);
+  assert.equal(r.validarCaso({...nuevo, adultos_f: 0, mayores_dependientes: 1}).mayores_dependientes, undefined,
+    'el responsable solo puede ser el mayor dependiente');
+  assert.ok(r.validarCaso({...nuevo, adultos_f: 0, mayores_dependientes: 2}).mayores_dependientes);
+  assert.ok(r.validarCaso(r.conDatosGuardados({...VALIDO, mayores_dependientes: 1})).mayores_dependientes,
+    'sin la marca el tope es el de siempre');
   assert.equal(r.datosDelCaso(nuevo).responsable_aparte, true);
   // Lo guardado antes de la marca (borrador, cola o puerta) contó al responsable adentro: no se le suma otra vez.
   const viejo = r.conDatosGuardados({...VALIDO, adultos_f: 2});

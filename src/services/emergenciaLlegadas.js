@@ -159,8 +159,10 @@ export const nombreDelResponsable = ({ nombre = '', apellido = '', dni = '' } = 
 };
 
 // «Menores (F): 2 · Menores (M): 3 · Adultos (F): 1 …», solo lo que no es 0.
+// Con `responsable_aparte` las franjas son los acompañantes: el responsable va como una parte más.
 export const resumenDelGrupo = (grupo = {}) => {
   const partes = GRUPO.filter(([clave]) => grupo[clave] > 0).map(([clave, titulo]) => `${titulo}: ${grupo[clave]}`);
+  if (grupo.responsable_aparte === true) partes.push('Responsable: 1');
   return partes.length ? partes.join(' · ') : 'Sin detalle de personas';
 };
 export const resumenDeAsistencia = (grupo = {}) => ASISTENCIA

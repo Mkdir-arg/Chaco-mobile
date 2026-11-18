@@ -175,7 +175,8 @@ export const validarCaso = (datos = {}) => {
   const total = totalDeclarado(datos);
   if (total < 1) agregar('total', 'Cargá al menos una persona: el responsable también cuenta.');
   if (aCantidad(datos.dependientes) > total) agregar('dependientes', 'No puede haber más personas con dependencia que personas.');
-  if (aCantidad(datos.mayores_dependientes) > totalMayores(datos)) {
+  // El responsable que va aparte puede ser ese mayor: no tiene franja en los contadores.
+  if (aCantidad(datos.mayores_dependientes) > totalMayores(datos) + (datos.responsable_aparte === true ? 1 : 0)) {
     agregar('mayores_dependientes', 'No puede haber más mayores con dependencia que mayores.');
   }
   if (aCantidad(datos.lactantes) > totalMenores(datos)) agregar('lactantes', 'No puede haber más lactantes que menores.');
